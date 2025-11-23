@@ -252,7 +252,14 @@ function renderTab(tab, session) {
 
   if (isActive) {
       setTimeout(() => {
-          el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          let target = el;
+          if (target.previousElementSibling) {
+              target = target.previousElementSibling;
+              if (target.previousElementSibling) {
+                  target = target.previousElementSibling;
+              }
+          }
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }, 0);
   }
 }
