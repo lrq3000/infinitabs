@@ -378,13 +378,17 @@ function renderTab(tab, session) {
   deleteBtn.title = 'Delete logical tab and bookmark';
   deleteBtn.addEventListener('click', (e) => {
       e.stopPropagation(); // Prevent tab selection
-      if (confirm("Delete this logical tab (bookmark)?")) {
-          chrome.runtime.sendMessage({
-              type: "DELETE_LOGICAL_TAB",
-              windowId: currentWindowId,
-              logicalId: tab.logicalId
-          });
-      }
+      
+      chrome.storage.local.get({ confirmDeleteLogicalTab: true }, (items) => {
+          const shouldConfirm = items.confirmDeleteLogicalTab;
+          if (!shouldConfirm || confirm("Delete this logical tab (bookmark)?")) {
+              chrome.runtime.sendMessage({
+                  type: "DELETE_LOGICAL_TAB",
+                  windowId: currentWindowId,
+                  logicalId: tab.logicalId
+              });
+          }
+      });
   });
   el.appendChild(deleteBtn);
   

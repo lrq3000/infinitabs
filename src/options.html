@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>LazyTabs Options</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      padding: 20px;
+      max-width: 600px;
+      margin: 0 auto;
+      color: #333;
+    }
+    h1 {
+      font-size: 20px;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 10px;
+    }
+    .option-group {
+      margin: 20px 0;
+    }
+    label {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+    }
+    .status {
+      margin-top: 10px;
+      color: green;
+      opacity: 0;
+      transition: opacity 0.5s;
+    }
+  </style>
+</head>
+<body>
+  <h1>LazyTabs Settings</h1>
+  
+  <div class="option-group">
+    <label>
+      <input type="checkbox" id="confirm-delete-checkbox">
+      Ask for confirmation before deleting logical tabs
+    </label>
+  </div>
+
+  <div id="status" class="status">Saved!</div>
+
+  <script src="options.js"></script>
+</body>
+</html>

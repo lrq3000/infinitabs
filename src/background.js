@@ -734,10 +734,15 @@ async function handleDeleteLogicalTab(windowId, logicalId) {
     // Remove from session model
     session.logicalTabs.splice(logicalIndex, 1);
     
-    // Cleanup live tab mappings
+    // Cleanup live tab mappings and close live tabs
     if (logical.liveTabIds && logical.liveTabIds.length > 0) {
-        // Note: We do not close the live tab per spec (just delete logical/bookmark)
-        // But we must remove the mapping so it doesn't re-link or cause issues.
+        // Close live tabs as requested
+        try {
+            await chrome.tabs.remove(logical.liveTabIds);
+        } catch (e) {
+            console.warn("Failed to close live tabs", e);
+        }
+        
         logical.liveTabIds.forEach(tid => {
             delete state.tabToLogical[tid];
         });
