@@ -6,6 +6,8 @@ A radically new way to browse—built for researchers, power users, and anyone w
 InfiniTabs lets you open a *theoretically infinite number of tabs and tab groups* without slowing down your browser, all within a familliar interface: browse as usual, but with superpowers.
 It achieves this by cleanly separating **logical tabs** from **live tabs**, storing them as **native bookmarks**, and presenting them through a **persistent vertical sidebar tabstrip**.
 
+Active sessions manager (automatic real-time sync of tabs states) + bookmark manager and finder + vertical tabs navbar + autosuspender (into bookmarks!) = automagical infinite browsing!
+
 ---
 
 ## Description - What is InfiniTabs
