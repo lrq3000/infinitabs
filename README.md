@@ -229,7 +229,7 @@ This means:
 
 ---
 
-### 5. The Vertical Sidebar Tabstrip
+### Vertical Sidebar Tabstrip
 
 InfiniTabs replaces the traditional horizontal tabstrip with:
 
