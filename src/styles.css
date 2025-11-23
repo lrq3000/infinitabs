@@ -15,6 +15,8 @@
   --btn-text: #d00;
   --btn-hover: #ffe0e0;
   --live-indicator: #52c41a;
+  --search-match-bg: #fff7b3; /* Light yellow */
+  --search-match-active-outline: #1890ff;
 }
 
 body.dark-mode {
@@ -32,6 +34,8 @@ body.dark-mode {
   --btn-text: #ff6b6b;
   --btn-hover: #4e3535;
   --live-indicator: #73c991;
+  --search-match-bg: #5a5a2a; /* Darker yellow/olive */
+  --search-match-active-outline: #0078d4;
 }
 
 body {
@@ -114,6 +118,37 @@ body {
   background-color: var(--btn-hover);
 }
 
+/* Search Styles */
+.search-container {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+#search-input {
+  flex: 1;
+  padding: 4px;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+  font-size: 12px;
+  background-color: var(--header-bg);
+  color: var(--text-color);
+}
+
+#search-prev, #search-next {
+  cursor: pointer;
+  background: none;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 10px;
+  color: var(--text-color);
+}
+
+#search-prev:hover, #search-next:hover {
+  background-color: var(--hover-bg);
+}
+
 .tabs-list {
   flex: 1;
   overflow-y: auto;
@@ -151,6 +186,17 @@ body {
 body.dark-mode .tab-item.logical {
   color: #aaa;
 }
+
+/* Search Highlights */
+.tab-item.search-match {
+  background-color: var(--search-match-bg);
+}
+
+.tab-item.search-match.active-match {
+  outline: 2px solid var(--search-match-active-outline);
+  outline-offset: -2px;
+}
+
 
 .tab-icon {
   width: 16px;

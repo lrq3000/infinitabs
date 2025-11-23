@@ -6,9 +6,16 @@ const unmountOthersBtn = document.getElementById('unmount-others-btn');
 const themeToggleBtn = document.getElementById('theme-toggle-btn');
 const tabsContainer = document.getElementById('tabs-container');
 
+// Search Elements
+const searchInput = document.getElementById('search-input');
+const searchPrevBtn = document.getElementById('search-prev');
+const searchNextBtn = document.getElementById('search-next');
+
 let currentSession = null;
 let currentWindowId = null;
 let isDarkMode = false;
+let currentMatches = [];
+let currentMatchIndex = -1;
 
 // --- Initialization ---
 
@@ -23,6 +30,12 @@ async function init() {
   unmountOthersBtn.addEventListener('click', onUnmountOthers);
   themeToggleBtn.addEventListener('click', toggleTheme);
   
+  // Search Listeners
+  searchInput.addEventListener('input', performSearch);
+  searchPrevBtn.addEventListener('click', () => navigateSearch(-1));
+  searchNextBtn.addEventListener('click', () => navigateSearch(1));
+  document.addEventListener('keydown', onKeyDown);
+
   chrome.runtime.onMessage.addListener(onMessage);
 
   // Load Theme
@@ -143,8 +156,104 @@ function onMessage(message, sender, sendResponse) {
           }
       }
       renderSession(currentSession);
+      // Re-apply search if exists
+      if (searchInput.value) performSearch();
     }
   }
+}
+
+// --- Search Logic ---
+
+function parseSearchQuery(query) {
+    const terms = [];
+    const regex = /"([^"]+)"|(\S+)/g;
+    let match;
+    while ((match = regex.exec(query)) !== null) {
+        if (match[1]) {
+            // Quoted term
+            terms.push({ term: match[1].toLowerCase(), exact: true });
+        } else {
+            // Regular term
+            terms.push({ term: match[2].toLowerCase(), exact: false });
+        }
+    }
+    return terms;
+}
+
+function performSearch() {
+    const query = searchInput.value;
+    currentMatches = [];
+    currentMatchIndex = -1;
+    
+    const tabItems = document.querySelectorAll('.tab-item');
+    tabItems.forEach(el => {
+        el.classList.remove('search-match', 'active-match');
+    });
+
+    if (!query) return;
+    
+    const terms = parseSearchQuery(query);
+    if (terms.length === 0) return;
+
+    tabItems.forEach(el => {
+        const title = el.querySelector('.tab-title').textContent.toLowerCase();
+        const url = el.title.toLowerCase(); // Render sets title attribute to URL
+        
+        let matches = false;
+        
+        // OR Logic: Match any term
+        for (const { term, exact } of terms) {
+            if (exact) {
+                // Exact match (must contain the full phrase)
+                if (title.includes(term) || url.includes(term)) {
+                    matches = true;
+                    break;
+                }
+            } else {
+                // Regular match
+                if (title.includes(term) || url.includes(term)) {
+                    matches = true;
+                    break;
+                }
+            }
+        }
+        
+        if (matches) {
+            el.classList.add('search-match');
+            currentMatches.push(el);
+        }
+    });
+
+    if (currentMatches.length > 0) {
+        navigateSearch(1); // Go to first match
+    }
+}
+
+function navigateSearch(direction) {
+    if (currentMatches.length === 0) return;
+    
+    // Clear active style on current
+    if (currentMatchIndex !== -1 && currentMatches[currentMatchIndex]) {
+        currentMatches[currentMatchIndex].classList.remove('active-match');
+    }
+    
+    currentMatchIndex += direction;
+    
+    // Cycle
+    if (currentMatchIndex >= currentMatches.length) currentMatchIndex = 0;
+    if (currentMatchIndex < 0) currentMatchIndex = currentMatches.length - 1;
+    
+    const activeEl = currentMatches[currentMatchIndex];
+    activeEl.classList.add('active-match');
+    activeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function onKeyDown(e) {
+    // Ctrl+Shift+F
+    if (e.ctrlKey && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
+        e.preventDefault();
+        searchInput.focus();
+    }
 }
 
 // --- Rendering ---
