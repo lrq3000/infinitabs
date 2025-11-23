@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>LazyTabs Sidebar</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <header class="sidebar-header">
+      <div class="session-selector-container">
+        <select id="session-selector">
+          <option value="" disabled selected>Select Session...</option>
+        </select>
+        <button id="refresh-sessions" title="Refresh Sessions">↻</button>
+      </div>
+      <div class="header-actions">
+        <button id="theme-toggle-btn" title="Toggle Dark Mode">☀</button>
+        <button id="unmount-others-btn" title="Unmount all tabs except current/selected">Unmount Others</button>
+      </div>
+    </header>
+
+    <div id="tabs-container" class="tabs-list">
+      <!-- Tabs will be rendered here -->
+    </div>
+  </div>
+  <script src="sidebar.js"></script>
+</body>
+</html>

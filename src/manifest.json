@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "InfiniTabs",
+  "version": "0.0.1",
+  "description": "Unlimited tabs. Zero clutter. Near-zero RAM.",
+  "permissions": [
+    "tabs",
+    "bookmarks",
+    "windows",
+    "storage",
+    "sidePanel",
+    "favicon"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidebar.html"
+  },
+  "action": {
+    "default_title": "Open InfiniTabs Sidebar"
+  }
+}

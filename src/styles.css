@@ -1,0 +1,203 @@
+/* styles.css */
+
+:root {
+  --bg-color: #f7f9fc;
+  --text-color: #333;
+  --header-bg: #fff;
+  --border-color: #ddd;
+  --hover-bg: #eef3f8;
+  --active-bg: #e6f7ff;
+  --active-border: #1890ff;
+  --group-bg: #fafafa;
+  --group-text: #888;
+  --btn-bg: #fff0f0;
+  --btn-border: #ffcccc;
+  --btn-text: #d00;
+  --btn-hover: #ffe0e0;
+  --live-indicator: #52c41a;
+}
+
+body.dark-mode {
+  --bg-color: #1e1e1e;
+  --text-color: #eee;
+  --header-bg: #252526;
+  --border-color: #3e3e42;
+  --hover-bg: #2a2d2e;
+  --active-bg: #37373d;
+  --active-border: #0078d4;
+  --group-bg: #252526;
+  --group-text: #aaa;
+  --btn-bg: #3e2a2a;
+  --btn-border: #5a3a3a;
+  --btn-text: #ff6b6b;
+  --btn-hover: #4e3535;
+  --live-indicator: #73c991;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.sidebar-header {
+  padding: 10px;
+  background-color: var(--header-bg);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.session-selector-container {
+  display: flex;
+  gap: 5px;
+}
+
+#session-selector {
+  flex: 1;
+  padding: 4px;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+  background-color: var(--header-bg);
+  color: var(--text-color);
+}
+
+#refresh-sessions {
+  cursor: pointer;
+  background: none;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  color: var(--text-color);
+}
+
+.header-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#theme-toggle-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+#theme-toggle-btn:hover {
+  background-color: var(--hover-bg);
+}
+
+#unmount-others-btn {
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+  background-color: var(--btn-bg);
+  border: 1px solid var(--btn-border);
+  border-radius: 4px;
+  color: var(--btn-text);
+}
+
+#unmount-others-btn:hover {
+  background-color: var(--btn-hover);
+}
+
+.tabs-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 0;
+}
+
+.tab-item {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+}
+
+.tab-item:hover {
+  background-color: var(--hover-bg);
+}
+
+.tab-item.active-live {
+  font-weight: bold;
+  background-color: var(--active-bg);
+  border-left-color: var(--active-border);
+}
+
+.tab-item.live {
+  /* Indicates it is open but not active */
+  color: var(--text-color);
+}
+
+.tab-item.logical {
+  /* Indicates purely logical (not open) */
+  color: #888;
+}
+
+body.dark-mode .tab-item.logical {
+  color: #aaa;
+}
+
+.tab-icon {
+  width: 16px;
+  height: 16px;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+
+.tab-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  flex: 1;
+}
+
+.group-header {
+  padding: 8px 10px;
+  font-weight: bold;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--group-text);
+  background-color: var(--group-bg);
+  border-top: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+  margin-top: 5px;
+}
+
+.group-header:first-child {
+  margin-top: 0;
+}
+
+.tab-item.indented {
+  padding-left: 20px;
+}
+
+/* Indicators */
+.live-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--live-indicator);
+  margin-left: auto;
+  margin-right: 5px;
+  display: none;
+}
+
+.tab-item.live .live-indicator {
+  display: block;
+}
