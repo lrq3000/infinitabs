@@ -125,13 +125,40 @@ body {
   align-items: center;
 }
 
-#search-input {
+.search-input-wrapper {
   flex: 1;
-  padding: 4px;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+#search-input {
+  width: 100%;
+  padding: 4px 28px 4px 4px; /* Right padding for clear button */
   border-radius: 4px;
   border: 1px solid #ccc;
   font-size: 12px;
   background-color: var(--header-bg);
+  color: var(--text-color);
+  box-sizing: border-box; /* Ensure padding doesn't expand width */
+}
+
+#search-clear {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 28px; /* Larger click area */
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: #888;
+  font-size: 18px;
+  padding: 0;
+  display: none; /* Hidden by default */
+}
+
+#search-clear:hover {
   color: var(--text-color);
 }
 

@@ -8,6 +8,7 @@ const tabsContainer = document.getElementById('tabs-container');
 
 // Search Elements
 const searchInput = document.getElementById('search-input');
+const searchClearBtn = document.getElementById('search-clear');
 const searchPrevBtn = document.getElementById('search-prev');
 const searchNextBtn = document.getElementById('search-next');
 
@@ -32,6 +33,14 @@ async function init() {
   
   // Search Listeners
   searchInput.addEventListener('input', performSearch);
+  searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          clearSearch();
+      }
+  });
+  searchClearBtn.addEventListener('click', clearSearch);
   searchPrevBtn.addEventListener('click', () => navigateSearch(-1));
   searchNextBtn.addEventListener('click', () => navigateSearch(1));
   document.addEventListener('keydown', onKeyDown);
@@ -180,8 +189,21 @@ function parseSearchQuery(query) {
     return terms;
 }
 
+function clearSearch() {
+    searchInput.value = '';
+    performSearch();
+}
+
 function performSearch() {
     const query = searchInput.value;
+    
+    // Toggle clear button visibility
+    if (query.length > 0) {
+        searchClearBtn.style.display = 'block';
+    } else {
+        searchClearBtn.style.display = 'none';
+    }
+
     currentMatches = [];
     currentMatchIndex = -1;
     
