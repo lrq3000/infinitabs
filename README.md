@@ -3,7 +3,7 @@
 **Unlimited tabs. Zero clutter. Near-zero RAM.**
 A radically new way to browse—built for researchers, power users, and anyone who regularly “declares tab bankruptcy.”
 
-InfiniTabs lets you open a *theoretically infinite number of tabs and tab groups* without slowing down your browser.
+InfiniTabs lets you open a *theoretically infinite number of tabs and tab groups* without slowing down your browser, all within a familliar interface: browse as usual, but with superpowers.
 It achieves this by cleanly separating **logical tabs** from **live tabs**, storing them as **native bookmarks**, and presenting them through a **persistent vertical sidebar tabstrip**.
 
 ---
@@ -23,7 +23,7 @@ Power users routinely accumulate hundreds or thousands of tabs across many windo
 
 Although tabs suspenders exist, they only delay but do not eliminate RAM exhaustion, are prone to losing tabs on crash recovery, have discoverability issues (hard to search for a past tab in-context of the session), switching issues (reloading a past session requires reopening all tabs, even if suspended, causing RAM exhaustion, even if just to find one tab).
 
-**InfiniTabs solves all of these problems at once** by replacing the traditional model with a fully persistent, crash-proof, unlimited tabs architecture.
+**InfiniTabs solves all of these problems at once** by replacing the traditional model with a fully persistent, crash-proof, unlimited tabs architecture, that looks just like an usual vertical tabs bar.
 
 ---
 
@@ -34,11 +34,17 @@ Although tabs suspenders exist, they only delay but do not eliminate RAM exhaus
 You can open as many logical tabs as you want.
 Only the ones you actively work on become live tabs.
 
-**2. Never Declare Tab Bankruptcy Again**
+**2. Automagical familiar UI**
+
+Browse as usual with our vertical tabs bar, enjoy all the superpowers.
+
+This is designed to provides the very same experience as a standard vertical tabs bar, all the magic happens automatically behind the scenes: open all the tabs you want, switch at any time to any other tab, close tabs, everything instantaneously. Most tabs you use will already be loaded, and you will only occasionally experience a slight delay, the time that the tab gets fetched if it was autosuspended.
+
+**3. Never Declare Tab Bankruptcy Again**
 
 Close all live tabs—your bookmarks/logical tabs remain perfectly intact.
 
-**3. Optimized for deep research workflows**
+**4. Optimized for deep research workflows**
 
 InfiniTabs lets you:
 
@@ -48,7 +54,7 @@ InfiniTabs lets you:
 * and keeping only a few active tasks visible
 * Empowers neurodiversity (ADHD & Autism) workflows, allowing mixing depth search with breadth search and even immediate context switching and parallel multitasking with no slowdowns.
 
-**4. Instant Session Switching**
+**5. Instant Session Switching**
 
 Switching between past sessions:
 
@@ -58,18 +64,18 @@ Switching between past sessions:
 
 Switch back to a previous session in **under one second**.
 
-**5. Full Crash Recovery**
+**6. Full Crash Recovery**
 
 Because everything is a bookmark:
 
-* Crashes do not destroy your sessions
+* Crashes cannot destroy or lose any sessions, as they are saved way before a crash may happen
 * Browser updates do not break the system
-* You can extract all data even from a dead Chrome installation
-* No periodic export needed, because all sessions changes are immediately synchronized on-disk.
+* You can extract all data even from a dead Chrome installation using external tools
+* No periodic export needed, because all sessions changes are immediately synchronized on-disk
 
 This is unmatched by any other session manager.
 
-**6. Unified Search, Archiving, and AI Tools**
+**7. Unified Search, Archiving, and AI Tools**
 
 Since your sessions are simply bookmarks:
 
@@ -77,14 +83,14 @@ Since your sessions are simply bookmarks:
 * AI models can analyze your research corpus
 * You are not locked into any proprietary format
 
-**7. Smooth Cognitive Model**
+**8. Human Cognition-Friendly Model**
 
-InfiniTabs uses a **materialization model**:
+InfiniTabs uses what we define as a decoupled split tabs model:
 
-* Logical tab = object
-* Live tab = temporary projection
+* Logical tab = reference to resource (also called "ghost tab")
+* Live tab = temporary projection on the content (ie, the content is fetched in these tabs)
 
-This leverages the cognitive limitations of the human brain to allow for a virtually infinite workspace illusion, while in reality only a very small subset of tabs are effectively loaded in-memory.
+This leverages the cognitive limitations of the human brain to allow for a virtually infinite workspace illusion, while in reality only a very small subset of tabs are effectively loaded in-memory, just like how humans only work with a limited subset of less than 10 items at any time due to bounded working memory and attention.
 
 ---
 
