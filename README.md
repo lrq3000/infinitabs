@@ -286,8 +286,6 @@ Future releases will introduce:
 * Firefox port
 * Edge and other Chromium-based browsers
 
----
-
 ## Author
 
 Authored by Stephen Karl Larroque.
@@ -298,3 +296,13 @@ Implementation by agentic coding under supervision (Google's Jules with Gemini 3
 ## License
 
 Licensed under the MIT Public License.
+
+## Suggested complementary 3rd-party extensions/tools
+
+Here is a non-exhaustive list of complementary **opensource** 3rd-party extensions or tools that work well with InfiniTabs:
+* [Search Bookmarks, History and Tabs](https://github.com/Fannon/search-bookmarks-history-and-tabs): Fast bookmarks fuzzy search engine
+* [Full text tabs forever (FTTF)](https://github.com/iansinnott/full-text-tabs-forever): Full-text search of historically visited pages (once you have the page title, you can find it in InfiniTabs)
+* [Floccus](https://github.com/floccusaddon/floccus): Autosync bookmarks (and hence sessions if using InfiniTabs) between browsers (also works on mobile via native Floccus app on F-Droid or [Mises](https://github.com/mises-id/mises-browser-core) or [Cromite](https://github.com/uazo/cromite/)).
+* [TidyMark](https://github.com/PanHywel/TidyMark) to reorganize/group bookmarks (supports cloud or offline ollama).
+* [Bookmarks Summarizer](https://github.com/lrq3000/BookmarkSummarizer): Python app for full text search on content and AI-generated summaries (using cloud or offline ollama). (Untested alternatives: ArchiveBox, LinkWarden, other self-hosted bookmarks managers...).
+* [Wherewasi](https://github.com/Jay-Karia/wherewasi) for temporal and semantic tabs clustering into sessions using cloud Gemini AI.
