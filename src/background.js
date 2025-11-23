@@ -646,8 +646,34 @@ async function focusOrMountLogicalTab(windowId, logicalId) {
         const pendingEntry = { logicalId, windowId };
         pendingMounts.push(pendingEntry);
         
+        // Calculate smart insert index
+        // Look for the closest left-side neighbor that is live
+        const currentIdx = session.logicalTabs.findIndex(l => l.logicalId === logicalId);
+        let insertIndex = 0; // default leftmost
+        
+        if (currentIdx > 0) {
+            for (let i = currentIdx - 1; i >= 0; i--) {
+                const prevLogical = session.logicalTabs[i];
+                if (prevLogical.liveTabIds.length > 0) {
+                    // Found a live neighbor
+                    // Get its live tab index
+                    try {
+                        const prevLiveTabId = prevLogical.liveTabIds[0]; // assume first
+                        const prevLiveTab = await chrome.tabs.get(prevLiveTabId);
+                        insertIndex = prevLiveTab.index + 1;
+                    } catch (e) {}
+                    break;
+                }
+            }
+        }
+        
         try {
-            const tab = await chrome.tabs.create({ windowId, url: logical.url, active: true });
+            const tab = await chrome.tabs.create({ 
+                windowId, 
+                url: logical.url, 
+                active: true,
+                index: insertIndex
+            });
             
             const idx = pendingMounts.indexOf(pendingEntry);
             if (idx !== -1) {

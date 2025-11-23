@@ -249,6 +249,12 @@ function renderTab(tab, session) {
   });
   
   tabsContainer.appendChild(el);
+
+  if (isActive) {
+      setTimeout(() => {
+          el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 0);
+  }
 }
 
 function escapeHtml(text) {
