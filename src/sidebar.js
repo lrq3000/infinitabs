@@ -366,10 +366,27 @@ function renderTab(tab, session) {
   const faviconUrl = chrome.runtime.getURL("/_favicon/") + "?pageUrl=" + encodeURIComponent(tab.url) + "&size=16";
   
   el.innerHTML = `
+    <span class="live-indicator"></span>
     <img class="tab-icon" src="${faviconUrl}" />
     <span class="tab-title">${escapeHtml(tab.title)}</span>
-    <span class="live-indicator"></span>
   `;
+
+  // Delete Button
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className = 'tab-delete-btn';
+  deleteBtn.textContent = '×';
+  deleteBtn.title = 'Delete logical tab and bookmark';
+  deleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation(); // Prevent tab selection
+      if (confirm("Delete this logical tab (bookmark)?")) {
+          chrome.runtime.sendMessage({
+              type: "DELETE_LOGICAL_TAB",
+              windowId: currentWindowId,
+              logicalId: tab.logicalId
+          });
+      }
+  });
+  el.appendChild(deleteBtn);
   
   el.addEventListener('click', () => {
     chrome.runtime.sendMessage({

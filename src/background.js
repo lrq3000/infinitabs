@@ -18,6 +18,19 @@ function generateGuid() {
   return self.crypto.randomUUID();
 }
 
+// Debounce helper
+const bookmarkUpdateTimers = {}; // logicalId -> timerId
+
+function scheduleBookmarkUpdate(logicalId, updateFn, delay = 1000) {
+    if (bookmarkUpdateTimers[logicalId]) {
+        clearTimeout(bookmarkUpdateTimers[logicalId]);
+    }
+    bookmarkUpdateTimers[logicalId] = setTimeout(() => {
+        delete bookmarkUpdateTimers[logicalId];
+        updateFn();
+    }, delay);
+}
+
 /**
  * Ensures the root bookmark folder exists.
  * @returns {Promise<string>} The ID of the root folder.
@@ -409,11 +422,16 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
   if (changed) {
       logical.lastUpdated = Date.now();
-      chrome.bookmarks.update(logical.bookmarkId, {
-          title: logical.title,
-          url: logical.url
-      }).catch(err => console.error("Failed to update bookmark", err));
       
+      // Debounce bookmark update
+      scheduleBookmarkUpdate(logicalId, () => {
+          chrome.bookmarks.update(logical.bookmarkId, {
+              title: logical.title,
+              url: logical.url
+          }).catch(err => console.error("Failed to update bookmark", err));
+      }, 1500);
+      
+      // Notify sidebar immediately for UI responsiveness
       notifySidebarStateUpdated(windowId, sessionId);
   }
 });
@@ -583,6 +601,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     sendResponse({ success: true });
                     break;
                 }
+                case "DELETE_LOGICAL_TAB": {
+                    await handleDeleteLogicalTab(message.windowId, message.logicalId);
+                    sendResponse({ success: true });
+                    break;
+                }
             }
         } catch (error) {
             console.error("Message handler error", error);
@@ -689,6 +712,37 @@ async function focusOrMountLogicalTab(windowId, logicalId) {
     }
     
     session.lastActiveLogicalTabId = logicalId;
+    notifySidebarStateUpdated(windowId, sessionId);
+}
+
+async function handleDeleteLogicalTab(windowId, logicalId) {
+    const sessionId = state.windowToSession[windowId];
+    if (!sessionId) return;
+    const session = state.sessionsById[sessionId];
+    
+    const logicalIndex = session.logicalTabs.findIndex(l => l.logicalId === logicalId);
+    if (logicalIndex === -1) return;
+    const logical = session.logicalTabs[logicalIndex];
+    
+    // Remove bookmark
+    try {
+        await chrome.bookmarks.remove(logical.bookmarkId);
+    } catch (e) {
+        console.error("Failed to delete bookmark", e);
+    }
+    
+    // Remove from session model
+    session.logicalTabs.splice(logicalIndex, 1);
+    
+    // Cleanup live tab mappings
+    if (logical.liveTabIds && logical.liveTabIds.length > 0) {
+        // Note: We do not close the live tab per spec (just delete logical/bookmark)
+        // But we must remove the mapping so it doesn't re-link or cause issues.
+        logical.liveTabIds.forEach(tid => {
+            delete state.tabToLogical[tid];
+        });
+    }
+    
     notifySidebarStateUpdated(windowId, sessionId);
 }
 
