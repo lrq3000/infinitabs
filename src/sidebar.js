@@ -23,6 +23,7 @@ let lastScrolledActiveId = null;
 let selectedLogicalIds = new Set();
 let lastSelectedLogicalId = null; // For shift-click range
 let draggedLogicalIds = [];
+let ignoreNextAutoScroll = false;
 
 // --- Initialization ---
 
@@ -337,7 +338,13 @@ function renderSession(session) {
 
   // Determine if we need to scroll
   let shouldScroll = false;
-  if (session.lastActiveLogicalTabId !== lastScrolledActiveId) {
+
+  if (ignoreNextAutoScroll) {
+      // Suppress autoscroll for user-initiated move
+      ignoreNextAutoScroll = false;
+      // Update lastScrolledActiveId so subsequent updates don't trigger scroll
+      lastScrolledActiveId = session.lastActiveLogicalTabId;
+  } else if (session.lastActiveLogicalTabId !== lastScrolledActiveId) {
       shouldScroll = true;
       lastScrolledActiveId = session.lastActiveLogicalTabId;
   }
@@ -679,6 +686,9 @@ function onDrop(e) {
 
     // Avoid dropping onto self
     if (draggedLogicalIds.includes(targetId) && position !== 'inside') return;
+
+    // Suppress next auto-scroll since this is a user action
+    ignoreNextAutoScroll = true;
 
     chrome.runtime.sendMessage({
         type: "MOVE_LOGICAL_TABS",
