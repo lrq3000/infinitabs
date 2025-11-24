@@ -515,44 +515,74 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
   }, 100);
 });
 
-chrome.tabs.onMoved.addListener(async (tabId, moveInfo) => {
-    if (!state.initialized) await init();
+// Queue for serializing move operations to handle group moves (SHIFT+Drag)
+const moveMutex = new class {
+    constructor() { this.p = Promise.resolve(); }
+    run(fn) {
+        this.p = this.p.then(fn).catch(e => console.error("Mutex error", e));
+        return this.p;
+    }
+}();
 
-    const logicalId = state.tabToLogical[tabId];
-    if (!logicalId) return;
+chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
+    moveMutex.run(async () => {
+        if (!state.initialized) await init();
 
-    const windowId = moveInfo.windowId;
-    const sessionId = state.windowToSession[windowId];
-    if (!sessionId) return;
-    const session = state.sessionsById[sessionId];
+        const logicalId = state.tabToLogical[tabId];
+        if (!logicalId) return;
 
-    // Heuristic: sync logical order to live order where possible.
-    chrome.tabs.query({ windowId }, async (tabs) => {
+        const windowId = moveInfo.windowId;
+        const sessionId = state.windowToSession[windowId];
+        if (!sessionId) return;
+
+        // Always fetch latest session state inside the mutex
+        const session = state.sessionsById[sessionId];
+        if (!session) return;
+
+        const tabs = await chrome.tabs.query({ windowId });
         const liveTabsInOrder = tabs;
         
         const movedTabIndex = liveTabsInOrder.findIndex(t => t.id === tabId);
+        if (movedTabIndex === -1) return;
+
+        const logical = session.logicalTabs.find(l => l.logicalId === logicalId);
+        if (!logical) return;
+
         if (movedTabIndex <= 0) {
+            // Moved to start
             if (liveTabsInOrder.length > 1) {
+                // Try to find the logical tab of the *next* live tab to put this one before it
                 const nextLiveTab = liveTabsInOrder[1];
                 const nextLogicalId = state.tabToLogical[nextLiveTab.id];
                 const nextLogical = session.logicalTabs.find(l => l.logicalId === nextLogicalId);
                 
                 if (nextLogical) {
-                     const logical = session.logicalTabs.find(l => l.logicalId === logicalId);
-                     await chrome.bookmarks.move(logical.bookmarkId, { index: 0 }); 
+                     // Move to the same parent as nextLogical, index 0 (or before nextLogical)
+                     // Wait, if nextLogical is in a group?
+                     // We should probably check nextLogical's bookmark parent.
+                     const nodes = await chrome.bookmarks.get(nextLogical.bookmarkId);
+                     if (nodes && nodes.length > 0) {
+                         await chrome.bookmarks.move(logical.bookmarkId, { parentId: nodes[0].parentId, index: 0 });
+                     }
+                } else {
+                    // If next tab isn't logical, maybe just move to index 0 of session root?
+                    await chrome.bookmarks.move(logical.bookmarkId, { parentId: sessionId, index: 0 });
                 }
             }
         } else {
+            // Moved after someone
             const prevLiveTab = liveTabsInOrder[movedTabIndex - 1];
             const prevLogicalId = state.tabToLogical[prevLiveTab.id];
             const prevLogical = session.logicalTabs.find(l => l.logicalId === prevLogicalId);
-            const logical = session.logicalTabs.find(l => l.logicalId === logicalId);
             
-            if (prevLogical && logical) {
+            if (prevLogical) {
                 const nodes = await chrome.bookmarks.get(prevLogical.bookmarkId);
                 if (nodes && nodes.length > 0) {
-                    const prevIndex = nodes[0].index;
-                    await chrome.bookmarks.move(logical.bookmarkId, { index: prevIndex + 1 });
+                    const prevNode = nodes[0];
+                    // Move to be directly after the previous logical tab
+                    // This satisfies: "Left of the logical tab that corresponds to the live tab on the Right"
+                    // (which is equivalent to Right of Left)
+                    await chrome.bookmarks.move(logical.bookmarkId, { parentId: prevNode.parentId, index: prevNode.index + 1 });
                 }
             }
         }
@@ -561,9 +591,8 @@ chrome.tabs.onMoved.addListener(async (tabId, moveInfo) => {
         const reloadedSession = await loadSessionFromBookmarks(sessionId);
         reloadedSession.windowId = windowId;
         
-        // CRITICAL: Fetch the *latest* state from memory to merge liveTabIds.
+        // Merge liveTabIds
         const latestSessionState = state.sessionsById[sessionId] || session;
-
         reloadedSession.logicalTabs.forEach(l => {
              const oldL = latestSessionState.logicalTabs.find(old => old.bookmarkId === l.bookmarkId);
              if (oldL) l.liveTabIds = oldL.liveTabIds;
@@ -643,6 +672,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
                 case "DELETE_LOGICAL_TAB": {
                     await handleDeleteLogicalTab(message.windowId, message.logicalId);
+                    sendResponse({ success: true });
+                    break;
+                }
+                case "MOVE_LOGICAL_TABS": {
+                    await handleMoveLogicalTabs(
+                        message.windowId,
+                        message.logicalIds,
+                        message.targetLogicalId,
+                        message.position
+                    );
                     sendResponse({ success: true });
                     break;
                 }
@@ -788,6 +827,110 @@ async function handleDeleteLogicalTab(windowId, logicalId) {
         });
     }
     
+    notifySidebarStateUpdated(windowId, sessionId);
+}
+
+async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, position) {
+    const sessionId = state.windowToSession[windowId];
+    if (!sessionId) return;
+    const session = state.sessionsById[sessionId];
+    if (!session) return;
+
+    // Validate target
+    // targetLogicalId might be a logicalTabId OR a groupId (string)
+    // We need to resolve to a bookmark node.
+    let targetBookmarkId = null;
+    let targetIsGroup = false;
+
+    // Check if target is a group in the session
+    if (session.groups[targetLogicalId]) {
+        targetBookmarkId = targetLogicalId; // GroupId is the bookmark ID for the folder
+        targetIsGroup = true;
+    } else {
+        const targetLogical = session.logicalTabs.find(l => l.logicalId === targetLogicalId);
+        if (targetLogical) {
+            targetBookmarkId = targetLogical.bookmarkId;
+        } else {
+             // Maybe target is the session itself?
+             if (targetLogicalId === sessionId) {
+                 targetBookmarkId = sessionId;
+                 targetIsGroup = true;
+             }
+        }
+    }
+
+    if (!targetBookmarkId) return;
+
+    // Collect bookmark IDs to move
+    const bookmarksToMove = [];
+    for (const lid of logicalIds) {
+        const l = session.logicalTabs.find(t => t.logicalId === lid);
+        if (l) {
+            bookmarksToMove.push(l.bookmarkId);
+        } else {
+             // Could be a group move? Not implemented in UI yet but good to be safe
+             // For now assume only tabs.
+        }
+    }
+
+    if (bookmarksToMove.length === 0) return;
+
+    // Determine destination parent and index
+    let parentId, index;
+
+    if (position === 'inside') {
+        // Must be a folder/group
+        parentId = targetBookmarkId;
+        // Append to end
+        // Getting children count is async
+        const children = await chrome.bookmarks.getChildren(parentId);
+        index = children.length;
+    } else {
+        // 'before' or 'after' relative to target
+        const targetNodes = await chrome.bookmarks.get(targetBookmarkId);
+        if (!targetNodes || targetNodes.length === 0) return;
+        const targetNode = targetNodes[0];
+        parentId = targetNode.parentId;
+
+        if (position === 'before') {
+            index = targetNode.index;
+        } else {
+            index = targetNode.index + 1;
+        }
+    }
+
+    // Execute moves sequentially
+    // Note: When moving multiple items to the same index, we need to increment the index
+    // for each subsequent item IF we want them in order A, B, C at position X.
+    // X -> A, X+1 -> B, ...
+
+    // However, if we move A then B.
+    // Move A to X.
+    // Move B to X+1.
+    // This assumes B wasn't already before A, shifting indices.
+
+    // chrome.bookmarks.move handles re-indexing, but we must be careful.
+    // Safest strategy: Move them one by one to the calculated target index.
+    // If we insert A at X. The old item at X becomes X+1.
+    // If we then insert B at X+1. It goes after A.
+
+    for (let i = 0; i < bookmarksToMove.length; i++) {
+        const bid = bookmarksToMove[i];
+        await chrome.bookmarks.move(bid, { parentId: parentId, index: index + i });
+    }
+
+    // Update state
+    const reloadedSession = await loadSessionFromBookmarks(sessionId);
+    reloadedSession.windowId = windowId;
+
+    // Restore liveTabIds
+    const latestSessionState = state.sessionsById[sessionId] || session;
+    reloadedSession.logicalTabs.forEach(l => {
+         const oldL = latestSessionState.logicalTabs.find(old => old.bookmarkId === l.bookmarkId);
+         if (oldL) l.liveTabIds = oldL.liveTabIds;
+    });
+
+    state.sessionsById[sessionId] = reloadedSession;
     notifySidebarStateUpdated(windowId, sessionId);
 }
 
