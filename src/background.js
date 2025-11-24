@@ -20,14 +20,25 @@ function generateGuid() {
 
 // Debounce helper
 const bookmarkUpdateTimers = {}; // logicalId -> timerId
+let sidebarUpdateTimer = null;
 
-function scheduleBookmarkUpdate(logicalId, updateFn, delay = 1000) {
+function scheduleBookmarkUpdate(logicalId, updateFn, delay = 2000) {
     if (bookmarkUpdateTimers[logicalId]) {
         clearTimeout(bookmarkUpdateTimers[logicalId]);
     }
     bookmarkUpdateTimers[logicalId] = setTimeout(() => {
         delete bookmarkUpdateTimers[logicalId];
         updateFn();
+    }, delay);
+}
+
+function scheduleSidebarUpdate(windowId, sessionId, delay = 200) {
+    if (sidebarUpdateTimer) {
+        clearTimeout(sidebarUpdateTimer);
+    }
+    sidebarUpdateTimer = setTimeout(() => {
+        sidebarUpdateTimer = null;
+        notifySidebarStateUpdated(windowId, sessionId);
     }, delay);
 }
 
@@ -76,7 +87,9 @@ async function loadSessionFromBookmarks(sessionId) {
         groupId: null,
         indexInSession: index++,
         liveTabIds: [],
-        lastUpdated: Date.now()
+        lastUpdated: Date.now(),
+        lastSavedTitle: child.title,
+        lastSavedUrl: child.url
       });
     } else {
       // Folder = Tab Group
@@ -103,7 +116,9 @@ async function loadSessionFromBookmarks(sessionId) {
           indexInSession: index++, // Flattened session order
           indexInGroup: j,
           liveTabIds: [],
-          lastUpdated: Date.now()
+          lastUpdated: Date.now(),
+          lastSavedTitle: gChild.title,
+          lastSavedUrl: gChild.url
         });
       }
     }
@@ -230,7 +245,9 @@ async function syncExistingTabsInWindowToSession(windowId, sessionId) {
         groupId: null,
         indexInSession: session.logicalTabs.length, // Append
         liveTabIds: [],
-        lastUpdated: Date.now()
+        lastUpdated: Date.now(),
+        lastSavedTitle: tab.title || "New Tab",
+        lastSavedUrl: tab.url || "about:blank"
       };
       
       session.logicalTabs.push(logical);
@@ -338,8 +355,10 @@ chrome.tabs.onCreated.addListener(async (tab) => {
   const sessionId = state.windowToSession[windowId];
   if (!sessionId) return; 
 
-  const session = state.sessionsById[sessionId];
-  if (!session) return;
+  // Note: We use current state snapshot to calculate insertion, 
+  // but we must re-fetch state later to merge correctly.
+  const currentSessionSnapshot = state.sessionsById[sessionId];
+  if (!currentSessionSnapshot) return;
 
   let insertParentId = sessionId;
   let insertIndex = null;
@@ -350,7 +369,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
           const prevTab = tabs[0];
           const prevLogicalId = state.tabToLogical[prevTab.id];
           if (prevLogicalId) {
-              const prevLogical = session.logicalTabs.find(l => l.logicalId === prevLogicalId);
+              const prevLogical = currentSessionSnapshot.logicalTabs.find(l => l.logicalId === prevLogicalId);
               if (prevLogical) {
                   try {
                       const nodes = await chrome.bookmarks.get(prevLogical.bookmarkId);
@@ -377,11 +396,16 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 
   const createdBookmark = await chrome.bookmarks.create(bookmarkData);
 
+  // Reload session structure
   const reloadedSession = await loadSessionFromBookmarks(sessionId);
   reloadedSession.windowId = windowId;
   
+  // CRITICAL: Fetch the *latest* state from memory to merge liveTabIds.
+  // Do NOT use currentSessionSnapshot as it might be stale if other events fired concurrently.
+  const latestSessionState = state.sessionsById[sessionId] || currentSessionSnapshot;
+
   reloadedSession.logicalTabs.forEach(newLt => {
-      const oldLt = session.logicalTabs.find(old => old.bookmarkId === newLt.bookmarkId);
+      const oldLt = latestSessionState.logicalTabs.find(old => old.bookmarkId === newLt.bookmarkId);
       if (oldLt) {
           newLt.liveTabIds = oldLt.liveTabIds;
       }
@@ -398,6 +422,9 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (!state.initialized) await init();
+
+  // Optimization: Ignore loading state if title/url didn't change to avoid spamming the sidebar
+  if (changeInfo.status === 'loading' && !changeInfo.url && !changeInfo.title) return;
 
   const logicalId = state.tabToLogical[tabId];
   if (!logicalId) return;
@@ -425,14 +452,22 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       
       // Debounce bookmark update
       scheduleBookmarkUpdate(logicalId, () => {
+          // Double check if we really need to update bookmark
+          if (logical.title === logical.lastSavedTitle && logical.url === logical.lastSavedUrl) {
+              return;
+          }
+
           chrome.bookmarks.update(logical.bookmarkId, {
               title: logical.title,
               url: logical.url
+          }).then(() => {
+              logical.lastSavedTitle = logical.title;
+              logical.lastSavedUrl = logical.url;
           }).catch(err => console.error("Failed to update bookmark", err));
-      }, 1500);
+      }, 2000); // 2s debounce to avoid rapid updates causing side effects
       
-      // Notify sidebar immediately for UI responsiveness
-      notifySidebarStateUpdated(windowId, sessionId);
+      // Debounce sidebar update for onUpdated events to prevent thrashing
+      scheduleSidebarUpdate(windowId, sessionId);
   }
 });
 
@@ -522,10 +557,15 @@ chrome.tabs.onMoved.addListener(async (tabId, moveInfo) => {
             }
         }
 
+        // Reload session structure
         const reloadedSession = await loadSessionFromBookmarks(sessionId);
         reloadedSession.windowId = windowId;
+        
+        // CRITICAL: Fetch the *latest* state from memory to merge liveTabIds.
+        const latestSessionState = state.sessionsById[sessionId] || session;
+
         reloadedSession.logicalTabs.forEach(l => {
-             const oldL = session.logicalTabs.find(old => old.bookmarkId === l.bookmarkId);
+             const oldL = latestSessionState.logicalTabs.find(old => old.bookmarkId === l.bookmarkId);
              if (oldL) l.liveTabIds = oldL.liveTabIds;
         });
         state.sessionsById[sessionId] = reloadedSession;
@@ -777,4 +817,3 @@ async function handleUnmountAllExcept(windowId, logicalIdsToKeep) {
     
     notifySidebarStateUpdated(windowId, sessionId);
 }
-

@@ -17,6 +17,7 @@ let currentWindowId = null;
 let isDarkMode = false;
 let currentMatches = [];
 let currentMatchIndex = -1;
+let lastScrolledActiveId = null;
 
 // --- Initialization ---
 
@@ -145,10 +146,53 @@ async function onUnmountOthers() {
   }
 }
 
+// Helper for deep comparison simplified for our session objects
+function haveTabsChanged(s1, s2) {
+    if (!s1 || !s2) return true;
+    if (s1.sessionId !== s2.sessionId) return true;
+    if (s1.lastActiveLogicalTabId !== s2.lastActiveLogicalTabId) return true;
+    
+    if (s1.logicalTabs.length !== s2.logicalTabs.length) return true;
+    
+    // Check tabs
+    for (let i = 0; i < s1.logicalTabs.length; i++) {
+        const t1 = s1.logicalTabs[i];
+        const t2 = s2.logicalTabs[i];
+        if (t1.logicalId !== t2.logicalId) return true;
+        if (t1.title !== t2.title) return true;
+        if (t1.url !== t2.url) return true;
+        if (t1.liveTabIds.length !== t2.liveTabIds.length) return true;
+        if (t1.groupId !== t2.groupId) return true;
+    }
+    
+    // Check groups
+    const g1Keys = Object.keys(s1.groups);
+    const g2Keys = Object.keys(s2.groups);
+    if (g1Keys.length !== g2Keys.length) return true;
+    
+    for (const k of g1Keys) {
+        const g1 = s1.groups[k];
+        const g2 = s2.groups[k];
+        if (!g2) return true;
+        if (g1.title !== g2.title) return true;
+    }
+    
+    return false;
+}
+
 function onMessage(message, sender, sendResponse) {
   if (message.type === "STATE_UPDATED") {
     if (message.windowId === currentWindowId) {
-      currentSession = message.session;
+      const newSession = message.session;
+      
+      // Check if update is necessary
+      if (!haveTabsChanged(currentSession, newSession)) {
+          currentSession = newSession; // Update reference but don't render
+          return;
+      }
+
+      currentSession = newSession;
+      
       // Update selector if needed (e.g. if name changed or just bound)
       if (sessionSelector.value !== currentSession.sessionId) {
           // It might be a new session not in our list yet?
@@ -281,104 +325,116 @@ function onKeyDown(e) {
 // --- Rendering ---
 
 function renderSession(session) {
-  tabsContainer.innerHTML = '';
-  
   if (!session.logicalTabs || session.logicalTabs.length === 0) {
     tabsContainer.innerHTML = '<div style="padding:10px; color:#888;">Empty Session</div>';
     return;
   }
 
-  // Group handling: 
-  // The logicalTabs list is flat but has groupId.
-  // We need to insert group headers.
-  
-  // We can just iterate the flat list. 
-  // But since the flat list is sorted by `indexInSession`, we need to detect when we enter a new group.
-  // Actually, the spec says "Tab Groups are stored as bookmark subfolders".
-  // `indexInSession` interleaves top-level items and groups. 
-  // Wait, my background logic flattened everything into `logicalTabs`.
-  // But `groups` dictionary exists.
-  
-  // We need to reconstruct the render order.
-  // The `logicalTabs` array is already sorted by `indexInSession`.
-  // However, `indexInSession` was incremented for groups AND tabs.
-  // But `logicalTabs` only contains TABS.
-  // So we might have gaps in `indexInSession` where the Group Folder itself was.
-  
-  // Actually, my `loadSessionFromBookmarks` logic:
-  // - Top level bookmark: index++
-  // - Top level folder (Group): index++ (for the group itself), then children bookmarks: index++
-  
-  // So we can iterate through the expected indices or just iterate logicalTabs and check group transitions?
-  // No, if we have:
-  // Tab 1 (idx 0)
-  // Group A (idx 1) -> Tab A1 (idx 2), Tab A2 (idx 3)
-  // Tab 2 (idx 4)
-  
-  // `logicalTabs` will contain: Tab 1, Tab A1, Tab A2, Tab 2.
-  // We need to inject "Group A" header between Tab 1 and Tab A1.
-  
-  // Better approach: Reconstruct a tree or list with group headers.
-  // We can look at `session.groups`.
-  
+  // Determine if we need to scroll
+  let shouldScroll = false;
+  if (session.lastActiveLogicalTabId !== lastScrolledActiveId) {
+      shouldScroll = true;
+      lastScrolledActiveId = session.lastActiveLogicalTabId;
+  }
+
   const itemsToRender = [];
   
-  // Add tabs
   session.logicalTabs.forEach(tab => {
-    itemsToRender.push({ type: 'tab', data: tab, index: tab.indexInSession });
+    itemsToRender.push({ type: 'tab', id: tab.logicalId, data: tab, index: tab.indexInSession });
   });
   
-  // Add groups headers
   Object.values(session.groups).forEach(group => {
-    itemsToRender.push({ type: 'group', data: group, index: group.indexInSession });
+    itemsToRender.push({ type: 'group', id: group.groupId, data: group, index: group.indexInSession });
   });
   
-  // Sort by index
   itemsToRender.sort((a, b) => a.index - b.index);
   
-  // Render
-  itemsToRender.forEach(item => {
-    if (item.type === 'group') {
-      const groupEl = document.createElement('div');
-      groupEl.className = 'group-header';
-      groupEl.textContent = item.data.title;
-      tabsContainer.appendChild(groupEl);
-    } else {
-      renderTab(item.data, session);
-    }
+  // Diff and patch DOM
+  const currentChildren = Array.from(tabsContainer.children);
+  
+  // If length mismatch or major structural change, simpler to clear if the list size changed significantly?
+  // For robustness, let's iterate and match.
+  
+  // Remove excess children
+  while (currentChildren.length > itemsToRender.length) {
+      tabsContainer.removeChild(tabsContainer.lastChild);
+      currentChildren.pop();
+  }
+  
+  itemsToRender.forEach((item, i) => {
+      let el = currentChildren[i];
+      
+      // Check if element exists and matches type/ID
+      if (el && el.dataset.id === item.id && el.dataset.type === item.type) {
+          // Update existing
+          if (item.type === 'group') {
+              updateGroupElement(el, item.data);
+          } else {
+              updateTabElement(el, item.data, session, shouldScroll);
+          }
+      } else {
+          // Create new
+          let newEl;
+          if (item.type === 'group') {
+              newEl = createGroupElement(item.data);
+          } else {
+              newEl = createTabElement(item.data, session, shouldScroll);
+          }
+          
+          if (el) {
+              tabsContainer.replaceChild(newEl, el);
+              currentChildren[i] = newEl; // Update reference if needed
+          } else {
+              tabsContainer.appendChild(newEl);
+          }
+      }
   });
 }
 
-function renderTab(tab, session) {
-  const el = document.createElement('div');
-  const isLive = tab.liveTabIds.length > 0;
-  const isActive = session.lastActiveLogicalTabId === tab.logicalId;
-  
-  let className = 'tab-item';
-  if (tab.groupId) className += ' indented';
-  if (isLive) className += ' live';
-  if (isActive) className += ' active-live';
-  else className += ' logical';
-  
-  el.className = className;
-  el.title = tab.url; // Tooltip
-  
-  const faviconUrl = chrome.runtime.getURL("/_favicon/") + "?pageUrl=" + encodeURIComponent(tab.url) + "&size=16";
-  
-  el.innerHTML = `
-    <span class="live-indicator"></span>
-    <img class="tab-icon" src="${faviconUrl}" />
-    <span class="tab-title">${escapeHtml(tab.title)}</span>
-  `;
+function createGroupElement(group) {
+    const el = document.createElement('div');
+    el.className = 'group-header';
+    el.dataset.id = group.groupId;
+    el.dataset.type = 'group';
+    updateGroupElement(el, group);
+    return el;
+}
 
-  // Delete Button
-  const deleteBtn = document.createElement('button');
-  deleteBtn.className = 'tab-delete-btn';
-  deleteBtn.textContent = '×';
-  deleteBtn.title = 'Delete logical tab and bookmark';
-  deleteBtn.addEventListener('click', (e) => {
-      e.stopPropagation(); // Prevent tab selection
-      
+function updateGroupElement(el, group) {
+    if (el.textContent !== group.title) {
+        el.textContent = group.title;
+    }
+}
+
+function createTabElement(tab, session, shouldScroll) {
+    const el = document.createElement('div');
+    el.dataset.id = tab.logicalId;
+    el.dataset.type = 'tab';
+    
+    // Structure
+    // <span class="live-indicator"></span>
+    // <img class="tab-icon" src="...">
+    // <span class="tab-title">...</span>
+    // <button class="tab-delete-btn">x</button>
+    
+    const indicator = document.createElement('span');
+    indicator.className = 'live-indicator';
+    el.appendChild(indicator);
+    
+    const icon = document.createElement('img');
+    icon.className = 'tab-icon';
+    el.appendChild(icon);
+    
+    const title = document.createElement('span');
+    title.className = 'tab-title';
+    el.appendChild(title);
+    
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'tab-delete-btn';
+    deleteBtn.textContent = '×';
+    deleteBtn.title = 'Delete logical tab and bookmark';
+    deleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation(); 
       chrome.storage.local.get({ confirmDeleteLogicalTab: true }, (items) => {
           const shouldConfirm = items.confirmDeleteLogicalTab;
           if (!shouldConfirm || confirm("Delete this logical tab (bookmark)?")) {
@@ -389,21 +445,63 @@ function renderTab(tab, session) {
               });
           }
       });
-  });
-  el.appendChild(deleteBtn);
-  
-  el.addEventListener('click', () => {
-    chrome.runtime.sendMessage({
-      type: "FOCUS_OR_MOUNT_TAB",
-      windowId: currentWindowId,
-      logicalId: tab.logicalId
     });
-  });
-  
-  tabsContainer.appendChild(el);
+    el.appendChild(deleteBtn);
+    
+    el.addEventListener('click', () => {
+        chrome.runtime.sendMessage({
+          type: "FOCUS_OR_MOUNT_TAB",
+          windowId: currentWindowId,
+          logicalId: tab.logicalId
+        });
+    });
+    
+    updateTabElement(el, tab, session, shouldScroll);
+    return el;
+}
 
-  if (isActive) {
-      setTimeout(() => {
+function updateTabElement(el, tab, session, shouldScroll) {
+    const isLive = tab.liveTabIds.length > 0;
+    const isActive = session.lastActiveLogicalTabId === tab.logicalId;
+    
+    // Classes
+    let className = 'tab-item';
+    if (tab.groupId) className += ' indented';
+    if (isLive) className += ' live';
+    if (isActive) className += ' active-live';
+    else className += ' logical';
+    
+    // Preserve search match if present (handled by performSearch, but we might be overwriting classes)
+    // Ideally search should re-run or we preserve the class.
+    // Since performSearch runs after render if input exists, it will fix it.
+    
+    if (el.className !== className) {
+        // We might lose 'search-match' here.
+        // Let's verify if we need to re-add search classes.
+        // Actually `renderSession` is called on update. 
+        // If we overwrite className, we lose search highlights until `performSearch` runs again.
+        // `onMessage` calls `renderSession` then `performSearch`. So it's fine.
+        el.className = className;
+    }
+    
+    // Tooltip
+    if (el.title !== tab.url) el.title = tab.url;
+    
+    // Content
+    const icon = el.querySelector('.tab-icon');
+    const title = el.querySelector('.tab-title');
+    
+    const faviconUrl = chrome.runtime.getURL("/_favicon/") + "?pageUrl=" + encodeURIComponent(tab.url) + "&size=16";
+    if (icon.src !== faviconUrl) icon.src = faviconUrl;
+    
+    if (title.textContent !== tab.title) title.textContent = tab.title;
+    
+    // Scroll
+    if (isActive && shouldScroll) {
+      window.requestAnimationFrame(() => {
+          // Check if element is still connected before scrolling
+          if (!el.isConnected) return;
+          
           let target = el;
           if (target.previousElementSibling) {
               target = target.previousElementSibling;
@@ -412,8 +510,8 @@ function renderTab(tab, session) {
               }
           }
           target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 0);
-  }
+      });
+    }
 }
 
 function escapeHtml(text) {
