@@ -9,6 +9,7 @@ const state = {
   sessionsById: {},     // Record<SessionId, Session>
   windowToSession: {},  // Record<WindowId, SessionId>
   tabToLogical: {},     // Record<TabId, LogicalTabId>
+  ignoreMoveEventsForTabIds: new Set(), // Set<TabId>
   initialized: false
 };
 
@@ -551,6 +552,11 @@ chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
     moveMutex.run(async () => {
         if (!state.initialized) await init();
 
+        if (state.ignoreMoveEventsForTabIds.has(tabId)) {
+            state.ignoreMoveEventsForTabIds.delete(tabId);
+            return;
+        }
+
         const logicalId = state.tabToLogical[tabId];
         if (!logicalId) return;
 
@@ -999,10 +1005,20 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
             // If it is X, move to X + 1.
             const targetIndex = liveAnchorIndex + 1;
 
+            // Add to ignore set to prevent echo
+            liveTabsToMove.forEach(tid => state.ignoreMoveEventsForTabIds.add(tid));
+
+            // Safety: clear after 2 seconds
+            setTimeout(() => {
+                liveTabsToMove.forEach(tid => state.ignoreMoveEventsForTabIds.delete(tid));
+            }, 2000);
+
             try {
                 await chrome.tabs.move(liveTabsToMove, { index: targetIndex });
             } catch (e) {
                 console.warn("Failed to sync live tabs", e);
+                // Cleanup on error
+                liveTabsToMove.forEach(tid => state.ignoreMoveEventsForTabIds.delete(tid));
             }
         }
     }
