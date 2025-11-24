@@ -956,9 +956,10 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
     // We can move them as a block if we find the anchor for the block.
 
     // Let's assume block move for simplicity and robustness.
-    // Find the first moved logical tab in the new session.
-    const firstMovedLogicalId = logicalIds[0];
-    const newIndex = reloadedSession.logicalTabs.findIndex(l => l.logicalId === firstMovedLogicalId);
+    // Find the first moved logical tab in the new session using the immutable bookmark ID.
+    // logicalIds contains OLD IDs. reloadedSession has NEW IDs.
+    const firstMovedBookmarkId = bookmarksToMove[0];
+    const newIndex = reloadedSession.logicalTabs.findIndex(l => l.bookmarkId === firstMovedBookmarkId);
 
     if (newIndex !== -1) {
         let liveAnchorIndex = -1;
@@ -977,28 +978,19 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
         }
 
         // Collect live tab IDs to move
+        // Use bookmark IDs to identify the moved tabs in the new session
         const liveTabsToMove = [];
-        // We iterate through the logicalIds in the order they appear in the *new* session (to maintain order)
-        // Check if all moved ids are contiguous?
-        // We just iterate through the session starting from newIndex and check if it's one of ours.
-        // Or simply map logicalIds to their new live tabs.
-
-        // Actually, we should respect the order in `logicalIds` if the user dragged a selection.
-        // But `reloadedSession` has the truth.
-        // Let's iterate `reloadedSession` from `newIndex` to find our moved tabs.
 
         for (let i = newIndex; i < reloadedSession.logicalTabs.length; i++) {
             const l = reloadedSession.logicalTabs[i];
-            if (logicalIds.includes(l.logicalId)) {
+            // Check if this logical tab corresponds to one of the moved bookmarks
+            if (bookmarksToMove.includes(l.bookmarkId)) {
                 liveTabsToMove.push(...l.liveTabIds);
-            } else {
-                // If we encounter a tab that wasn't moved, we stop?
-                // No, maybe we moved A and C (discontiguous)?
-                // The UI usually supports dragging a contiguous selection or gathers them.
-                // If discontiguous, `handleMoveLogicalTabs` moved them sequentially.
-                // `handleMoveLogicalTabs` iterated `logicalIds` and moved them to `index + i`.
-                // So they should be contiguous in the bookmark tree now.
             }
+            // Stop if we hit a tab that wasn't moved?
+            // In a drag operation of multiple items, they are inserted contiguously.
+            // If we have disjoint selection A, C moved to X. They become X, X+1.
+            // So iterating from newIndex should find them all sequentially.
         }
 
         if (liveTabsToMove.length > 0) {
