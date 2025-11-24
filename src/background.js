@@ -9,7 +9,8 @@ const state = {
   sessionsById: {},     // Record<SessionId, Session>
   windowToSession: {},  // Record<WindowId, SessionId>
   tabToLogical: {},     // Record<TabId, LogicalTabId>
-  initialized: false
+  initialized: false,
+  ignoringTabMoves: new Set() // Set<TabId>
 };
 
 // --- Helper Functions ---
@@ -516,6 +517,11 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
 });
 
 chrome.tabs.onMoved.addListener(async (tabId, moveInfo) => {
+    if (state.ignoringTabMoves.has(tabId)) {
+        state.ignoringTabMoves.delete(tabId);
+        return;
+    }
+
     if (!state.initialized) await init();
 
     const logicalId = state.tabToLogical[tabId];
@@ -846,12 +852,24 @@ async function handleMoveLogicalTab(windowId, logicalId, targetLogicalId, positi
             }
         }
 
+        // Use ignoringTabMoves to prevent feedback loop where the live tab move
+        // triggers onMoved which then tries to re-sync the bookmark position.
+        state.ignoringTabMoves.add(liveTabId);
+
+        // Fallback cleanup in case onMoved doesn't fire (e.g. same index)
+        setTimeout(() => {
+            if (state.ignoringTabMoves.has(liveTabId)) {
+                state.ignoringTabMoves.delete(liveTabId);
+            }
+        }, 1000);
+
         if (prevLiveTabInfo) {
             try {
                 const prevLiveTab = await chrome.tabs.get(prevLiveTabInfo.liveTabId);
                 await chrome.tabs.move(liveTabId, { index: prevLiveTab.index + 1 });
             } catch (e) {
                 console.warn("Failed to move live tab (after prev)", e);
+                state.ignoringTabMoves.delete(liveTabId);
             }
         } else {
             // No previous live tab -> Move to start of window?
@@ -860,6 +878,7 @@ async function handleMoveLogicalTab(windowId, logicalId, targetLogicalId, positi
                 await chrome.tabs.move(liveTabId, { index: 0 });
             } catch (e) {
                 console.warn("Failed to move live tab (start)", e);
+                state.ignoringTabMoves.delete(liveTabId);
             }
         }
     }
