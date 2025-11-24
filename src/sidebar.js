@@ -322,6 +322,72 @@ function onKeyDown(e) {
     }
 }
 
+// --- Drag and Drop ---
+
+let dragSourceId = null;
+
+function onDragStart(e) {
+  dragSourceId = e.currentTarget.dataset.id;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', dragSourceId);
+  e.currentTarget.classList.add('dragging');
+}
+
+function onDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  return false;
+}
+
+function onDragEnter(e) {
+  e.currentTarget.classList.add('drag-over');
+}
+
+function onDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over');
+}
+
+async function onDrop(e) {
+  e.stopPropagation();
+  e.preventDefault();
+
+  const targetEl = e.currentTarget;
+  targetEl.classList.remove('drag-over');
+
+  const sourceId = dragSourceId;
+  const targetId = targetEl.dataset.id;
+
+  // Clean up
+  const sourceEl = document.querySelector(`.tab-item[data-id="${sourceId}"]`);
+  if (sourceEl) sourceEl.classList.remove('dragging');
+
+  if (sourceId === targetId) return;
+
+  // Calculate index
+  // Note: We need to know if we dropped before or after.
+  // Simple heuristic: If dropping on the bottom half, insert after. Top half, insert before.
+  const rect = targetEl.getBoundingClientRect();
+  const relY = e.clientY - rect.top;
+  const height = rect.height;
+
+  let indexModifier = 0; // 0 = before, 1 = after
+  if (relY > height / 2) {
+      indexModifier = 1;
+  }
+
+  // We need to find the target logical tab to get its bookmark index/parent
+  // We can't easily get the bookmark index from UI alone without the session object.
+  // So we send the target logicalId and the modifier to the background.
+
+  await chrome.runtime.sendMessage({
+      type: "MOVE_LOGICAL_TAB",
+      windowId: currentWindowId,
+      logicalId: sourceId,
+      targetLogicalId: targetId,
+      position: indexModifier === 0 ? "before" : "after"
+  });
+}
+
 // --- Rendering ---
 
 function renderSession(session) {
@@ -411,6 +477,14 @@ function createTabElement(tab, session, shouldScroll) {
     el.dataset.id = tab.logicalId;
     el.dataset.type = 'tab';
     
+    // Drag and Drop
+    el.draggable = true;
+    el.addEventListener('dragstart', onDragStart);
+    el.addEventListener('dragover', onDragOver);
+    el.addEventListener('drop', onDrop);
+    el.addEventListener('dragenter', onDragEnter);
+    el.addEventListener('dragleave', onDragLeave);
+
     // Structure
     // <span class="live-indicator"></span>
     // <img class="tab-icon" src="...">
