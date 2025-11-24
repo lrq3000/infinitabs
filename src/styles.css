@@ -265,6 +265,40 @@ body.dark-mode .tab-delete-btn:hover {
   outline-offset: -2px;
 }
 
+/* Drag and Drop & Selection Styles */
+.tab-item.selected {
+  background-color: #dbeafe; /* Light blue */
+  border-left-color: #3b82f6;
+}
+
+body.dark-mode .tab-item.selected {
+  background-color: #1e3a8a; /* Dark blue */
+  border-left-color: #60a5fa;
+}
+
+.tab-item.dragging, .group-header.dragging {
+  opacity: 0.5;
+  background-color: #f0f0f0;
+}
+
+body.dark-mode .tab-item.dragging, body.dark-mode .group-header.dragging {
+  background-color: #333;
+}
+
+.drop-before {
+  border-top: 2px solid #1890ff;
+}
+
+.drop-after {
+  border-bottom: 2px solid #1890ff;
+}
+
+.drop-inside {
+  outline: 2px dashed #1890ff;
+  outline-offset: -2px;
+  background-color: rgba(24, 144, 255, 0.1);
+}
+
 
 .tab-icon {
   width: 16px;
