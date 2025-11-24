@@ -202,6 +202,42 @@ async function bindWindowToSession(windowId, sessionId) {
   notifySidebarStateUpdated(windowId, sessionId);
 }
 
+async function reloadSessionAndPreserveState(sessionId, windowId) {
+    const reloadedSession = await loadSessionFromBookmarks(sessionId);
+    reloadedSession.windowId = windowId;
+
+    // Retrieve latest session state to preserve liveTabIds
+    const latestSessionState = state.sessionsById[sessionId];
+
+    if (latestSessionState) {
+        // Map old Logical IDs to new Logical IDs using Bookmark ID as the key
+        const oldIdToNewId = {};
+        reloadedSession.logicalTabs.forEach(newLt => {
+            const oldLt = latestSessionState.logicalTabs.find(old => old.bookmarkId === newLt.bookmarkId);
+            if (oldLt) {
+                newLt.liveTabIds = oldLt.liveTabIds;
+                oldIdToNewId[oldLt.logicalId] = newLt.logicalId;
+
+                // Update Global State Mapping (Tab -> New Logical ID)
+                newLt.liveTabIds.forEach(tid => {
+                    state.tabToLogical[tid] = newLt.logicalId;
+                });
+            }
+        });
+
+        // Preserve Active Tab State
+        if (latestSessionState.lastActiveLogicalTabId) {
+             const newActiveId = oldIdToNewId[latestSessionState.lastActiveLogicalTabId];
+             if (newActiveId) {
+                 reloadedSession.lastActiveLogicalTabId = newActiveId;
+             }
+        }
+    }
+
+    state.sessionsById[sessionId] = reloadedSession;
+    return reloadedSession;
+}
+
 /**
  * Tries to map current live tabs in the window to the session's logical tabs.
  * Creates new logical tabs (bookmarks) for unmapped live tabs.
@@ -396,27 +432,14 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 
   const createdBookmark = await chrome.bookmarks.create(bookmarkData);
 
-  // Reload session structure
-  const reloadedSession = await loadSessionFromBookmarks(sessionId);
-  reloadedSession.windowId = windowId;
-  
-  // CRITICAL: Fetch the *latest* state from memory to merge liveTabIds.
-  // Do NOT use currentSessionSnapshot as it might be stale if other events fired concurrently.
-  const latestSessionState = state.sessionsById[sessionId] || currentSessionSnapshot;
-
-  reloadedSession.logicalTabs.forEach(newLt => {
-      const oldLt = latestSessionState.logicalTabs.find(old => old.bookmarkId === newLt.bookmarkId);
-      if (oldLt) {
-          newLt.liveTabIds = oldLt.liveTabIds;
-      }
-  });
+  // Reload session structure using helper
+  const reloadedSession = await reloadSessionAndPreserveState(sessionId, windowId);
   
   const newLogical = reloadedSession.logicalTabs.find(l => l.bookmarkId === createdBookmark.id);
   if (newLogical) {
       attachLiveTabToLogical(tab, newLogical);
   }
 
-  state.sessionsById[sessionId] = reloadedSession;
   notifySidebarStateUpdated(windowId, sessionId);
 });
 
@@ -595,17 +618,8 @@ chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
             }
         }
 
-        // Reload session structure
-        const reloadedSession = await loadSessionFromBookmarks(sessionId);
-        reloadedSession.windowId = windowId;
-        
-        // Merge liveTabIds
-        const latestSessionState = state.sessionsById[sessionId] || session;
-        reloadedSession.logicalTabs.forEach(l => {
-             const oldL = latestSessionState.logicalTabs.find(old => old.bookmarkId === l.bookmarkId);
-             if (oldL) l.liveTabIds = oldL.liveTabIds;
-        });
-        state.sessionsById[sessionId] = reloadedSession;
+        // Reload session structure using helper
+        await reloadSessionAndPreserveState(sessionId, windowId);
         notifySidebarStateUpdated(windowId, sessionId);
     });
 });
@@ -927,18 +941,8 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
         await chrome.bookmarks.move(bid, { parentId: parentId, index: index + i });
     }
 
-    // Update state
-    const reloadedSession = await loadSessionFromBookmarks(sessionId);
-    reloadedSession.windowId = windowId;
-
-    // Restore liveTabIds
-    const latestSessionState = state.sessionsById[sessionId] || session;
-    reloadedSession.logicalTabs.forEach(l => {
-         const oldL = latestSessionState.logicalTabs.find(old => old.bookmarkId === l.bookmarkId);
-         if (oldL) l.liveTabIds = oldL.liveTabIds;
-    });
-
-    state.sessionsById[sessionId] = reloadedSession;
+    // Update state using helper
+    const reloadedSession = await reloadSessionAndPreserveState(sessionId, windowId);
 
     // Sync Live Tabs: Move corresponding live tabs to match new logical position
     // Requirement: "corresponding live tab should be moved to be just on the right (so just after) the live tab that corresponds to the logical tab just above the logical tab that was moved."
