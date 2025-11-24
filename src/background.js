@@ -1000,25 +1000,42 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
         }
 
         if (liveTabsToMove.length > 0) {
+            // Retrieve current indices for accurate calculation
+            const currentLiveTabs = await Promise.all(
+                liveTabsToMove.map(tid => chrome.tabs.get(tid).catch(() => null))
+            );
+            const validTabs = currentLiveTabs.filter(t => t !== null);
+            if (validTabs.length === 0) return;
+
             // Calculate target index
-            // If liveAnchorIndex is -1, it means move to start (0).
-            // If it is X, move to X + 1.
-            const targetIndex = liveAnchorIndex + 1;
+            // Formula: AnchorIndex - (Count of Moved Tabs currently LEFT of Anchor) + 1
+            // If Anchor doesn't exist (Start), Target = 0.
+
+            let targetIndex = 0;
+            if (liveAnchorIndex !== -1) {
+                const anchorIndex = liveAnchorIndex;
+                const movingFromLeftCount = validTabs.filter(t => t.index < anchorIndex).length;
+                targetIndex = anchorIndex - movingFromLeftCount + 1;
+            }
+
+            // Ensure non-negative
+            if (targetIndex < 0) targetIndex = 0;
 
             // Add to ignore set to prevent echo
-            liveTabsToMove.forEach(tid => state.ignoreMoveEventsForTabIds.add(tid));
+            validTabs.forEach(t => state.ignoreMoveEventsForTabIds.add(t.id));
 
             // Safety: clear after 2 seconds
             setTimeout(() => {
-                liveTabsToMove.forEach(tid => state.ignoreMoveEventsForTabIds.delete(tid));
+                validTabs.forEach(t => state.ignoreMoveEventsForTabIds.delete(t.id));
             }, 2000);
 
             try {
-                await chrome.tabs.move(liveTabsToMove, { index: targetIndex });
+                const ids = validTabs.map(t => t.id);
+                await chrome.tabs.move(ids, { index: targetIndex });
             } catch (e) {
                 console.warn("Failed to sync live tabs", e);
                 // Cleanup on error
-                liveTabsToMove.forEach(tid => state.ignoreMoveEventsForTabIds.delete(tid));
+                validTabs.forEach(t => state.ignoreMoveEventsForTabIds.delete(t.id));
             }
         }
     }
