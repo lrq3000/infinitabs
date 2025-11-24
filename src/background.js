@@ -535,6 +535,10 @@ chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
         const sessionId = state.windowToSession[windowId];
         if (!sessionId) return;
 
+        // Wait a brief moment to ensure chrome.tabs.query reflects the move
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        // Always fetch latest session state inside the mutex
         const session = state.sessionsById[sessionId];
         if (!session) return;
 
@@ -543,6 +547,10 @@ chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
         
         const movedTabIndex = liveTabsInOrder.findIndex(t => t.id === tabId);
         if (movedTabIndex === -1) return;
+
+        // Validation: If the index doesn't match moveInfo.toIndex (roughly), we might be stale.
+        // But with multi-selection drag, subsequent moves might shift indices.
+        // So we rely on liveTabsInOrder as the source of truth for the *current* state.
 
         const logical = session.logicalTabs.find(l => l.logicalId === logicalId);
         if (!logical) return;
@@ -564,26 +572,34 @@ chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
 
         if (anchorLogical) {
             // Move after anchorLogical
-            const nodes = await chrome.bookmarks.get(anchorLogical.bookmarkId);
-            if (nodes && nodes.length > 0) {
-                const anchorNode = nodes[0];
-                // Move to same parent, next index
-                await chrome.bookmarks.move(logical.bookmarkId, {
-                    parentId: anchorNode.parentId,
-                    index: anchorNode.index + 1
-                });
+            try {
+                const nodes = await chrome.bookmarks.get(anchorLogical.bookmarkId);
+                if (nodes && nodes.length > 0) {
+                    const anchorNode = nodes[0];
+                    // Move to same parent, next index
+                    await chrome.bookmarks.move(logical.bookmarkId, {
+                        parentId: anchorNode.parentId,
+                        index: anchorNode.index + 1
+                    });
+                }
+            } catch (e) {
+                console.error("Failed to move bookmark to anchor", e);
             }
         } else {
             // No left anchor (moved to start, or only untracked tabs before it)
-            // Move to the beginning of the session root (or we could try to respect groups, but without an anchor we default to root)
-            // Note: If the tab was inside a group, this pulls it out to the root. This is standard "move to start" behavior if we don't know better.
-            await chrome.bookmarks.move(logical.bookmarkId, { parentId: sessionId, index: 0 });
+            // Move to the beginning of the session root
+            try {
+                await chrome.bookmarks.move(logical.bookmarkId, { parentId: sessionId, index: 0 });
+            } catch (e) {
+                console.error("Failed to move bookmark to root", e);
+            }
         }
 
         // Reload session structure
         const reloadedSession = await loadSessionFromBookmarks(sessionId);
         reloadedSession.windowId = windowId;
         
+        // Merge liveTabIds
         const latestSessionState = state.sessionsById[sessionId] || session;
         reloadedSession.logicalTabs.forEach(l => {
              const oldL = latestSessionState.logicalTabs.find(old => old.bookmarkId === l.bookmarkId);
