@@ -308,10 +308,10 @@ Licensed under the MIT Public License.
 ## Suggested complementary 3rd-party extensions/tools
 
 Here is a non-exhaustive list of complementary **opensource** 3rd-party extensions or tools that work well with InfiniTabs:
+* [Bookmark Manager And Viewer](https://github.com/inbasic/bookmarks-manager): A very reactive and clear tree-like manager for bookmarks, can be used to find past bookmarks and in which past sessions they were. It is somehow extremely compatible with InfiniTabs, as it can keep focus on the same session's bookmark folder even after renaming via InfiniTabs, and changes in bookmarks content and positions are reflected instantly.
 * [Search Bookmarks, History and Tabs](https://github.com/Fannon/search-bookmarks-history-and-tabs): Fast bookmarks fuzzy search engine
 * [Full text tabs forever (FTTF)](https://github.com/iansinnott/full-text-tabs-forever): Full-text search of historically visited pages (once you have the page title, you can find it in InfiniTabs)
 * [Floccus](https://github.com/floccusaddon/floccus): Autosync bookmarks (and hence sessions if using InfiniTabs) between browsers (also works on mobile via native Floccus app on F-Droid or [Mises](https://github.com/mises-id/mises-browser-core) or [Cromite](https://github.com/uazo/cromite/)).
 * [TidyMark](https://github.com/PanHywel/TidyMark): Reorganize/group bookmarks (supports cloud or offline ollama).
 * [Bookmarks Summarizer](https://github.com/lrq3000/BookmarkSummarizer): Python app for full text search on content and AI-generated summaries (using cloud or offline ollama). (Untested alternatives: ArchiveBox, LinkWarden, other self-hosted bookmarks managers...).
 * [Wherewasi](https://github.com/Jay-Karia/wherewasi): Temporal and semantic tabs clustering into sessions using cloud Gemini AI.
-* [Bookmarks Manager & Viewer](https://github.com/inbasic/bookmarks-manager): A very reactive and clear tree-like manager for bookmarks, can be used to find past bookmarks and in which past sessions they were.
