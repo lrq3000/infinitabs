@@ -698,6 +698,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     sendResponse({ success: true });
                     break;
                 }
+                case "UNMOUNT_LOGICAL_TAB": {
+                    await handleUnmountLogicalTab(message.windowId, message.logicalId);
+                    sendResponse({ success: true });
+                    break;
+                }
                 case "DELETE_LOGICAL_TAB": {
                     await handleDeleteLogicalTab(message.windowId, message.logicalId);
                     sendResponse({ success: true });
@@ -856,6 +861,29 @@ async function handleDeleteLogicalTab(windowId, logicalId) {
     }
     
     notifySidebarStateUpdated(windowId, sessionId);
+}
+
+async function handleUnmountLogicalTab(windowId, logicalId) {
+    const sessionId = state.windowToSession[windowId];
+    if (!sessionId) return;
+    const session = state.sessionsById[sessionId];
+
+    const logical = session.logicalTabs.find(l => l.logicalId === logicalId);
+    if (!logical) return;
+
+    if (logical.liveTabIds.length > 0) {
+        const toClose = [...logical.liveTabIds];
+        logical.liveTabIds = [];
+
+        try {
+            await chrome.tabs.remove(toClose);
+        } catch (e) {
+            console.warn("Failed to close live tabs", e);
+        }
+
+        toClose.forEach(tid => delete state.tabToLogical[tid]);
+        notifySidebarStateUpdated(windowId, sessionId);
+    }
 }
 
 async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, position) {

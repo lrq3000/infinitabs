@@ -433,9 +433,24 @@ function createTabElement(tab, session, shouldScroll) {
     // <span class="tab-title">...</span>
     // <button class="tab-delete-btn">x</button>
     
+    const indicatorWrapper = document.createElement('div');
+    indicatorWrapper.className = 'live-indicator-wrapper';
+    indicatorWrapper.title = 'Close live tab (keep bookmark)';
+    indicatorWrapper.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (tab.liveTabIds.length > 0) {
+            chrome.runtime.sendMessage({
+                type: "UNMOUNT_LOGICAL_TAB",
+                windowId: currentWindowId,
+                logicalId: tab.logicalId
+            });
+        }
+    });
+
     const indicator = document.createElement('span');
     indicator.className = 'live-indicator';
-    el.appendChild(indicator);
+    indicatorWrapper.appendChild(indicator);
+    el.appendChild(indicatorWrapper);
     
     const icon = document.createElement('img');
     icon.className = 'tab-icon';

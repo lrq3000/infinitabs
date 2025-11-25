@@ -337,13 +337,41 @@ body.dark-mode .tab-item.dragging, body.dark-mode .group-header.dragging {
 }
 
 /* Indicators */
+.live-indicator-wrapper {
+  box-sizing: content-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+
+  align-self: stretch;
+  margin-top: -6px;
+  margin-bottom: -6px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+
+  margin-left: -6px;
+  padding-left: 6px;
+
+  margin-right: 4px;
+  cursor: pointer;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.live-indicator-wrapper:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+body.dark-mode .live-indicator-wrapper:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
 .live-indicator {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background-color: var(--live-indicator);
-  margin-right: 8px;
-  flex-shrink: 0;
   opacity: 0; /* Occupy space but invisible if not live */
 }
 
