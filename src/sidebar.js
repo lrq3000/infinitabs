@@ -19,6 +19,12 @@ let currentMatches = [];
 let currentMatchIndex = -1;
 let lastScrolledActiveId = null;
 
+// Selection & Drag State
+let selectedLogicalIds = new Set();
+let lastSelectedLogicalId = null; // For shift-click range
+let draggedLogicalIds = [];
+let ignoreNextAutoScroll = false;
+
 // --- Initialization ---
 
 async function init() {
@@ -332,7 +338,13 @@ function renderSession(session) {
 
   // Determine if we need to scroll
   let shouldScroll = false;
-  if (session.lastActiveLogicalTabId !== lastScrolledActiveId) {
+
+  if (ignoreNextAutoScroll) {
+      // Suppress autoscroll for user-initiated move
+      ignoreNextAutoScroll = false;
+      // Update lastScrolledActiveId so subsequent updates don't trigger scroll
+      lastScrolledActiveId = session.lastActiveLogicalTabId;
+  } else if (session.lastActiveLogicalTabId !== lastScrolledActiveId) {
       shouldScroll = true;
       lastScrolledActiveId = session.lastActiveLogicalTabId;
   }
@@ -396,6 +408,8 @@ function createGroupElement(group) {
     el.className = 'group-header';
     el.dataset.id = group.groupId;
     el.dataset.type = 'group';
+    el.draggable = true;
+    setupDragHandlers(el);
     updateGroupElement(el, group);
     return el;
 }
@@ -410,6 +424,8 @@ function createTabElement(tab, session, shouldScroll) {
     const el = document.createElement('div');
     el.dataset.id = tab.logicalId;
     el.dataset.type = 'tab';
+    el.draggable = true;
+    setupDragHandlers(el);
     
     // Structure
     // <span class="live-indicator"></span>
@@ -448,12 +464,8 @@ function createTabElement(tab, session, shouldScroll) {
     });
     el.appendChild(deleteBtn);
     
-    el.addEventListener('click', () => {
-        chrome.runtime.sendMessage({
-          type: "FOCUS_OR_MOUNT_TAB",
-          windowId: currentWindowId,
-          logicalId: tab.logicalId
-        });
+    el.addEventListener('click', (e) => {
+        handleTabClick(e, tab.logicalId);
     });
     
     updateTabElement(el, tab, session, shouldScroll);
@@ -463,7 +475,8 @@ function createTabElement(tab, session, shouldScroll) {
 function updateTabElement(el, tab, session, shouldScroll) {
     const isLive = tab.liveTabIds.length > 0;
     const isActive = session.lastActiveLogicalTabId === tab.logicalId;
-    
+    const isSelected = selectedLogicalIds.has(tab.logicalId);
+
     // Classes
     let className = 'tab-item';
     if (tab.groupId) className += ' indented';
@@ -471,6 +484,8 @@ function updateTabElement(el, tab, session, shouldScroll) {
     if (isActive) className += ' active-live';
     else className += ' logical';
     
+    if (isSelected) className += ' selected';
+
     // Preserve search match if present (handled by performSearch, but we might be overwriting classes)
     // Ideally search should re-run or we preserve the class.
     // Since performSearch runs after render if input exists, it will fix it.
@@ -522,6 +537,171 @@ function escapeHtml(text) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+// --- Selection & Drag Logic ---
+
+function handleTabClick(e, logicalId) {
+    if (e.ctrlKey || e.metaKey) {
+        // Toggle selection
+        if (selectedLogicalIds.has(logicalId)) {
+            selectedLogicalIds.delete(logicalId);
+        } else {
+            selectedLogicalIds.add(logicalId);
+            lastSelectedLogicalId = logicalId;
+        }
+    } else if (e.shiftKey && lastSelectedLogicalId) {
+        // Range selection
+        // Find range in current rendering order
+        const allItems = Array.from(document.querySelectorAll('.tab-item'));
+        const ids = allItems.map(el => el.dataset.id);
+
+        const idx1 = ids.indexOf(lastSelectedLogicalId);
+        const idx2 = ids.indexOf(logicalId);
+
+        if (idx1 !== -1 && idx2 !== -1) {
+            const start = Math.min(idx1, idx2);
+            const end = Math.max(idx1, idx2);
+
+            // If ctrl not held, clear previous unless we want additive range?
+            // Standard is Shift+Click extends selection.
+            // But usually Shift+Click clears others outside range if Ctrl not held.
+            // Let's implement standard explorer behavior:
+            // Click = Select one.
+            // Ctrl+Click = Toggle one.
+            // Shift+Click = Select range from anchor (lastSelected) to current.
+
+            selectedLogicalIds.clear(); // Standard behavior
+
+            for (let i = start; i <= end; i++) {
+                selectedLogicalIds.add(ids[i]);
+            }
+        }
+    } else {
+        // Single selection + Action
+        // If simply clicking, we usually want to activate the tab.
+        // But also select it.
+        selectedLogicalIds.clear();
+        selectedLogicalIds.add(logicalId);
+        lastSelectedLogicalId = logicalId;
+
+        chrome.runtime.sendMessage({
+          type: "FOCUS_OR_MOUNT_TAB",
+          windowId: currentWindowId,
+          logicalId: logicalId
+        });
+    }
+
+    // Refresh UI selection state
+    if (currentSession) renderSession(currentSession);
+}
+
+function setupDragHandlers(el) {
+    el.addEventListener('dragstart', onDragStart);
+    el.addEventListener('dragover', onDragOver);
+    el.addEventListener('dragleave', onDragLeave);
+    el.addEventListener('drop', onDrop);
+    el.addEventListener('dragend', onDragEnd);
+}
+
+function onDragStart(e) {
+    const id = e.target.dataset.id;
+    if (!id) return;
+
+    // If dragging a selected item, drag all selected.
+    // If dragging an unselected item, select it first (and clear others).
+    if (!selectedLogicalIds.has(id)) {
+        selectedLogicalIds.clear();
+        selectedLogicalIds.add(id);
+        lastSelectedLogicalId = id;
+        if (currentSession) renderSession(currentSession);
+    }
+
+    draggedLogicalIds = Array.from(selectedLogicalIds);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', JSON.stringify(draggedLogicalIds));
+
+    // Visual feedback
+    e.target.classList.add('dragging');
+}
+
+function onDragOver(e) {
+    e.preventDefault(); // Allow drop
+    e.dataTransfer.dropEffect = 'move';
+
+    const target = e.currentTarget;
+    const rect = target.getBoundingClientRect();
+    const offsetY = e.clientY - rect.top;
+
+    target.classList.remove('drop-before', 'drop-after', 'drop-inside');
+
+    // If target is a group, we might drop inside
+    if (target.dataset.type === 'group') {
+        // Top 25% -> before, Bottom 25% -> after, Middle 50% -> inside
+        const h = rect.height;
+        if (offsetY < h * 0.25) {
+             target.classList.add('drop-before');
+        } else if (offsetY > h * 0.75) {
+             target.classList.add('drop-after');
+        } else {
+             target.classList.add('drop-inside');
+        }
+    } else {
+        // Tabs: Before (top 50%) or After (bottom 50%)
+        if (offsetY < rect.height / 2) {
+             target.classList.add('drop-before');
+        } else {
+             target.classList.add('drop-after');
+        }
+    }
+}
+
+function onDragLeave(e) {
+    e.currentTarget.classList.remove('drop-before', 'drop-after', 'drop-inside');
+}
+
+function onDrop(e) {
+    e.preventDefault();
+    const target = e.currentTarget;
+    target.classList.remove('drop-before', 'drop-after', 'drop-inside');
+
+    const targetId = target.dataset.id;
+    if (!targetId) return;
+
+    let position = null;
+    const rect = target.getBoundingClientRect();
+    const offsetY = e.clientY - rect.top;
+
+    if (target.dataset.type === 'group') {
+        const h = rect.height;
+        if (offsetY < h * 0.25) position = 'before';
+        else if (offsetY > h * 0.75) position = 'after';
+        else position = 'inside';
+    } else {
+        if (offsetY < rect.height / 2) position = 'before';
+        else position = 'after';
+    }
+
+    if (draggedLogicalIds.length === 0) return;
+
+    // Avoid dropping onto self
+    if (draggedLogicalIds.includes(targetId) && position !== 'inside') return;
+
+    // Suppress next auto-scroll since this is a user action
+    ignoreNextAutoScroll = true;
+
+    chrome.runtime.sendMessage({
+        type: "MOVE_LOGICAL_TABS",
+        windowId: currentWindowId,
+        logicalIds: draggedLogicalIds,
+        targetLogicalId: targetId,
+        position: position
+    });
+}
+
+function onDragEnd(e) {
+    e.target.classList.remove('dragging');
+    draggedLogicalIds = [];
 }
 
 // Start
