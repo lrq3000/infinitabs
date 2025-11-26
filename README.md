@@ -98,8 +98,8 @@ This leverages the cognitive limitations of the human brain to allow for a virtu
 
 InfiniTabs is designed around a philosophy of implicit management as much as possible to be as unobtrusive as possible:
 *   Always record states implicitly.
-*   Never force the user into repetitive explicit decisions window-by-window.
-*   Prefer “forgiveness via history” to “ask permission now”.
+*   Prefer “forgiveness via history (eg, undo)” to “ask permission now”.
+*   Do not ask the user for explicit decisions repetitively.
 
 This philosophy is crucial both to keep the illusion of logical tabs being real tabs, and so that the gains in cognitive efficiency are not offset by unnecessary decisions. It should work just like how a browser navigation bar is supposed to, without offloading any of the technical challenges to the user (eg, Windows IDs-Sessions mapping lost on browser restart, we solved that by recording the history of past workspaces, that the user can restore at any later point with just a few clicks).
 
