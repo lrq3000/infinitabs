@@ -451,21 +451,59 @@ async function trackCurrentWorkspace() {
         return;
     }
 
-    // Deduplicate
+    // Deduplicate or Update
     if (state.workspaceHistory.length > 0) {
         const last = state.workspaceHistory[state.workspaceHistory.length - 1];
-        // Simple check: same number of sessions, same session IDs
+        // Check if structure (sessions) is the same
         if (last.sessions.length === snapshot.sessions.length) {
             const lastSessionIds = new Set(last.sessions.map(s => s.sessionId));
             const currentSessionIds = new Set(snapshot.sessions.map(s => s.sessionId));
-            let same = true;
+            let sameIds = true;
             for (const id of currentSessionIds) {
                 if (!lastSessionIds.has(id)) {
-                    same = false;
+                    sameIds = false;
                     break;
                 }
             }
-            if (same) return; // Identical set of sessions
+
+            if (sameIds) {
+                // Structure is the same.
+                // We should update the last entry with new geometry/timestamp instead of creating a new one.
+                // This keeps history clean when just resizing/moving windows.
+
+                // Check if geometry actually changed to avoid unnecessary writes
+                let geometrySame = true;
+                for (const s of snapshot.sessions) {
+                    const lastS = last.sessions.find(ls => ls.sessionId === s.sessionId);
+                    if (!lastS) { geometrySame = false; break; }
+
+                    if (s.state !== lastS.state ||
+                        s.top !== lastS.top ||
+                        s.left !== lastS.left ||
+                        s.width !== lastS.width ||
+                        s.height !== lastS.height) {
+                        geometrySame = false;
+                        break;
+                    }
+                }
+
+                if (geometrySame) return; // No change at all
+
+                // Geometry changed, but structure is same -> Update in place
+                // We preserve the ID of the history entry? 
+                // User said "update the parameters of the last historical workspace record".
+                // So we keep the ID, but update timestamp and sessions (which contain geometry).
+                last.sessions = snapshot.sessions;
+                last.timestamp = snapshot.timestamp;
+                // last.windowCount/sessionCount are same.
+
+                state.lastKnownWorkspace = last;
+                await persistState();
+
+                // Notify UI that history updated (even if just timestamp/geometry)
+                chrome.runtime.sendMessage({ type: "HISTORY_UPDATED" }).catch(() => { });
+                return;
+            }
         }
     }
 
