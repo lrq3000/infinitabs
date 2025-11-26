@@ -41,8 +41,22 @@
     </div>
 
     <div id="global-content" class="tab-content">
-      <div style="padding: 20px; text-align: center; color: #888;">
-        Global content coming soon...
+      <div id="crash-overlay" class="hidden">
+        <div class="crash-modal">
+          <p>Crash detected. Reopen last workspace?</p>
+          <button id="crash-yes">Yes</button>
+          <button id="crash-no">No</button>
+        </div>
+      </div>
+      <div class="workspace-manager">
+        <h3>Workspaces</h3>
+        <div class="workspace-controls">
+          <select id="workspace-selector">
+            <option value="" disabled selected>Select a workspace...</option>
+          </select>
+          <button id="workspace-reload-btn" title="Reload Selected Workspace">🔄</button>
+          <button id="workspace-fav-btn" title="Favorite Current Workspace">⭐</button>
+        </div>
       </div>
     </div>
   </div>

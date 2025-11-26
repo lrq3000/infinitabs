@@ -10,8 +10,89 @@ const state = {
   windowToSession: {},  // Record<WindowId, SessionId>
   tabToLogical: {},     // Record<TabId, LogicalTabId>
   ignoreMoveEventsForTabIds: new Set(), // Set<TabId>
-  initialized: false
+  initialized: false,
+  workspaceHistory: [],
+  favoriteWorkspaces: [],
+  crashDetected: false
 };
+
+// --- Workspace Management ---
+
+async function updateAndSaveWorkspace() {
+  const openWindows = await chrome.windows.getAll({ populate: true });
+
+  const sessionsInWorkspace = openWindows
+    .map(win => {
+        const sessionId = state.windowToSession[win.id];
+        if (!sessionId) return null;
+        return {
+            sessionId: sessionId,
+            name: state.sessionsById[sessionId] ? state.sessionsById[sessionId].name : 'Unknown Session',
+            bounds: {
+                top: win.top,
+                left: win.left,
+                width: win.width,
+                height: win.height
+            },
+            state: win.state
+        };
+    })
+    .filter(Boolean);
+
+  if (sessionsInWorkspace.length === 0) {
+      // Don't save empty workspaces, but we might want to clear the history if this was a deliberate close of all windows.
+      // For now, let's just not save it.
+      return;
+  }
+
+  // Heuristic: Don't save a workspace if it's just one window with a single newtab.
+  if (openWindows.length === 1 && openWindows[0].tabs.length === 1 && (openWindows[0].tabs[0].url === 'about:newtab' || openWindows[0].tabs[0].url.startsWith('chrome://newtab'))) {
+    console.log("Skipping workspace save for trivial state.");
+    return;
+  }
+
+  const currentWorkspace = {
+    id: `past_${Date.now()}`,
+    timestamp: Date.now(),
+    sessions: sessionsInWorkspace
+  };
+
+  // Deduplicate: Don't save if it's identical to the last one.
+  const lastWorkspace = state.workspaceHistory.length > 0 ? state.workspaceHistory[state.workspaceHistory.length - 1] : null;
+  if (lastWorkspace && JSON.stringify(lastWorkspace.sessions.map(s => s.sessionId).sort()) === JSON.stringify(currentWorkspace.sessions.map(s => s.sessionId).sort())) {
+    return;
+  }
+
+  state.workspaceHistory.push(currentWorkspace);
+
+  // Enforce history limit
+  const settings = await chrome.storage.local.get({ workspaceHistoryLimit: 50 });
+  const limit = settings.workspaceHistoryLimit;
+  if (state.workspaceHistory.length > limit) {
+    state.workspaceHistory.splice(0, state.workspaceHistory.length - limit);
+  }
+
+  await chrome.storage.local.set({
+    workspaceHistory: state.workspaceHistory
+  });
+}
+
+async function reloadWorkspace(workspace) {
+  const currentWindows = await chrome.windows.getAll();
+  const promises = currentWindows.map(win => chrome.windows.remove(win.id));
+  await Promise.all(promises);
+
+  for (const sessionInfo of workspace.sessions) {
+    const newWindow = await chrome.windows.create({
+        top: sessionInfo.bounds.top,
+        left: sessionInfo.bounds.left,
+        width: sessionInfo.bounds.width,
+        height: sessionInfo.bounds.height,
+        state: sessionInfo.state
+    });
+    await bindWindowToSession(newWindow.id, sessionInfo.sessionId);
+  }
+}
 
 // --- Helper Functions ---
 
@@ -240,7 +321,10 @@ async function bindWindowToSession(windowId, sessionId) {
   // 4. Sync existing tabs
   await syncExistingTabsInWindowToSession(windowId, sessionId);
   
-  // 5. Notify UI
+  // 5. Update workspace
+  await updateAndSaveWorkspace();
+
+  // 6. Notify UI
   notifySidebarStateUpdated(windowId, sessionId);
 }
 
@@ -353,12 +437,30 @@ function init() {
           }
           
           // Restore persisted state
-          const storage = await chrome.storage.local.get(['windowToSession']);
+          const storage = await chrome.storage.local.get(['windowToSession', 'workspaceHistory', 'favoriteWorkspaces', 'gracefulExit']);
           if (storage.windowToSession) {
               state.windowToSession = storage.windowToSession;
           }
+           if (storage.workspaceHistory) {
+              state.workspaceHistory = storage.workspaceHistory;
+          }
+          if (storage.favoriteWorkspaces) {
+              state.favoriteWorkspaces = storage.favoriteWorkspaces;
+          }
+
+          const windows = await chrome.windows.getAll({ populate: true });
+
+          // Crash detection
+          if (!storage.gracefulExit && state.workspaceHistory.length > 0) {
+              const lastWorkspace = state.workspaceHistory[state.workspaceHistory.length - 1];
+              const isTrivialState = windows.length === 1 && windows[0].tabs.length === 1 && (windows[0].tabs[0].url === 'about:newtab' || windows[0].tabs[0].url.startsWith('chrome://newtab'));
+
+              if (isTrivialState && lastWorkspace.sessions.length > 0) {
+                  state.crashDetected = true;
+              }
+          }
+          await chrome.storage.local.set({ gracefulExit: false });
           
-          const windows = await chrome.windows.getAll();
           const rootId = await ensureRootFolder();
           const sessionFolders = await chrome.bookmarks.getChildren(rootId);
           
@@ -415,6 +517,33 @@ function init() {
 
 chrome.runtime.onInstalled.addListener(init);
 chrome.runtime.onStartup.addListener(init);
+
+chrome.runtime.onSuspend.addListener(() => {
+    chrome.storage.local.set({ gracefulExit: true });
+});
+
+chrome.windows.onCreated.addListener(async (window) => {
+    if (!state.initialized) await init();
+    // A new window doesn't have a session yet, so we don't update the workspace.
+    // We update it after a session is assigned.
+});
+
+chrome.windows.onRemoved.addListener(async (windowId) => {
+    if (!state.initialized) return;
+
+    // Clean up state
+    const sessionId = state.windowToSession[windowId];
+    if (sessionId) {
+        if (state.sessionsById[sessionId]) {
+            state.sessionsById[sessionId].windowId = null;
+        }
+        delete state.windowToSession[windowId];
+        await persistState();
+    }
+
+    await updateAndSaveWorkspace();
+});
+
 
 // Export for testing/usage if modules were used, but in Service Worker we rely on listeners.
 
@@ -782,6 +911,63 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                         message.position
                     );
                     sendResponse({ success: true });
+                    break;
+                }
+                case "GET_WORKSPACES": {
+                    sendResponse({
+                        history: state.workspaceHistory,
+                        favorites: state.favoriteWorkspaces,
+                        crashDetected: state.crashDetected
+                    });
+                    break;
+                }
+                case "RELOAD_WORKSPACE": {
+                    const workspaceId = message.workspaceId;
+                    const isFavorite = workspaceId.startsWith('fav_');
+                    const source = isFavorite ? state.favoriteWorkspaces : state.workspaceHistory;
+                    const workspace = source.find(w => w.id === workspaceId);
+                    if (workspace) {
+                        await reloadWorkspace(workspace);
+                        state.crashDetected = false; // User took an action
+                        sendResponse({ success: true });
+                    } else {
+                        sendResponse({ success: false, error: "Workspace not found" });
+                    }
+                    break;
+                }
+                case "DISMISS_CRASH": {
+                    state.crashDetected = false;
+                    sendResponse({ success: true });
+                    break;
+                }
+                case "FAVORITE_WORKSPACE": {
+                    const openWindows = await chrome.windows.getAll();
+                    const sessionsInWorkspace = openWindows
+                        .map(win => {
+                            const sessionId = state.windowToSession[win.id];
+                            if (!sessionId) return null;
+                            return {
+                                sessionId: sessionId,
+                                name: state.sessionsById[sessionId] ? state.sessionsById[sessionId].name : 'Unknown Session',
+                                bounds: {
+                                    top: win.top,
+                                    left: win.left,
+                                    width: win.width,
+                                    height: win.height
+                                },
+                                state: win.state
+                            };
+                        })
+                        .filter(Boolean);
+
+                    const newFavorite = {
+                        id: `fav_${Date.now()}`,
+                        name: message.name,
+                        sessions: sessionsInWorkspace
+                    };
+                    state.favoriteWorkspaces.push(newFavorite);
+                    await chrome.storage.local.set({ favoriteWorkspaces: state.favoriteWorkspaces });
+                    sendResponse({ success: true, favorite: newFavorite });
                     break;
                 }
             }

@@ -7,6 +7,14 @@ const unmountOthersBtn = document.getElementById('unmount-others-btn');
 const themeToggleBtn = document.getElementById('theme-toggle-btn');
 const tabsContainer = document.getElementById('tabs-container');
 
+// Workspace Elements
+const workspaceSelector = document.getElementById('workspace-selector');
+const workspaceReloadBtn = document.getElementById('workspace-reload-btn');
+const workspaceFavBtn = document.getElementById('workspace-fav-btn');
+const crashOverlay = document.getElementById('crash-overlay');
+const crashYesBtn = document.getElementById('crash-yes');
+const crashNoBtn = document.getElementById('crash-no');
+
 // Search Elements
 const searchInput = document.getElementById('search-input');
 const searchClearBtn = document.getElementById('search-clear');
@@ -40,6 +48,12 @@ async function init() {
   unmountOthersBtn.addEventListener('click', onUnmountOthers);
   themeToggleBtn.addEventListener('click', toggleTheme);
   
+  // Workspace Listeners
+  workspaceReloadBtn.addEventListener('click', onReloadWorkspace);
+  workspaceFavBtn.addEventListener('click', onFavoriteWorkspace);
+  crashYesBtn.addEventListener('click', onCrashYes);
+  crashNoBtn.addEventListener('click', onCrashNo);
+
   // Search Listeners
   searchInput.addEventListener('input', performSearch);
   searchInput.addEventListener('keydown', (e) => {
@@ -73,6 +87,7 @@ async function init() {
   // Initial Data Load
   await loadSessionsList();
   await refreshCurrentSession();
+  await loadWorkspaces();
 
   // Top-level tabs logic
   const topLevelTabs = document.querySelectorAll('.top-level-tab');
@@ -771,6 +786,79 @@ function onDrop(e) {
 function onDragEnd(e) {
     e.target.classList.remove('dragging');
     draggedLogicalIds = [];
+}
+
+// --- Workspace UI Logic ---
+
+async function loadWorkspaces() {
+    const response = await chrome.runtime.sendMessage({ type: "GET_WORKSPACES" });
+
+    workspaceSelector.innerHTML = '<option value="" disabled selected>Select a workspace...</option>';
+
+    if (response.favorites.length > 0) {
+        const favGroup = document.createElement('optgroup');
+        favGroup.label = "Favorites";
+        response.favorites.forEach(w => {
+            const opt = document.createElement('option');
+            opt.value = w.id;
+            opt.textContent = w.name;
+            favGroup.appendChild(opt);
+        });
+        workspaceSelector.appendChild(favGroup);
+    }
+
+    if (response.history.length > 0) {
+        const historyGroup = document.createElement('optgroup');
+        historyGroup.label = "History";
+        // Show recent first
+        response.history.slice().reverse().forEach(w => {
+            const opt = document.createElement('option');
+            opt.value = w.id;
+            opt.textContent = new Date(w.timestamp).toLocaleString();
+            historyGroup.appendChild(opt);
+        });
+        workspaceSelector.appendChild(historyGroup);
+    }
+
+    if (response.crashDetected) {
+        crashOverlay.classList.remove('hidden');
+    }
+}
+
+async function onReloadWorkspace() {
+    const workspaceId = workspaceSelector.value;
+    if (!workspaceId) {
+        alert("Please select a workspace to reload.");
+        return;
+    }
+
+    if (confirm("Are you sure you want to reload this workspace? This will close all current windows.")) {
+        await chrome.runtime.sendMessage({ type: "RELOAD_WORKSPACE", workspaceId: workspaceId });
+    }
+}
+
+async function onFavoriteWorkspace() {
+    const name = prompt("Enter a name for this workspace:");
+    if (name && name.trim() !== "") {
+        const response = await chrome.runtime.sendMessage({ type: "FAVORITE_WORKSPACE", name: name.trim() });
+        if (response.success) {
+            await loadWorkspaces();
+            workspaceSelector.value = response.favorite.id;
+        }
+    }
+}
+
+async function onCrashYes() {
+    const lastWorkspaceInHistory = workspaceSelector.querySelector('optgroup[label="History"] option');
+    if (lastWorkspaceInHistory) {
+        await chrome.runtime.sendMessage({ type: "RELOAD_WORKSPACE", workspaceId: lastWorkspaceInHistory.value });
+    }
+    crashOverlay.classList.add('hidden');
+}
+
+async function onCrashNo() {
+    await chrome.runtime.sendMessage({ type: "DISMISS_CRASH" });
+    crashOverlay.classList.add('hidden');
 }
 
 // Start
