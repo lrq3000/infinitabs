@@ -21,6 +21,12 @@ const crashRecoveryContainer = document.getElementById('crash-recovery-container
 const crashRestoreBtn = document.getElementById('crash-restore-btn');
 const crashDismissBtn = document.getElementById('crash-dismiss-btn');
 
+// Crash Popup Elements
+const crashPopup = document.getElementById('crash-popup');
+const crashPopupClose = document.getElementById('crash-popup-close');
+const crashPopupRestoreBtn = document.getElementById('crash-popup-restore-btn');
+const crashPopupNoBtn = document.getElementById('crash-popup-no-btn');
+
 let currentSession = null;
 let currentWindowId = null;
 let isDarkMode = false;
@@ -67,6 +73,11 @@ async function init() {
     favoriteWorkspaceBtn.addEventListener('click', onFavoriteWorkspace);
     crashRestoreBtn.addEventListener('click', onCrashRestore);
     crashDismissBtn.addEventListener('click', onCrashDismiss);
+
+    // Crash Popup Listeners
+    crashPopupRestoreBtn.addEventListener('click', onCrashRestore);
+    crashPopupClose.addEventListener('click', onCrashPopupClose);
+    crashPopupNoBtn.addEventListener('click', onCrashPopupClose);
 
     chrome.runtime.onMessage.addListener(onMessage);
 
@@ -292,11 +303,9 @@ async function checkCrashStatus() {
         crashRecoveryContainer.style.display = 'block';
         crashRecoveryContainer.dataset.workspace = JSON.stringify(response.lastWorkspace);
 
-        // Auto-switch to Global tab if crashed?
-        // Maybe too intrusive? Let's just show a badge or something?
-        // For now, if they open the sidebar, they might see it if they go to Global.
-        // Or we can switch to global tab automatically?
-        // document.querySelector('[data-tab="global"]').click();
+        // Also show the popup
+        crashPopup.style.display = 'flex';
+        crashPopup.dataset.workspace = JSON.stringify(response.lastWorkspace);
     }
 }
 
@@ -309,7 +318,12 @@ async function onCrashRestore() {
             snapshot: ws
         });
         crashRecoveryContainer.style.display = 'none';
+        crashPopup.style.display = 'none';
     }
+}
+
+function onCrashPopupClose() {
+    crashPopup.style.display = 'none';
 }
 
 function onCrashDismiss() {
