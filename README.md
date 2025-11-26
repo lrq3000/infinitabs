@@ -201,7 +201,7 @@ This means:
 * Logical tabs persist even if the window is closed
 * Naturally possible to have multiple sessions/windows in parallel to do multitasking (eg, one window for documents writing, one for AI brainstorming, one for documents researching, one for listening to music, etc).
 
-### Workspace = set of windows open at once
+### Workspace = set of windows/sessions open at once
 
 Workspaces are sets of windows that were open at once, each mapped to a session.
 
