@@ -230,6 +230,9 @@ async function persistState() {
         lastKnownWorkspace: state.lastKnownWorkspace,
         historySize: state.historySize
     });
+
+    // Notify UI of history change
+    chrome.runtime.sendMessage({ type: "HISTORY_UPDATED" }).catch(() => { });
 }
 
 /**
@@ -408,16 +411,8 @@ function isWorkspaceTrivial(snapshot) {
     return false;
 }
 
-async function trackCurrentWorkspace() {
-    if (!state.initialized) return;
-
-    // We need to enrich the snapshot with window bounds for better restoration
+async function enrichSnapshotWithGeometry(snapshot) {
     const windows = await chrome.windows.getAll();
-    const snapshot = getCurrentWorkspaceSnapshot();
-
-    if (!snapshot) return;
-
-    // Enrich with window state
     snapshot.sessions = snapshot.sessions.map(s => {
         const win = windows.find(w => w.id === s.windowId);
         if (win) {
@@ -434,6 +429,17 @@ async function trackCurrentWorkspace() {
         }
         return s;
     });
+    return snapshot;
+}
+
+async function trackCurrentWorkspace() {
+    if (!state.initialized) return;
+
+    let snapshot = getCurrentWorkspaceSnapshot();
+    if (!snapshot) return;
+
+    // Enrich with window state
+    snapshot = await enrichSnapshotWithGeometry(snapshot);
 
     if (isWorkspaceTrivial(snapshot)) {
         // Even if trivial, we might want to update lastKnownWorkspace if we want to detect "clean exit" vs crash?
@@ -503,6 +509,13 @@ async function restoreWorkspace(snapshot) {
         console.log('Restoring window with geometry:', createData);
         const win = await chrome.windows.create(createData);
         console.log('Window created with actual geometry:', { id: win.id, top: win.top, left: win.left, width: win.width, height: win.height, state: win.state });
+
+        // Force maximization if needed (sometimes create doesn't apply it reliably?)
+        if (sessionInfo.state === 'maximized' && win.state !== 'maximized') {
+            console.log('Forcing maximization for window', win.id);
+            await chrome.windows.update(win.id, { state: 'maximized' });
+        }
+
         newWindowIds.push(win.id);
 
         // Bind session
@@ -642,6 +655,7 @@ chrome.windows.onCreated.addListener(async (window) => {
 chrome.windows.onBoundsChanged.addListener(async (window) => {
     if (!state.initialized) await init();
 
+    console.log('Window bounds changed:', window.id, window.state);
     // Track workspace when window is moved or resized
     scheduleWorkspaceUpdate();
 });
@@ -1027,10 +1041,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     }
 
                     if (snapshot) {
+                        console.log("Restoring snapshot:", JSON.stringify(snapshot, null, 2));
                         await restoreWorkspace(snapshot);
                         sendResponse({ success: true });
                     } else if (message.snapshot) {
                         // Direct snapshot object (e.g. from crash recovery)
+                        console.log("Restoring direct snapshot:", JSON.stringify(message.snapshot, null, 2));
                         await restoreWorkspace(message.snapshot);
                         sendResponse({ success: true });
                     } else {
@@ -1039,8 +1055,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     break;
                 }
                 case "SAVE_FAVORITE_WORKSPACE": {
-                    const snapshot = getCurrentWorkspaceSnapshot();
+                    let snapshot = getCurrentWorkspaceSnapshot();
                     if (snapshot) {
+                        snapshot = await enrichSnapshotWithGeometry(snapshot);
                         snapshot.name = message.name;
                         snapshot.id = generateGuid(); // New ID for the favorite entry
                         state.favoriteWorkspaces.unshift(snapshot); // Add to top

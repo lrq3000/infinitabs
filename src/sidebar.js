@@ -384,6 +384,8 @@ function onMessage(message, sender, sendResponse) {
             // Re-apply search if exists
             if (searchInput.value) performSearch();
         }
+    } else if (message.type === "HISTORY_UPDATED") {
+        loadPastWorkspaces();
     }
 }
 
