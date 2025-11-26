@@ -1,10 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <title>InfiniTabs Sidebar</title>
   <link rel="stylesheet" href="styles.css">
 </head>
+
 <body>
   <div id="app">
     <div class="top-level-tabs">
@@ -41,11 +43,37 @@
     </div>
 
     <div id="global-content" class="tab-content">
-      <div style="padding: 20px; text-align: center; color: #888;">
-        Global content coming soon...
+      <div class="global-panel">
+        <div id="crash-recovery-container" class="crash-recovery" style="display: none;">
+          <div class="crash-message">
+            <strong>Crash Detected</strong>
+            <p>A previous workspace was found. Restore it?</p>
+          </div>
+          <div class="crash-actions">
+            <button id="crash-restore-btn" class="primary-btn">Restore</button>
+            <button id="crash-dismiss-btn" class="secondary-btn">Dismiss</button>
+          </div>
+        </div>
+
+        <div class="section-header">
+          <h3>Past Workspaces</h3>
+          <button id="favorite-workspace-btn" title="Save current workspace as favorite">⭐</button>
+        </div>
+
+        <div class="workspace-controls">
+          <select id="past-workspaces-selector">
+            <option value="" disabled selected>Select a workspace...</option>
+          </select>
+          <button id="reload-workspace-btn" title="Reload selected workspace">Reload</button>
+        </div>
+
+        <div class="info-text">
+          <p>Restoring a workspace will close all current windows and reopen the saved session configuration.</p>
+        </div>
       </div>
     </div>
   </div>
   <script src="sidebar.js"></script>
 </body>
+
 </html>
