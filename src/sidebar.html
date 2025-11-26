@@ -73,6 +73,20 @@
       </div>
     </div>
   </div>
+
+  <div id="crash-popup" class="crash-popup" style="display: none;">
+    <button id="crash-popup-close" class="crash-popup-close">×</button>
+    <div class="crash-popup-content">
+      <h2>Crash Detected</h2>
+      <p>A crash was detected. Would you like to restore to the last known workspace?</p>
+      <div class="crash-popup-actions">
+        <button id="crash-popup-restore-btn" class="primary-btn">Yes, Restore</button>
+        <button id="crash-popup-no-btn" class="secondary-btn">No</button>
+      </div>
+      <p class="crash-popup-hint">You can also close this popup and restore the workspace later by going into the Global
+        tab.</p>
+    </div>
+  </div>
   <script src="sidebar.js"></script>
 </body>
 

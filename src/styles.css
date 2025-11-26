@@ -15,7 +15,8 @@
   --btn-text: #d00;
   --btn-hover: #ffe0e0;
   --live-indicator: #52c41a;
-  --search-match-bg: #fff7b3; /* Light yellow */
+  --search-match-bg: #fff7b3;
+  /* Light yellow */
   --search-match-active-outline: #1890ff;
 }
 
@@ -34,7 +35,8 @@ body.dark-mode {
   --btn-text: #ff6b6b;
   --btn-hover: #4e3535;
   --live-indicator: #73c991;
-  --search-match-bg: #5a5a2a; /* Darker yellow/olive */
+  --search-match-bg: #5a5a2a;
+  /* Darker yellow/olive */
   --search-match-active-outline: #0078d4;
 }
 
@@ -47,7 +49,8 @@ body {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  user-select: none; /* Prevent accidental sidebar text selection */
+  user-select: none;
+  /* Prevent accidental sidebar text selection */
 }
 
 #app {
@@ -92,7 +95,8 @@ body.dark-mode .top-level-tab.active {
   display: none;
   flex-direction: column;
   flex: 1;
-  overflow: hidden; /* Prevent double scrollbars, let children handle scroll */
+  overflow: hidden;
+  /* Prevent double scrollbars, let children handle scroll */
 }
 
 .tab-content.active {
@@ -145,6 +149,7 @@ body.dark-mode .top-level-tab.active {
   padding: 2px 6px;
   border-radius: 4px;
 }
+
 #theme-toggle-btn:hover {
   background-color: var(--hover-bg);
 }
@@ -179,14 +184,17 @@ body.dark-mode .top-level-tab.active {
 
 #search-input {
   width: 100%;
-  padding: 4px 28px 4px 4px; /* Right padding for clear button */
+  padding: 4px 28px 4px 4px;
+  /* Right padding for clear button */
   border-radius: 4px;
   border: 1px solid #ccc;
   font-size: 12px;
   background-color: var(--header-bg);
   color: var(--text-color);
-  box-sizing: border-box; /* Ensure padding doesn't expand width */
-  user-select: text; /* Allow text selection in input */
+  box-sizing: border-box;
+  /* Ensure padding doesn't expand width */
+  user-select: text;
+  /* Allow text selection in input */
 }
 
 #search-clear {
@@ -194,21 +202,24 @@ body.dark-mode .top-level-tab.active {
   right: 0;
   top: 0;
   bottom: 0;
-  width: 28px; /* Larger click area */
+  width: 28px;
+  /* Larger click area */
   background: transparent;
   border: none;
   cursor: pointer;
   color: #888;
   font-size: 18px;
   padding: 0;
-  display: none; /* Hidden by default */
+  display: none;
+  /* Hidden by default */
 }
 
 #search-clear:hover {
   color: var(--text-color);
 }
 
-#search-prev, #search-next {
+#search-prev,
+#search-next {
   cursor: pointer;
   background: none;
   border: 1px solid #ccc;
@@ -218,7 +229,8 @@ body.dark-mode .top-level-tab.active {
   color: var(--text-color);
 }
 
-#search-prev:hover, #search-next:hover {
+#search-prev:hover,
+#search-next:hover {
   background-color: var(--hover-bg);
 }
 
@@ -234,7 +246,8 @@ body.dark-mode .top-level-tab.active {
   padding: 6px 10px;
   cursor: pointer;
   border-left: 3px solid transparent;
-  position: relative; /* For absolute positioning of delete button */
+  position: relative;
+  /* For absolute positioning of delete button */
 }
 
 .tab-item:hover {
@@ -311,21 +324,25 @@ body.dark-mode .tab-delete-btn:hover {
 
 /* Drag and Drop & Selection Styles */
 .tab-item.selected {
-  background-color: #dbeafe; /* Light blue */
+  background-color: #dbeafe;
+  /* Light blue */
   border-left-color: #3b82f6;
 }
 
 body.dark-mode .tab-item.selected {
-  background-color: #1e3a8a; /* Dark blue */
+  background-color: #1e3a8a;
+  /* Dark blue */
   border-left-color: #60a5fa;
 }
 
-.tab-item.dragging, .group-header.dragging {
+.tab-item.dragging,
+.group-header.dragging {
   opacity: 0.5;
   background-color: #f0f0f0;
 }
 
-body.dark-mode .tab-item.dragging, body.dark-mode .group-header.dragging {
+body.dark-mode .tab-item.dragging,
+body.dark-mode .group-header.dragging {
   background-color: #333;
 }
 
@@ -357,7 +374,8 @@ body.dark-mode .tab-item.dragging, body.dark-mode .group-header.dragging {
   text-overflow: ellipsis;
   font-size: 13px;
   flex: 1;
-  padding-right: 20px; /* Ensure title doesn't overlap with delete btn on hover if text is long */
+  padding-right: 20px;
+  /* Ensure title doesn't overlap with delete btn on hover if text is long */
 }
 
 .group-header {
@@ -416,9 +434,102 @@ body.dark-mode .live-indicator-wrapper:hover {
   height: 6px;
   border-radius: 50%;
   background-color: var(--live-indicator);
-  opacity: 0; /* Occupy space but invisible if not live */
+  opacity: 0;
+  /* Occupy space but invisible if not live */
 }
 
-.tab-item.live .live-indicator {
-  opacity: 1;
+
+/* Crash Popup */
+.crash-popup {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(200, 0, 0, 0.85);
+  z-index: 2000;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px;
+}
+
+.crash-popup-content {
+  background-color: transparent;
+  color: white;
+  text-align: center;
+  max-width: 300px;
+  padding: 20px;
+  border-radius: 12px;
+  /* Rounded corners */
+  /* Minimalistic style: no heavy borders or shadows, just clean text and buttons */
+}
+
+.crash-popup-content h2 {
+  margin-top: 0;
+  margin-bottom: 10px;
+  font-size: 18px;
+}
+
+.crash-popup-content p {
+  margin-bottom: 20px;
+  line-height: 1.4;
+}
+
+.crash-popup-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-bottom: 15px;
+}
+
+.crash-popup-close {
+  position: absolute;
+  top: 15px;
+  right: 15px;
+  background: none;
+  border: none;
+  color: white;
+  font-size: 24px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 5px;
+}
+
+.crash-popup-close:hover {
+  opacity: 0.8;
+}
+
+.crash-popup-hint {
+  font-size: 11px;
+  opacity: 0.8;
+  margin-top: 10px;
+}
+
+/* Button overrides for popup */
+.crash-popup .primary-btn {
+  background-color: white;
+  color: #c00;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.crash-popup .primary-btn:hover {
+  background-color: #f0f0f0;
+}
+
+.crash-popup .secondary-btn {
+  background-color: transparent;
+  color: white;
+  border: 1px solid white;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.crash-popup .secondary-btn:hover {
+  background-color: rgba(255, 255, 255, 0.1);
 }
