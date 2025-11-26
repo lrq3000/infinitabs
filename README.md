@@ -176,6 +176,45 @@ This is very similar to what is done in attention research for other modalities 
 
 NB: Of course there are circumstances where keeping more tabs loaded in RAM is preferable or necessary, such as autorefreshed tabs or tabs for (ticketing) queues, but this is an exception rather than the rule and can easily be managed as such by temporarily disabling auto suspending on these tabs.
 
+### One Window = One Session
+
+Each browser window corresponds to **one session** which is itself composed of a set of logical tabs and a subset of live tabs, saved as one bookmark folder:
+
+```
+LazyTabs Sessions
+└── Session – Window 1234
+    ├── Bookmark (Logical Tab 1)
+    ├── Bookmark (Logical Tab 2)
+    ├── Tab Group A (Folder)
+    │   ├── Bookmark A1
+    │   └── Bookmark A2
+    └── Tab Group B (Folder)
+        ├── Bookmark B1
+        └── Bookmark B2
+```
+
+This means:
+
+* Your workflow is segmented naturally
+* Switching windows = switching sessions
+* You can reopen any session instantly
+* Logical tabs persist even if the window is closed
+* Naturally possible to have multiple sessions/windows in parallel to do multitasking (eg, one window for documents writing, one for AI brainstorming, one for documents researching, one for listening to music, etc).
+
+### Workspace = set of windows open at once
+
+Workspaces are sets of windows that were open at once, each mapped to a session.
+
+Workspaces are both:
+* automatically recorded constructs for later historical recovery from past workspaces history (eg, in case of OS reboot, browser crash, etc),
+* and they can also be manually saved for common configurations that the user commonly use (eg, a workspace with a session for work tasks, another session for music, another session for team chat and documents, etc).
+
+Workspaces were primarily created to overcome the problem that Chrome does not persist Windows IDs, they are epheremeral and change on browser restart, so that we need an alternative way to restore all opened windows/sessions after a crash or OS reboot (eg, regularly scheduled forced update).
+
+As such, they are not meant to be the focus of this extension, because in any case, sessions work at the window level, even after a reboot, at worse this creates a new session, but the user can always switch back to a previous session manually at any point, or just start afresh with a new session. Workspaces are a convenience for users with multiple windows to switch back to multiple sessions at once with fewer clicks and cognitive load.
+
+The concept of workspaces naturally lends itself to be another tool users can voluntarily use to organize their browsing experience, so offering a way to create favorite workspaces users often come back to is an easy way for users to reuse the same set of sessions, which cogitively corresponds to resuming a project or set of projects/executive plans.
+
 ### Why Bookmarks as the Storage Layer?
 
 InfiniTabs deliberately uses **native bookmarks** as canonical storage because they are:
@@ -218,33 +257,6 @@ Hence, the extension is conceived with a high modularity in mind, ala Linux, whe
 #### Infinite scalability
 
 Chrome supports enormous bookmark trees. InfiniTabs becomes a limitless storage engine for your browsing universe, since it is not bounded by RAM anymore but only by storage space (and bookmarks have a negligible storage footprint).
-
-### One Window = One Session
-
-Each browser window corresponds to **one session**, saved as one bookmark folder:
-
-```
-LazyTabs Sessions
-└── Session – Window 1234
-    ├── Bookmark (Logical Tab 1)
-    ├── Bookmark (Logical Tab 2)
-    ├── Tab Group A (Folder)
-    │   ├── Bookmark A1
-    │   └── Bookmark A2
-    └── Tab Group B (Folder)
-        ├── Bookmark B1
-        └── Bookmark B2
-```
-
-This means:
-
-* Your workflow is segmented naturally
-* Switching windows = switching sessions
-* You can reopen any session instantly
-* Logical tabs persist even if the window is closed
-* Naturally possible to have multiple sessions/windows in parallel to do multitasking (eg, one window for documents writing, one for AI brainstorming, one for documents researching, one for listening to music, etc).
-
----
 
 ### Vertical Sidebar Tabstrip
 
