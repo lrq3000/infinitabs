@@ -101,7 +101,11 @@ InfiniTabs is designed around a philosophy of implicit management as much as pos
 *   Prefer “forgiveness via history (eg, undo)” to “ask permission now”.
 *   Do not ask the user for explicit decisions repetitively.
 
-This philosophy is crucial both to keep the illusion of logical tabs being real tabs, and so that the gains in cognitive efficiency are not offset by unnecessary decisions. It should work just like how a browser navigation bar is supposed to, without offloading any of the technical challenges to the user (eg, Windows IDs-Sessions mapping lost on browser restart, we solved that by recording the history of past workspaces, that the user can restore at any later point with just a few clicks).
+This philosophy is crucial both to keep the illusion of logical tabs being real tabs, and so that the gains in cognitive efficiency are not offset by unnecessary decisions. It should work just like how a browser navigation bar is supposed to, without offloading any of the technical challenges to the user.
+
+An example is how past workspaces are recorded automatically so that the user can recover their previous global browsing state at any later point with just a few clicks without having to manage anything upfront, they only trigger the feature when needed, which happens much less frequently than if they had to manually create workspaces regularly anticipating future potential need.
+
+Similarly, it is much easier and lighter cognitively to automatically create and name sessions, and allow the user to rename the session later, because it is much easier to determine how to name a session once its content is already filled compared to naming anticipatively before the session is even created. And here again, it is not a 1-on-1 mapping: session renaming aposteriori happens much less frequently because not all sessions are worthy of a permanent name, a lot of sessions are just temporary browsing sessions just to see an information or complete a temporally-bounded task, so that the session has anyway a finite (cognitive) life.
 
 ---
 
@@ -214,6 +218,8 @@ Workspaces were primarily created to overcome the problem that Chrome does not p
 As such, they are not meant to be the focus of this extension, because in any case, sessions work at the window level, even after a reboot, at worse this creates a new session, but the user can always switch back to a previous session manually at any point, or just start afresh with a new session. Workspaces are a convenience for users with multiple windows to switch back to multiple sessions at once with fewer clicks and cognitive load.
 
 The concept of workspaces naturally lends itself to be another tool users can voluntarily use to organize their browsing experience, so offering a way to create favorite workspaces users often come back to is an easy way for users to reuse the same set of sessions, which cogitively corresponds to resuming a project or set of projects/executive plans.
+
+Considered alternatives were to create a pinned tab that would point to our extension's page to store a window-persistent session ID, but this would have been brittle as it can be lost because of Chrome or extensions or user error, and is a much less polyvalent concept than workspaces. Another solution would have been to ask the user if they wanted to create or assign a window to a past session after a crash, but this would induce a big cognitive load as it would require user with multiple windows to find and then choose each session-window mapping for every windows. Because of our design philosophy, we decided against these permission-based approaches, and instead solve the problem at a higher conceptual level (across sessions) using a forgiveness-based approach (ie, undo session change, undo workspace change).
 
 ### Why Bookmarks as the Storage Layer?
 
