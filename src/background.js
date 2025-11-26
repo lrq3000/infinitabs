@@ -413,7 +413,9 @@ function isWorkspaceTrivial(snapshot) {
 
 async function enrichSnapshotWithGeometry(snapshot) {
     const windows = await chrome.windows.getAll();
-    snapshot.sessions = snapshot.sessions.map(s => {
+    const enrichedSessions = [];
+
+    for (const s of snapshot.sessions) {
         const win = windows.find(w => w.id === s.windowId);
         if (win) {
             const enriched = {
@@ -425,10 +427,18 @@ async function enrichSnapshotWithGeometry(snapshot) {
                 height: win.height
             };
             console.log('Saving window geometry:', enriched);
-            return enriched;
+            enrichedSessions.push(enriched);
+        } else {
+            // Window not found (likely closed but not yet cleaned up from state, or race condition)
+            // We exclude it from the snapshot to ensure history reflects reality.
+            console.warn(`Window ${s.windowId} not found during enrichment, excluding from snapshot.`);
         }
-        return s;
-    });
+    }
+
+    snapshot.sessions = enrichedSessions;
+    snapshot.windowCount = enrichedSessions.length;
+    snapshot.sessionCount = enrichedSessions.length;
+
     return snapshot;
 }
 
@@ -696,6 +706,19 @@ chrome.windows.onBoundsChanged.addListener(async (window) => {
     console.log('Window bounds changed:', window.id, window.state);
     // Track workspace when window is moved or resized
     scheduleWorkspaceUpdate();
+});
+
+chrome.windows.onRemoved.addListener(async (windowId) => {
+    if (!state.initialized) await init();
+
+    // If the window was tracking a session, we need to update state
+    if (state.windowToSession[windowId]) {
+        console.log(`Window ${windowId} closed, updating workspace history.`);
+        delete state.windowToSession[windowId];
+
+        // Immediate update to capture the closure in history
+        await trackCurrentWorkspace();
+    }
 });
 
 const pendingMounts = []; // Queue of { logicalId, windowId }
