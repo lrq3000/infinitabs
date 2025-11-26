@@ -19,5 +19,9 @@
   },
   "action": {
     "default_title": "Open InfiniTabs Sidebar"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
   }
 }
