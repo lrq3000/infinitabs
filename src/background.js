@@ -1,7 +1,7 @@
 // background.js
 
 // --- Constants ---
-const ROOT_FOLDER_TITLE = "LazyTabs Sessions";
+const ROOT_FOLDER_TITLE = "InfiniTabs Sessions";
 
 // --- Global State ---
 // Held in memory, persisted where necessary.
@@ -14,6 +14,26 @@ const state = {
 };
 
 // --- Helper Functions ---
+
+function formatSessionTitle(name, windowId) {
+    if (windowId) {
+        // Remove any existing windowId from the name to avoid duplication
+        const cleanName = name.replace(/ \[windowId:\d+\]$/, '');
+        return `${cleanName} [windowId:${windowId}]`;
+    }
+    return name;
+}
+
+function parseSessionTitle(title) {
+    const match = title.match(/^(.*?) \[windowId:(\d+)\]$/);
+    if (match) {
+        return {
+            name: match[1].trim(),
+            windowId: parseInt(match[2], 10)
+        };
+    }
+    return { name: title, windowId: null };
+}
 
 function generateGuid() {
   return self.crypto.randomUUID();
@@ -48,11 +68,21 @@ function scheduleSidebarUpdate(windowId, sessionId, delay = 200) {
  * @returns {Promise<string>} The ID of the root folder.
  */
 async function ensureRootFolder() {
-  const existing = await chrome.bookmarks.search({ title: ROOT_FOLDER_TITLE });
-  // Ensure it is a folder (no URL)
-  const folder = existing.find(n => n.title === ROOT_FOLDER_TITLE && !n.url);
+  // Check for the new folder first
+  let existing = await chrome.bookmarks.search({ title: ROOT_FOLDER_TITLE });
+  let folder = existing.find(n => n.title === ROOT_FOLDER_TITLE && !n.url);
   if (folder) return folder.id;
+
+  // Check for the old folder to migrate
+  const OLD_ROOT_FOLDER_TITLE = "LazyTabs Sessions";
+  existing = await chrome.bookmarks.search({ title: OLD_ROOT_FOLDER_TITLE });
+  folder = existing.find(n => n.title === OLD_ROOT_FOLDER_TITLE && !n.url);
+  if (folder) {
+      const updated = await chrome.bookmarks.update(folder.id, { title: ROOT_FOLDER_TITLE });
+      return updated.id;
+  }
   
+  // If neither exists, create it
   const created = await chrome.bookmarks.create({ title: ROOT_FOLDER_TITLE });
   return created.id;
 }
@@ -125,9 +155,11 @@ async function loadSessionFromBookmarks(sessionId) {
     }
   }
   
+  const parsedTitle = parseSessionTitle(sessionFolder.title);
+
   return {
     sessionId: sessionId,
-    name: sessionFolder.title,
+    name: parsedTitle.name,
     rootFolderId: sessionFolder.parentId,
     windowId: null, // Will be set when bound
     logicalTabs: logicalTabs,
@@ -146,7 +178,7 @@ async function getSessionList() {
   const children = await chrome.bookmarks.getChildren(rootId);
   return children
     .filter(node => !node.url) // Only folders
-    .map(folder => ({ sessionId: folder.id, name: folder.title }));
+    .map(folder => ({ sessionId: folder.id, name: parseSessionTitle(folder.title).name }));
 }
 
 function notifySidebarStateUpdated(windowId, sessionId) {
@@ -189,6 +221,15 @@ async function bindWindowToSession(windowId, sessionId) {
   const session = await loadSessionFromBookmarks(sessionId);
   session.windowId = windowId;
   
+    // Update the bookmark title to include the windowId
+    const newTitle = formatSessionTitle(session.name, windowId);
+    // Fetch current bookmark title to check if update is needed
+    const currentNodes = await chrome.bookmarks.get(sessionId);
+    if (currentNodes.length > 0 && currentNodes[0].title !== newTitle) {
+        await chrome.bookmarks.update(sessionId, { title: newTitle });
+    }
+    session.name = parseSessionTitle(newTitle).name; // Ensure in-memory name is clean
+
   // 2. Update global state
   state.sessionsById[sessionId] = session;
   state.windowToSession[windowId] = sessionId;
@@ -302,7 +343,7 @@ function init() {
   if (initPromise) return initPromise;
   
   initPromise = (async () => {
-      console.log("LazyTabs: Background initializing...");
+      console.log("InfiniTabs: Background initializing...");
       try {
           await ensureRootFolder();
 
@@ -318,7 +359,24 @@ function init() {
           }
           
           const windows = await chrome.windows.getAll();
+          const rootId = await ensureRootFolder();
+          const sessionFolders = await chrome.bookmarks.getChildren(rootId);
           
+          const sessionFoldersByWindowId = {};
+          for (const folder of sessionFolders) {
+              const parsed = parseSessionTitle(folder.title);
+              if (parsed.windowId) {
+                  sessionFoldersByWindowId[parsed.windowId] = folder.id;
+              } else {
+                  // Try to parse old format "Session - Window 12345"
+                  const match = folder.title.match(/^Session - Window (\d+)$/);
+                  if (match) {
+                      const windowId = parseInt(match[1], 10);
+                      sessionFoldersByWindowId[windowId] = folder.id;
+                  }
+              }
+          }
+
           for (const win of windows) {
             const storedSessionId = state.windowToSession[win.id];
             if (storedSessionId) {
@@ -326,13 +384,15 @@ function init() {
                 await bindWindowToSession(win.id, storedSessionId);
               } catch (e) {
                 console.warn(`Could not restore session ${storedSessionId} for window ${win.id}`, e);
-                // Clean up invalid mapping
                 delete state.windowToSession[win.id];
                 await persistState();
               }
+            } else if (sessionFoldersByWindowId[win.id]) {
+                // Found an existing session folder for this window
+                await bindWindowToSession(win.id, sessionFoldersByWindowId[win.id]);
             } else {
-                const rootId = await ensureRootFolder();
-                const newSessionTitle = `Session - Window ${win.id}`;
+                // Create a new session folder
+                const newSessionTitle = formatSessionTitle(`Session - Window ${win.id}`, win.id);
                 const created = await chrome.bookmarks.create({
                     parentId: rootId,
                     title: newSessionTitle
@@ -342,9 +402,9 @@ function init() {
           }
 
           state.initialized = true;
-          console.log("LazyTabs: Background initialized.");
+          console.log("InfiniTabs: Background initialized.");
       } catch (e) {
-          console.error("LazyTabs: Background init failed", e);
+          console.error("InfiniTabs: Background init failed", e);
           initPromise = null; // Allow retry
           throw e;
       }
@@ -666,9 +726,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                         // Attempt late bind if missing
                         if (windowId) {
                              const rootId = await ensureRootFolder();
+                             const newSessionTitle = formatSessionTitle(`Session - Window ${windowId}`, windowId);
                              const created = await chrome.bookmarks.create({
                                 parentId: rootId,
-                                title: `Session - Window ${windowId}`
+                                title: newSessionTitle
                              });
                              await bindWindowToSession(windowId, created.id);
                              sendResponse({ session: state.sessionsById[created.id] });
@@ -685,6 +746,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
                 case "SWITCH_SESSION": {
                     await handleSwitchSession(message.windowId, message.sessionId);
+                    sendResponse({ success: true });
+                    break;
+                }
+                case "RENAME_SESSION": {
+                    await handleRenameSession(message.sessionId, message.newName);
                     sendResponse({ success: true });
                     break;
                 }
@@ -729,6 +795,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 
 // --- Actions Implementation ---
+
+async function handleRenameSession(sessionId, newName) {
+    const session = state.sessionsById[sessionId];
+    const windowId = session ? session.windowId : null;
+
+    // If we don't have the session loaded, we need to get the bookmark to find the windowId
+    if (!windowId) {
+        try {
+            const nodes = await chrome.bookmarks.get(sessionId);
+            if (nodes && nodes.length > 0) {
+                const parsed = parseSessionTitle(nodes[0].title);
+                // Update with windowId if present, otherwise just use the new name
+                const newTitle = parsed.windowId 
+                    ? formatSessionTitle(newName, parsed.windowId) 
+                    : newName;
+                await chrome.bookmarks.update(sessionId, { title: newTitle });
+            }
+        } catch (e) {
+            console.warn("Could not find bookmark to rename", e);
+        }
+    } else {
+        await chrome.bookmarks.update(sessionId, { title: formatSessionTitle(newName, windowId) });
+    }
+
+    // Update in-memory state if session is loaded
+    if (session) {
+        session.name = newName;
+        if (session.windowId) {
+            notifySidebarStateUpdated(session.windowId, sessionId);
+        }
+    }
+}
 
 async function handleSwitchSession(windowId, newSessionId) {
     const oldSessionId = state.windowToSession[windowId];

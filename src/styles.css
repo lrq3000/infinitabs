@@ -71,7 +71,6 @@ body {
 }
 
 #session-selector {
-  flex: 1;
   padding: 4px;
   border-radius: 4px;
   border: 1px solid #ccc;
@@ -79,7 +78,9 @@ body {
   color: var(--text-color);
 }
 
+#rename-session-btn,
 #refresh-sessions {
+  padding: 2px 6px;
   cursor: pointer;
   background: none;
   border: 1px solid #ccc;
