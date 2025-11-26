@@ -1,6 +1,7 @@
 // sidebar.js
 
 const sessionSelector = document.getElementById('session-selector');
+const renameSessionBtn = document.getElementById('rename-session-btn');
 const refreshSessionsBtn = document.getElementById('refresh-sessions');
 const unmountOthersBtn = document.getElementById('unmount-others-btn');
 const themeToggleBtn = document.getElementById('theme-toggle-btn');
@@ -33,6 +34,7 @@ async function init() {
   currentWindowId = window.id;
 
   // Setup Listeners
+  renameSessionBtn.addEventListener('click', onRenameSession);
   refreshSessionsBtn.addEventListener('click', loadSessionsList);
   sessionSelector.addEventListener('change', onSessionSwitch);
   unmountOthersBtn.addEventListener('click', onUnmountOthers);
@@ -54,8 +56,14 @@ async function init() {
 
   chrome.runtime.onMessage.addListener(onMessage);
 
-  // Load Theme
-  const stored = localStorage.getItem('lazyTabsTheme');
+  // Load Theme & Migrate Old Key
+  const oldTheme = localStorage.getItem('lazyTabsTheme');
+  if (oldTheme) {
+      localStorage.setItem('infiniTabsTheme', oldTheme);
+      localStorage.removeItem('lazyTabsTheme');
+  }
+
+  const stored = localStorage.getItem('infiniTabsTheme');
   if (stored === 'dark') {
     setTheme(true);
   } else {
@@ -78,7 +86,7 @@ function setTheme(dark) {
     document.body.classList.remove('dark-mode');
     themeToggleBtn.textContent = "☀"; // Sun
   }
-  localStorage.setItem('lazyTabsTheme', dark ? 'dark' : 'light');
+  localStorage.setItem('infiniTabsTheme', dark ? 'dark' : 'light');
 }
 
 function toggleTheme() {
@@ -131,6 +139,24 @@ async function onSessionSwitch(e) {
   
   // The background will reply, but we also expect a STATE_UPDATED message
   // which will trigger re-render.
+}
+
+async function onRenameSession() {
+  if (!currentSession) {
+    alert("No session selected.");
+    return;
+  }
+
+  const newName = prompt("Enter new session name:", currentSession.name);
+  if (newName && newName.trim() !== "" && newName !== currentSession.name) {
+    await chrome.runtime.sendMessage({
+      type: "RENAME_SESSION",
+      sessionId: currentSession.sessionId,
+      newName: newName.trim()
+    });
+    // The state update message from background will refresh the UI, but we also need to refresh the list of sessions
+    await loadSessionsList();
+  }
 }
 
 async function onUnmountOthers() {
