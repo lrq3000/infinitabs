@@ -5,6 +5,7 @@ const refreshSessionsBtn = document.getElementById('refresh-sessions');
 const unmountOthersBtn = document.getElementById('unmount-others-btn');
 const themeToggleBtn = document.getElementById('theme-toggle-btn');
 const tabsContainer = document.getElementById('tabs-container');
+const tabsStrip = document.querySelector('.tabs-strip');
 
 // Search Elements
 const searchInput = document.getElementById('search-input');
@@ -37,6 +38,7 @@ async function init() {
   sessionSelector.addEventListener('change', onSessionSwitch);
   unmountOthersBtn.addEventListener('click', onUnmountOthers);
   themeToggleBtn.addEventListener('click', toggleTheme);
+  tabsStrip.addEventListener('click', onTabButtonClick);
   
   // Search Listeners
   searchInput.addEventListener('input', performSearch);
@@ -83,6 +85,24 @@ function setTheme(dark) {
 
 function toggleTheme() {
   setTheme(!isDarkMode);
+}
+
+function onTabButtonClick(e) {
+  const button = e.target.closest('.tab-button');
+  if (!button) return;
+
+  const tabName = button.dataset.tab;
+  if (!tabName) return;
+
+  // Update button active states
+  document.querySelectorAll('.tab-button').forEach(btn => {
+    btn.classList.toggle('active', btn === button);
+  });
+
+  // Update content active states
+  document.querySelectorAll('.tab-content').forEach(content => {
+    content.classList.toggle('active', content.id === `${tabName}-content`);
+  });
 }
 
 async function loadSessionsList() {

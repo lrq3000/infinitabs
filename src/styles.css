@@ -378,3 +378,43 @@ body.dark-mode .live-indicator-wrapper:hover {
 .tab-item.live .live-indicator {
   opacity: 1;
 }
+
+/* Tab Strip Styles */
+.tabs-strip {
+  display: flex;
+  border-bottom: 1px solid var(--border-color);
+  background-color: var(--header-bg);
+  flex-shrink: 0; /* Prevent the tab strip from shrinking */
+}
+
+.tab-button {
+  flex: 1;
+  padding: 10px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-color);
+  font-size: 14px;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px; /* Overlap the container's border */
+}
+
+.tab-button.active {
+  font-weight: bold;
+  border-bottom-color: var(--active-border);
+}
+
+.tab-button:hover {
+  background-color: var(--hover-bg);
+}
+
+.tab-content {
+  display: none;
+  flex-direction: column;
+  overflow-y: hidden; /* Prevent double scrollbars */
+}
+
+.tab-content.active {
+  display: flex;
+  flex: 1;
+}
