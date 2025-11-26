@@ -181,7 +181,7 @@ NB: Of course there are circumstances where keeping more tabs loaded in RAM is p
 Each browser window corresponds to **one session** which is itself composed of a set of logical tabs and a subset of live tabs, saved as one bookmark folder:
 
 ```
-LazyTabs Sessions
+InfiniTabs Sessions
 └── Session – Window 1234
     ├── Bookmark (Logical Tab 1)
     ├── Bookmark (Logical Tab 2)
@@ -299,7 +299,7 @@ But these trade-offs are worth the reliability and universal visibility.
 * **Sidebar logs:**
   Open Side Panel → Right-click → Inspect
 * **Bookmark integrity:**
-  Check the `LazyTabs Sessions` folder in Bookmark Manager
+  Check the `InfiniTabs Sessions` folder in Bookmark Manager
 
 ---
 
