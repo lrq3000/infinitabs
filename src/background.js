@@ -223,11 +223,12 @@ async function bindWindowToSession(windowId, sessionId) {
   
     // Update the bookmark title to include the windowId
     const newTitle = formatSessionTitle(session.name, windowId);
-    if (newTitle !== session.name) {
-        // Only update if needed
+    // Fetch current bookmark title to check if update is needed
+    const currentNodes = await chrome.bookmarks.get(sessionId);
+    if (currentNodes.length > 0 && currentNodes[0].title !== newTitle) {
         await chrome.bookmarks.update(sessionId, { title: newTitle });
-        session.name = parseSessionTitle(newTitle).name; // Update in-memory name to be clean
     }
+    session.name = parseSessionTitle(newTitle).name; // Ensure in-memory name is clean
 
   // 2. Update global state
   state.sessionsById[sessionId] = session;
@@ -725,9 +726,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                         // Attempt late bind if missing
                         if (windowId) {
                              const rootId = await ensureRootFolder();
+                             const newSessionTitle = formatSessionTitle(`Session - Window ${windowId}`, windowId);
                              const created = await chrome.bookmarks.create({
                                 parentId: rootId,
-                                title: `Session - Window ${windowId}`
+                                title: newSessionTitle
                              });
                              await bindWindowToSession(windowId, created.id);
                              sendResponse({ session: state.sessionsById[created.id] });
@@ -804,9 +806,11 @@ async function handleRenameSession(sessionId, newName) {
             const nodes = await chrome.bookmarks.get(sessionId);
             if (nodes && nodes.length > 0) {
                 const parsed = parseSessionTitle(nodes[0].title);
-                if (parsed.windowId) {
-                    await chrome.bookmarks.update(sessionId, { title: formatSessionTitle(newName, parsed.windowId) });
-                }
+                // Update with windowId if present, otherwise just use the new name
+                const newTitle = parsed.windowId 
+                    ? formatSessionTitle(newName, parsed.windowId) 
+                    : newName;
+                await chrome.bookmarks.update(sessionId, { title: newTitle });
             }
         } catch (e) {
             console.warn("Could not find bookmark to rename", e);

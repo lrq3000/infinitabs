@@ -149,13 +149,22 @@ async function onRenameSession() {
 
   const newName = prompt("Enter new session name:", currentSession.name);
   if (newName && newName.trim() !== "" && newName !== currentSession.name) {
-    await chrome.runtime.sendMessage({
-      type: "RENAME_SESSION",
-      sessionId: currentSession.sessionId,
-      newName: newName.trim()
-    });
-    // The state update message from background will refresh the UI, but we also need to refresh the list of sessions
-    await loadSessionsList();
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "RENAME_SESSION",
+        sessionId: currentSession.sessionId,
+        newName: newName.trim()
+      });
+      if (response.error) {
+        alert("Failed to rename session: " + response.error);
+        return;
+      }
+      // The state update message from background will refresh the UI, but we also need to refresh the list of sessions
+      await loadSessionsList();
+    } catch (e) {
+      console.error("Failed to rename session", e);
+      alert("Failed to rename session.");
+    }
   }
 }
 
