@@ -73,6 +73,25 @@ async function init() {
   // Initial Data Load
   await loadSessionsList();
   await refreshCurrentSession();
+
+  // Top-level tabs logic
+  const topLevelTabs = document.querySelectorAll('.top-level-tab');
+  const tabContents = document.querySelectorAll('.tab-content');
+
+  topLevelTabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      // Remove active class from all tabs
+      topLevelTabs.forEach(t => t.classList.remove('active'));
+      // Add active class to clicked tab
+      tab.classList.add('active');
+
+      // Hide all contents
+      tabContents.forEach(c => c.classList.remove('active'));
+      // Show target content
+      const targetId = tab.dataset.tab + '-content';
+      document.getElementById(targetId).classList.add('active');
+    });
+  });
 }
 
 // --- Logic ---

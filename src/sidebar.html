@@ -7,30 +7,43 @@
 </head>
 <body>
   <div id="app">
-    <header class="sidebar-header">
-      <div class="session-selector-container">
-        <select id="session-selector">
-          <option value="" disabled selected>Select Session...</option>
-        </select>
-        <button id="rename-session-btn" title="Rename Session">✏️</button>
-        <button id="refresh-sessions" title="Refresh Sessions">↻</button>
-      </div>
-      <div class="header-actions">
-        <button id="theme-toggle-btn" title="Toggle Dark Mode">☀</button>
-        <button id="unmount-others-btn" title="Unmount all tabs except current/selected">Unmount Others</button>
-      </div>
-      <div class="search-container">
-        <div class="search-input-wrapper">
-          <input type="text" id="search-input" placeholder="Search tabs..." />
-          <button id="search-clear" title="Clear Search">×</button>
-        </div>
-        <button id="search-prev" title="Previous Result">▲</button>
-        <button id="search-next" title="Next Result">▼</button>
-      </div>
-    </header>
+    <div class="top-level-tabs">
+      <div class="top-level-tab active" data-tab="session">Session</div>
+      <div class="top-level-tab" data-tab="global">Global</div>
+    </div>
 
-    <div id="tabs-container" class="tabs-list">
-      <!-- Tabs will be rendered here -->
+    <div id="session-content" class="tab-content active">
+      <header class="sidebar-header">
+        <div class="session-selector-container">
+          <select id="session-selector">
+            <option value="" disabled selected>Select Session...</option>
+          </select>
+          <button id="rename-session-btn" title="Rename Session">✏️</button>
+          <button id="refresh-sessions" title="Refresh Sessions">↻</button>
+        </div>
+        <div class="header-actions">
+          <button id="theme-toggle-btn" title="Toggle Dark Mode">☀</button>
+          <button id="unmount-others-btn" title="Unmount all tabs except current/selected">Unmount Others</button>
+        </div>
+        <div class="search-container">
+          <div class="search-input-wrapper">
+            <input type="text" id="search-input" placeholder="Search tabs..." />
+            <button id="search-clear" title="Clear Search">×</button>
+          </div>
+          <button id="search-prev" title="Previous Result">▲</button>
+          <button id="search-next" title="Next Result">▼</button>
+        </div>
+      </header>
+
+      <div id="tabs-container" class="tabs-list">
+        <!-- Tabs will be rendered here -->
+      </div>
+    </div>
+
+    <div id="global-content" class="tab-content">
+      <div style="padding: 20px; text-align: center; color: #888;">
+        Global content coming soon...
+      </div>
     </div>
   </div>
   <script src="sidebar.js"></script>
