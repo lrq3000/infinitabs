@@ -17,8 +17,12 @@ const state = {
     initialized: false
 };
 
-// --- Helper Functions ---
 
+// Global flag to suppress auto-session creation during restore
+// Kept outside 'state' object to ensure it's not accidentally reset or lost during state operations
+let isRestoring = false;
+
+// --- Helper Functions ---
 function formatSessionTitle(name, windowId) {
     if (windowId) {
         // Remove any existing windowId from the name to avoid duplication
@@ -108,8 +112,14 @@ async function ensureRootFolder() {
  * @returns {Promise<Object>} The Session object.
  */
 async function loadSessionFromBookmarks(sessionId) {
-    const sessionNodes = await chrome.bookmarks.getSubTree(sessionId);
+    console.log(`loadSessionFromBookmarks: Loading ${sessionId}`);
+    const sessionNodes = await chrome.bookmarks.getSubTree(sessionId).catch(err => {
+        console.error(`loadSessionFromBookmarks: getSubTree failed for ${sessionId}`, err);
+        return null;
+    });
+
     if (!sessionNodes || sessionNodes.length === 0) {
+        console.error(`loadSessionFromBookmarks: Session folder ${sessionId} not found`);
         throw new Error(`Session folder ${sessionId} not found`);
     }
 
@@ -529,57 +539,85 @@ async function trackCurrentWorkspace() {
 }
 
 async function restoreWorkspace(snapshot) {
-    // 1. Close all current windows (except maybe the one we are running in? No, "Close all current windows")
-    // But if we close the window running the extension (if it's not a service worker?), we might die?
-    // Manifest V3 Service Worker lives independently.
+    console.log("restoreWorkspace: Starting. Setting isRestoring = true");
+    isRestoring = true;
 
-    const currentWindows = await chrome.windows.getAll();
-    // We should probably keep one window open while we open others, or just open new ones first then close old ones?
-    // "Close all current windows" implies we want a clean slate.
-    // If we close ALL windows, the browser might exit if "Continue running background apps" is off?
-    // Safer: Open new windows first, then close old ones.
+    try {
+        // 1. Close all current windows (except maybe the one we are running in? No, "Close all current windows")
+        // But if we close the window running the extension (if it's not a service worker?), we might die?
+        // Manifest V3 Service Worker lives independently.
 
-    const newWindowIds = [];
+        const currentWindows = await chrome.windows.getAll();
+        // We should probably keep one window open while we open others, or just open new ones first then close old ones?
+        // "Close all current windows" implies we want a clean slate.
+        // If we close ALL windows, the browser might exit if "Continue running background apps" is off?
+        // Safer: Open new windows first, then close old ones.
 
-    for (const sessionInfo of snapshot.sessions) {
-        const createData = {
-            url: "about:blank", // Will be populated by session bind
-            state: sessionInfo.state || 'normal'
-        };
+        const newWindowIds = [];
 
-        if (sessionInfo.state !== 'maximized' && sessionInfo.state !== 'minimized' && sessionInfo.state !== 'fullscreen') {
-            if (sessionInfo.top !== undefined) createData.top = sessionInfo.top;
-            if (sessionInfo.left !== undefined) createData.left = sessionInfo.left;
-            if (sessionInfo.width !== undefined) createData.width = sessionInfo.width;
-            if (sessionInfo.height !== undefined) createData.height = sessionInfo.height;
-        }
+        for (const sessionInfo of snapshot.sessions) {
+            const createData = {
+                url: "about:blank", // Will be populated by session bind
+                state: sessionInfo.state || 'normal'
+            };
 
-        console.log('Restoring window with geometry:', createData);
-        const win = await chrome.windows.create(createData);
-        console.log('Window created with actual geometry:', { id: win.id, top: win.top, left: win.left, width: win.width, height: win.height, state: win.state });
+            if (sessionInfo.state !== 'maximized' && sessionInfo.state !== 'minimized' && sessionInfo.state !== 'fullscreen') {
+                if (sessionInfo.top !== undefined) createData.top = sessionInfo.top;
+                if (sessionInfo.left !== undefined) createData.left = sessionInfo.left;
+                if (sessionInfo.width !== undefined) createData.width = sessionInfo.width;
+                if (sessionInfo.height !== undefined) createData.height = sessionInfo.height;
+            }
 
-        // Force maximization if needed (sometimes create doesn't apply it reliably?)
-        if (sessionInfo.state === 'maximized' && win.state !== 'maximized') {
-            console.log('Forcing maximization for window', win.id);
-            await chrome.windows.update(win.id, { state: 'maximized' });
-        }
+            console.log('restoreWorkspace: Creating window with geometry:', createData);
+            const win = await chrome.windows.create(createData);
+            console.log('restoreWorkspace: Window created:', win.id);
 
-        newWindowIds.push(win.id);
+            // Force maximization if needed (sometimes create doesn't apply it reliably?)
+            if (sessionInfo.state === 'maximized' && win.state !== 'maximized') {
+                console.log('restoreWorkspace: Forcing maximization for window', win.id);
+                await chrome.windows.update(win.id, { state: 'maximized' });
+            }
 
-        // Bind session
-        await bindWindowToSession(win.id, sessionInfo.sessionId);
-    }
+            newWindowIds.push(win.id);
 
-    // Close old windows
-    for (const win of currentWindows) {
-        // Don't close the DevTools window if open?
-        if (win.type === 'normal' || win.type === 'popup') {
+            // Bind session
+            console.log('restoreWorkspace: Binding window', win.id, 'to session', sessionInfo.sessionId);
             try {
-                await chrome.windows.remove(win.id);
-            } catch (e) {
-                console.warn("Failed to close window", win.id, e);
+                await bindWindowToSession(win.id, sessionInfo.sessionId);
+                console.log('restoreWorkspace: Bound successfully');
+            } catch (err) {
+                console.error(`restoreWorkspace: Failed to bind session ${sessionInfo.sessionId}`, err);
+                // Fallback: Create a new session for this window so it's not orphaned
+                try {
+                    const rootId = await ensureRootFolder();
+                    const newSessionTitle = formatSessionTitle(`Session - Window ${win.id}`, win.id);
+                    const created = await chrome.bookmarks.create({
+                        parentId: rootId,
+                        title: newSessionTitle
+                    });
+                    console.log(`restoreWorkspace: Fallback created new session ${created.id}`);
+                    await bindWindowToSession(win.id, created.id);
+                } catch (fallbackErr) {
+                    console.error("restoreWorkspace: Critical - Failed to create fallback session", fallbackErr);
+                }
             }
         }
+
+        // Close old windows
+        for (const win of currentWindows) {
+            // Don't close the DevTools window if open?
+            if (win.type === 'normal' || win.type === 'popup') {
+                try {
+                    await chrome.windows.remove(win.id);
+                } catch (e) {
+                    console.warn("Failed to close window", win.id, e);
+                }
+            }
+        }
+    } finally {
+        console.log("restoreWorkspace: Finished. Setting isRestoring = false");
+        isRestoring = false;
+        scheduleWorkspaceUpdate();
     }
 }
 
@@ -680,6 +718,35 @@ chrome.runtime.onStartup.addListener(init);
 
 // --- Event Listeners ---
 
+chrome.windows.onCreated.addListener(async (window) => {
+    console.log(`onCreated: Window ${window.id} created. isRestoring=${isRestoring}`);
+    if (!state.initialized) await init();
+
+    // Suppress if we are in the middle of a restore operation
+    if (isRestoring) {
+        console.log(`onCreated: Suppressing for window ${window.id} due to restore.`);
+        return;
+    }
+
+    // Immediate session binding
+    const windowId = window.id;
+    if (!state.windowToSession[windowId]) {
+        console.log(`onCreated: Binding new session for window ${windowId} immediately.`);
+
+        try {
+            const rootId = await ensureRootFolder();
+            const newSessionTitle = formatSessionTitle(`Session - Window ${windowId}`, windowId);
+            const created = await chrome.bookmarks.create({
+                parentId: rootId,
+                title: newSessionTitle
+            });
+            await bindWindowToSession(windowId, created.id);
+        } catch (e) {
+            console.error("onCreated: Failed to bind session", e);
+        }
+    }
+});
+
 chrome.windows.onRemoved.addListener(async (windowId) => {
     if (!state.initialized) await init();
 
@@ -691,14 +758,7 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
     scheduleWorkspaceUpdate();
 });
 
-chrome.windows.onCreated.addListener(async (window) => {
-    // Wait for session bind to happen via user action or auto-restore?
-    // If it's a new window, it has no session yet.
-    // We track workspace only when sessions are bound.
-    // But if a window is created and stays empty, we might want to know?
-    // The requirement says: "When a new window is created, wait for the window to get assigned to a session... to update the workspace".
-    // So we don't need to do anything here, bindWindowToSession will trigger update.
-});
+
 
 chrome.windows.onBoundsChanged.addListener(async (window) => {
     if (!state.initialized) await init();
@@ -1026,6 +1086,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     } else {
                         // Attempt late bind if missing
                         if (windowId) {
+                            // Fix: Prevent late bind if we are restoring, to avoid race condition
+                            if (isRestoring) {
+                                sendResponse({ session: null });
+                                return;
+                            }
+
                             const rootId = await ensureRootFolder();
                             const newSessionTitle = formatSessionTitle(`Session - Window ${windowId}`, windowId);
                             const created = await chrome.bookmarks.create({
