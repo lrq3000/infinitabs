@@ -43,6 +43,30 @@ function parseSessionTitle(title) {
     return { name: title, windowId: null };
 }
 
+function findClosestLeftLogicalNeighbor(liveTabs, startIndex, tabToLogical, session) {
+    for (let i = startIndex - 1; i >= 0; i--) {
+        const tab = liveTabs[i];
+        const lid = tabToLogical[tab.id];
+        if (lid) {
+            const l = session.logicalTabs.find(x => x.logicalId === lid);
+            if (l) {
+                return l;
+            }
+        }
+    }
+    return null;
+}
+
+function findClosestAboveLiveNeighbor(logicalTabs, startIndex) {
+    for (let i = startIndex - 1; i >= 0; i--) {
+        const prevLogical = logicalTabs[i];
+        if (prevLogical.liveTabIds.length > 0) {
+            return prevLogical;
+        }
+    }
+    return null;
+}
+
 function generateGuid() {
     return self.crypto.randomUUID();
 }
@@ -1007,18 +1031,7 @@ chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
 
         // Requirement: "place just below the logical tab that is linked to the live tab directly to the left"
         // Iterate backwards from movedTabIndex - 1 to 0 to find the first live tab that has a logical counterpart
-        let anchorLogical = null;
-        for (let i = movedTabIndex - 1; i >= 0; i--) {
-            const tab = liveTabsInOrder[i];
-            const lid = state.tabToLogical[tab.id];
-            if (lid) {
-                const l = session.logicalTabs.find(x => x.logicalId === lid);
-                if (l) {
-                    anchorLogical = l;
-                    break;
-                }
-            }
-        }
+        const anchorLogical = findClosestLeftLogicalNeighbor(liveTabsInOrder, movedTabIndex, state.tabToLogical, session);
 
         if (anchorLogical) {
             // Move after anchorLogical
@@ -1315,18 +1328,15 @@ async function focusOrMountLogicalTab(windowId, logicalId) {
         let insertIndex = 0; // default leftmost
 
         if (currentIdx > 0) {
-            for (let i = currentIdx - 1; i >= 0; i--) {
-                const prevLogical = session.logicalTabs[i];
-                if (prevLogical.liveTabIds.length > 0) {
-                    // Found a live neighbor
-                    // Get its live tab index
-                    try {
-                        const prevLiveTabId = prevLogical.liveTabIds[0]; // assume first
-                        const prevLiveTab = await chrome.tabs.get(prevLiveTabId);
-                        insertIndex = prevLiveTab.index + 1;
-                    } catch (e) { }
-                    break;
-                }
+            const anchorLogical = findClosestAboveLiveNeighbor(session.logicalTabs, currentIdx);
+            if (anchorLogical) {
+                // Found a live neighbor
+                // Get its live tab index
+                try {
+                    const prevLiveTabId = anchorLogical.liveTabIds[0]; // assume first
+                    const prevLiveTab = await chrome.tabs.get(prevLiveTabId);
+                    insertIndex = prevLiveTab.index + 1;
+                } catch (e) { }
             }
         }
 
@@ -1527,16 +1537,12 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
         let liveAnchorIndex = -1;
 
         // Search upwards for a logical tab that has a live tab
-        for (let i = newIndex - 1; i >= 0; i--) {
-            const prevLogical = reloadedSession.logicalTabs[i];
-            if (prevLogical.liveTabIds.length > 0) {
-                // Found an anchor
-                try {
-                    const anchorTab = await chrome.tabs.get(prevLogical.liveTabIds[0]);
-                    liveAnchorIndex = anchorTab.index;
-                } catch (e) { }
-                break;
-            }
+        const anchorLogical = findClosestAboveLiveNeighbor(reloadedSession.logicalTabs, newIndex);
+        if (anchorLogical) {
+            try {
+                const anchorTab = await chrome.tabs.get(anchorLogical.liveTabIds[0]);
+                liveAnchorIndex = anchorTab.index;
+            } catch (e) { }
         }
 
         // Collect live tab IDs to move
