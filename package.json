@@ -1,0 +1,25 @@
+{
+  "name": "app",
+  "version": "1.0.0",
+  "description": "**Unlimited tabs. Zero clutter. Near-zero RAM.** A radically new way to browse—built for researchers, power users, and anyone who regularly “declares tab bankruptcy.”",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lrq3000/infinitabs.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/lrq3000/infinitabs/issues"
+  },
+  "homepage": "https://github.com/lrq3000/infinitabs#readme",
+  "devDependencies": {
+    "jest": "^27.5.1",
+    "jest-chrome": "^0.8.0"
+  }
+}
