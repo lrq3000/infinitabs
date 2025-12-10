@@ -22,30 +22,9 @@ const state = {
 // Kept outside 'state' object to ensure it's not accidentally reset or lost during state operations
 let isRestoring = false;
 
+import { formatSessionTitle, parseSessionTitle, generateGuid, isWorkspaceTrivial as isWorkspaceTrivialUtils } from './utils.js';
+
 // --- Helper Functions ---
-function formatSessionTitle(name, windowId) {
-    if (windowId) {
-        // Remove any existing windowId from the name to avoid duplication
-        const cleanName = name.replace(/ \[windowId:\d+\]$/, '');
-        return `${cleanName} [windowId:${windowId}]`;
-    }
-    return name;
-}
-
-function parseSessionTitle(title) {
-    const match = title.match(/^(.*?) \[windowId:(\d+)\]$/);
-    if (match) {
-        return {
-            name: match[1].trim(),
-            windowId: parseInt(match[2], 10)
-        };
-    }
-    return { name: title, windowId: null };
-}
-
-function generateGuid() {
-    return self.crypto.randomUUID();
-}
 
 // Debounce helper
 const bookmarkUpdateTimers = {}; // logicalId -> timerId
@@ -403,22 +382,7 @@ function getCurrentWorkspaceSnapshot() {
 }
 
 function isWorkspaceTrivial(snapshot) {
-    if (!snapshot || snapshot.sessions.length === 0) return true;
-
-    // If only one window
-    if (snapshot.sessions.length === 1) {
-        const session = state.sessionsById[snapshot.sessions[0].sessionId];
-        if (!session) return true;
-
-        // If session has only one tab and it's a new tab/blank
-        if (session.logicalTabs.length <= 1) {
-            const tab = session.logicalTabs[0];
-            if (!tab || tab.url === "chrome://newtab/" || tab.url === "about:blank" || tab.url === "edge://newtab/") {
-                return true;
-            }
-        }
-    }
-    return false;
+    return isWorkspaceTrivialUtils(snapshot, state);
 }
 
 async function enrichSnapshotWithGeometry(snapshot) {
