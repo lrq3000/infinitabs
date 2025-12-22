@@ -33,20 +33,9 @@ function formatSessionTitle(name, windowId) {
     return name;
 }
 
-function parseSessionTitle(title) {
-    const match = title.match(/^(.*?) \[windowId:(\d+)\]$/);
-    if (match) {
-        return {
-            name: match[1].trim(),
-            windowId: parseInt(match[2], 10)
-        };
-    }
-    return { name: title, windowId: null };
-}
+import { formatSessionTitle, parseSessionTitle, generateGuid, isWorkspaceTrivial as isWorkspaceTrivialUtils } from './utils.js';
 
-function generateGuid() {
-    return self.crypto.randomUUID();
-}
+// --- Helper Functions ---
 
 // Debounce helper
 const bookmarkUpdateTimers = {}; // logicalId -> timerId
@@ -404,22 +393,7 @@ function getCurrentWorkspaceSnapshot() {
 }
 
 function isWorkspaceTrivial(snapshot) {
-    if (!snapshot || snapshot.sessions.length === 0) return true;
-
-    // If only one window
-    if (snapshot.sessions.length === 1) {
-        const session = state.sessionsById[snapshot.sessions[0].sessionId];
-        if (!session) return true;
-
-        // If session has only one tab and it's a new tab/blank
-        if (session.logicalTabs.length <= 1) {
-            const tab = session.logicalTabs[0];
-            if (!tab || tab.url === "chrome://newtab/" || tab.url === "about:blank" || tab.url === "edge://newtab/") {
-                return true;
-            }
-        }
-    }
-    return false;
+    return isWorkspaceTrivialUtils(snapshot, state);
 }
 
 async function enrichSnapshotWithGeometry(snapshot) {
