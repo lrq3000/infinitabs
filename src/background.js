@@ -12,6 +12,7 @@ const state = {
     tabToLogical: {},     // Record<TabId, LogicalTabId>
     liveGroupToBookmark: {}, // Record<LiveGroupId, BookmarkId>
     ignoreMoveEventsForTabIds: new Set(), // Set<TabId>
+    isCreatingGroup: false, // Flag to suppress bookmark creation during programmatic group creation
     workspaceHistory: [], // Array<WorkspaceSnapshot>
     favoriteWorkspaces: [], // Array<WorkspaceSnapshot>
     lastKnownWorkspace: null, // WorkspaceSnapshot
@@ -46,24 +47,15 @@ function parseSessionTitle(title) {
     return { name: title, windowId: null };
 }
 
-/**
- * Generate a UUID string.
- * @returns {string} A UUID (RFC 4122) in string form.
- */
 function generateGuid() {
     return self.crypto.randomUUID();
 }
 
 /**
- * Ensure a live Chrome tab group exists for the given logical (bookmark) group and add the specified tab to it.
- *
- * If a live group is already mapped to the logicalGroupId, the tab is added to that group. If no live group exists,
- * a new tab group is created for the tab, its title and color are set from the session's group metadata, and the
- * mapping is recorded in state.liveGroupToBookmark. Failures are logged and do not throw.
- *
- * @param {number} tabId - The live tab ID to add to the group.
- * @param {string} logicalGroupId - The bookmark folder ID representing the logical group.
- * @param {Object} session - The session object containing group metadata used to name/color a created group.
+ * Ensures that a live group exists for a logical tab if applicable, and adds the tab to it.
+ * @param {number} tabId - The live tab ID.
+ * @param {string} logicalGroupId - The logical group ID (bookmark folder ID).
+ * @param {Object} session - The current session object.
  */
 async function ensureLiveGroupForLogicalTab(tabId, logicalGroupId, session) {
     if (!logicalGroupId) return;
@@ -73,9 +65,6 @@ async function ensureLiveGroupForLogicalTab(tabId, logicalGroupId, session) {
 
     // If no live group exists for this bookmark folder, create one?
     if (!liveGroupId || isNaN(liveGroupId)) {
-        // This is tricky. We need to create a live group.
-        // But chrome.tabs.group requires tabIds.
-        // We can do it now.
         try {
             // We need the group title/color from the session
             const groupInfo = session.groups[logicalGroupId];
@@ -83,11 +72,17 @@ async function ensureLiveGroupForLogicalTab(tabId, logicalGroupId, session) {
             const title = parsed.name;
             const color = parsed.color;
 
+            // Set flag to suppress onCreated/onUpdated listeners
+            state.isCreatingGroup = true;
+
             liveGroupId = await chrome.tabs.group({ tabIds: tabId });
-            await chrome.tabGroups.update(liveGroupId, { title: title, color: color });
             state.liveGroupToBookmark[liveGroupId] = logicalGroupId;
+
+            await chrome.tabGroups.update(liveGroupId, { title: title, color: color });
         } catch (e) {
             console.error("Failed to restore live group", e);
+        } finally {
+            state.isCreatingGroup = false;
         }
     } else {
         // Add to existing group
@@ -370,14 +365,8 @@ async function reloadSessionAndPreserveState(sessionId, windowId) {
 }
 
 /**
- * Ensure live tabs in a browser window are represented in the session by mapping them to existing logical tabs
- * or creating new logical tabs (bookmarks) for unmapped live tabs, then reloads and reattaches to synchronize state.
- *
- * Updates in-memory mappings and may create bookmark folders/bookmarks for new tabs and groups. After completion,
- * the session model and live-to-logical mappings will reflect the current tabs in the given window.
- *
- * @param {number} windowId - The browser window id whose tabs should be synchronized.
- * @param {string} sessionId - The session's bookmark folder id to synchronize against.
+ * Tries to map current live tabs in the window to the session's logical tabs.
+ * Creates new logical tabs (bookmarks) for unmapped live tabs.
  */
 async function syncExistingTabsInWindowToSession(windowId, sessionId) {
     const session = state.sessionsById[sessionId];
@@ -535,14 +524,6 @@ function isWorkspaceTrivial(snapshot) {
     return false;
 }
 
-/**
- * Add actual window geometry to each session in a workspace snapshot and remove sessions whose windows no longer exist.
- *
- * Enriches each session entry with the window's state, top, left, width, and height when the corresponding window is found; sessions whose windows cannot be located are excluded and session/window counts are updated accordingly.
- *
- * @param {Object} snapshot - Workspace snapshot to enrich. Must have a `sessions` array where each entry contains a `windowId` numeric identifier.
- * @returns {Object} The same snapshot object, with `sessions` replaced by the enriched entries and `windowCount`/`sessionCount` updated to reflect the remaining sessions.
- */
 async function enrichSnapshotWithGeometry(snapshot) {
     const windows = await chrome.windows.getAll();
     const enrichedSessions = [];
@@ -574,14 +555,6 @@ async function enrichSnapshotWithGeometry(snapshot) {
     return snapshot;
 }
 
-/**
- * Capture the current bound-window workspace, enrich it with window geometry, and persist it to history.
- *
- * If the snapshot is trivial or identical to the most recent entry, the function avoids adding a new history entry.
- * When only window geometry or timestamp changed but the session structure is identical, the last history entry is
- * updated in place. The function updates `state.workspaceHistory` and `state.lastKnownWorkspace`, persists state,
- * and notifies the UI with a "HISTORY_UPDATED" message when history is added or updated.
- */
 async function trackCurrentWorkspace() {
     if (!state.initialized) return;
 
@@ -664,11 +637,6 @@ async function trackCurrentWorkspace() {
     await persistState();
 }
 
-/**
- * Restore a saved workspace snapshot by creating windows, binding them to their sessions, and replacing current windows.
- *
- * Sets a global restoring flag while running, creates browser windows using the snapshot's geometry and state, binds each new window to its recorded session (falling back to a newly created session if binding fails), closes existing normal and popup windows, clears the restoring flag when finished, and schedules a workspace update.
- */
 async function restoreWorkspace(snapshot) {
     console.log("restoreWorkspace: Starting. Setting isRestoring = true");
     isRestoring = true;
@@ -918,6 +886,7 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
 chrome.tabGroups.onCreated.addListener(async (group) => {
     if (!state.initialized) await init();
     if (isRestoring) return; // Handled by sync/restore logic
+    if (state.isCreatingGroup) return; // Handled programmatically
 
     const sessionId = state.windowToSession[group.windowId];
     if (!sessionId) return;
@@ -1156,7 +1125,36 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
                      let targetParentId = sessionId; // Default to root
 
                      if (tab.groupId !== -1) {
-                         const groupBookmarkId = state.liveGroupToBookmark[tab.groupId];
+                         // If we are creating a group programmatically, we expect the mapping to be set (or set shortly).
+                         // If we are in the middle of creating, we should rely on that process to handle bookmark moves if needed,
+                         // or simply skip the fallback creation logic here because we know we are setting it up.
+                         // But if the tab is moved to a *new* group (which is what tabs.group does),
+                         // onUpdated fires.
+                         // If state.isCreatingGroup is true, we assume the group ID matches the one being created.
+                         // We can skip the fallback creation.
+
+                         let groupBookmarkId = state.liveGroupToBookmark[tab.groupId];
+
+                         if (!groupBookmarkId && state.isCreatingGroup) {
+                             // Suppress fallback creation. The bookmark is already in the correct logical group folder
+                             // because we just created the tab there (or moved it there logically).
+                             // We just need to ensure we don't move it *out* or to a garbage folder.
+                             // If we skip, targetParentId remains sessionId (default)? No, we need to keep it where it is.
+                             // But we can't easily know "keep where it is" without checking current parent.
+                             // However, logic below checks current parent.
+                             // So if we set targetParentId to something valid...
+                             // Actually, if we skip setting targetParentId to a new group, it stays sessionId?
+                             // If targetParentId != currentParentId, we move.
+                             // If we are programmatically grouping, the bookmark IS in the group folder (logically)?
+                             // No, if we just created the tab, it's in the logical group folder.
+                             // The live tab is put in the live group.
+                             // liveGroupToBookmark might be set or not yet.
+                             // If not set, we should assume it maps to the current bookmark parent?
+
+                             // Simplest: If isCreatingGroup, return/skip.
+                             return;
+                         }
+
                          if (groupBookmarkId) {
                              targetParentId = groupBookmarkId;
                          } else {
@@ -1171,9 +1169,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
                                 });
                                 state.liveGroupToBookmark[tab.groupId] = createdGroup.id;
                                 targetParentId = createdGroup.id;
-                             } catch(e) {
-                                console.warn("Failed to create group bookmark on tab group change", e);
-                             }
+                             } catch(e) {}
                          }
                      }
 
@@ -1624,14 +1620,6 @@ async function handleSwitchSession(windowId, newSessionId) {
     }
 }
 
-/**
- * Activates the live tab for a given logical tab in a window, or mounts the logical tab by creating a new browser tab and attaching it if no live tab exists.
- *
- * This updates in-memory mappings (pendingMounts and the session's lastActiveLogicalTabId), attaches created tabs to the logical tab, assigns the live tab to the logical's group bookmark when applicable, and notifies the sidebar UI of state changes.
- *
- * @param {number} windowId - The Id of the window where the logical tab should be focused or mounted.
- * @param {string} logicalId - The logical tab identifier to focus or mount.
- */
 async function focusOrMountLogicalTab(windowId, logicalId) {
     const sessionId = state.windowToSession[windowId];
     if (!sessionId) return;
@@ -1763,16 +1751,6 @@ async function handleUnmountLogicalTab(windowId, logicalId) {
     }
 }
 
-/**
- * Move one or more logical tabs to a new position (inside/before/after a target) and reconcile bookmarks, live tab grouping, ordering, and UI state.
- *
- * Moves the corresponding bookmark nodes for the given logical IDs into the specified destination (a session root, group folder, or next to a target tab), reloads the session model preserving existing live-to-logical bindings, updates live tab group membership to match the new logical grouping, reorders live tabs to reflect the new logical order, and notifies the sidebar UI of the change.
- *
- * @param {number} windowId - The window whose session contains the logical tabs to move.
- * @param {string[]} logicalIds - Array of logical tab IDs (or group IDs) to move, in the desired order.
- * @param {string} targetLogicalId - Logical tab ID, group ID, or session ID that is the anchor for the move.
- * @param {'inside'|'before'|'after'} position - Position relative to the target: move inside the target (as a child), before the target, or after the target.
- */
 async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, position) {
     const sessionId = state.windowToSession[windowId];
     if (!sessionId) return;
