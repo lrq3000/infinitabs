@@ -515,15 +515,6 @@ function onKeyDown(e) {
 
 // --- Rendering ---
 
-function parseGroupTitle(fullTitle) {
-    // Format: "Name [color]"
-    const match = fullTitle.match(/^(.*?) \[([a-z]+)\]$/);
-    if (match) {
-        return { name: match[1].trim(), color: match[2].toLowerCase() };
-    }
-    return { name: fullTitle, color: 'grey' }; // Default color
-}
-
 function renderSession(session) {
     if (!session.logicalTabs || session.logicalTabs.length === 0) {
         tabsContainer.innerHTML = '<div style="padding:10px; color:#888;">Empty Session</div>';
@@ -774,7 +765,7 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
     if (groupColor) {
         if (!line) {
             const newLine = document.createElement('div');
-            newLine.className = `group-color-line group-line-${groupColor}`;
+            newLine.className = 'group-color-line';
             el.insertBefore(newLine, el.firstChild);
         } else {
             // Update color class

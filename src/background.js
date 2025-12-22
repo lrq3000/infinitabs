@@ -1,4 +1,5 @@
 // background.js
+importScripts('utils.js');
 
 // --- Constants ---
 const ROOT_FOLDER_TITLE = "InfiniTabs Sessions";
@@ -45,15 +46,50 @@ function parseSessionTitle(title) {
     return { name: title, windowId: null };
 }
 
-function formatGroupTitle(title, color) {
-    // If title is empty, Chrome uses "Group".
-    const safeTitle = title || "Group";
-    const safeColor = color || "grey";
-    return `${safeTitle} [${safeColor}]`;
-}
-
 function generateGuid() {
     return self.crypto.randomUUID();
+}
+
+/**
+ * Ensures that a live group exists for a logical tab if applicable, and adds the tab to it.
+ * @param {number} tabId - The live tab ID.
+ * @param {string} logicalGroupId - The logical group ID (bookmark folder ID).
+ * @param {Object} session - The current session object.
+ */
+async function ensureLiveGroupForLogicalTab(tabId, logicalGroupId, session) {
+    if (!logicalGroupId) return;
+
+    // Try to resolve live group
+    let liveGroupId = parseInt(Object.keys(state.liveGroupToBookmark).find(key => state.liveGroupToBookmark[key] === logicalGroupId));
+
+    // If no live group exists for this bookmark folder, create one?
+    if (!liveGroupId || isNaN(liveGroupId)) {
+        // This is tricky. We need to create a live group.
+        // But chrome.tabs.group requires tabIds.
+        // We can do it now.
+        try {
+            // We need the group title/color from the session
+            const groupInfo = session.groups[logicalGroupId];
+            const parsed = parseGroupTitle(groupInfo.title);
+            const title = parsed.name;
+            const color = parsed.color;
+
+            liveGroupId = await chrome.tabs.group({ tabIds: tabId });
+            await chrome.tabGroups.update(liveGroupId, { title: title, color: color });
+            state.liveGroupToBookmark[liveGroupId] = logicalGroupId;
+        } catch (e) {
+            console.error("Failed to restore live group", e);
+        }
+    } else {
+        // Add to existing group
+        try {
+            await chrome.tabs.group({ groupId: liveGroupId, tabIds: tabId });
+        } catch (e) {
+            // Maybe group ceased to exist?
+            delete state.liveGroupToBookmark[liveGroupId];
+            // Retry creation? (omitted for brevity)
+        }
+    }
 }
 
 // Debounce helper
@@ -967,42 +1003,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
                     // This is handled in syncExistingTabsInWindowToSession usually, but here it's dynamic.
                     // If we open a logical tab that is in a group, the live tab should be grouped.
                     if (logical.groupId) {
-                        // Find live group ID for this bookmark group
-                        // We need reverse mapping: bookmarkId -> liveGroupId
-                        // We can search state.liveGroupToBookmark values
-                        let liveGroupId = parseInt(Object.keys(state.liveGroupToBookmark).find(key => state.liveGroupToBookmark[key] === logical.groupId));
-
-                        // If no live group exists for this bookmark folder, create one?
-                        if (!liveGroupId || isNaN(liveGroupId)) {
-                             // This is tricky. We need to create a live group.
-                             // But chrome.tabs.group requires tabIds.
-                             // We can do it now.
-                             try {
-                                 // We need the group title/color from the session
-                                 const groupInfo = session.groups[logical.groupId];
-                                 const parsed = parseSessionTitle(groupInfo.title); // actually parseGroupTitle logic needed
-                                 // Let's re-use parseGroupTitle logic locally or export it.
-                                 // Format: Name [color]
-                                 const match = groupInfo.title.match(/^(.*?) \[([a-z]+)\]$/);
-                                 const title = match ? match[1].trim() : groupInfo.title;
-                                 const color = match ? match[2].toLowerCase() : 'grey';
-
-                                 liveGroupId = await chrome.tabs.group({ tabIds: tab.id });
-                                 await chrome.tabGroups.update(liveGroupId, { title: title, color: color });
-                                 state.liveGroupToBookmark[liveGroupId] = logical.groupId;
-                             } catch (e) {
-                                 console.error("Failed to restore live group", e);
-                             }
-                        } else {
-                            // Add to existing group
-                            try {
-                                await chrome.tabs.group({ groupId: liveGroupId, tabIds: tab.id });
-                            } catch (e) {
-                                // Maybe group ceased to exist?
-                                delete state.liveGroupToBookmark[liveGroupId];
-                                // Retry creation? (omitted for brevity)
-                            }
-                        }
+                        await ensureLiveGroupForLogicalTab(tab.id, logical.groupId, session);
                     }
 
                     notifySidebarStateUpdated(windowId, sessionId);
@@ -1641,40 +1642,7 @@ async function focusOrMountLogicalTab(windowId, logicalId) {
 
                 // If the bookmark is in a group, we should add the live tab to a group
                 if (logical.groupId) {
-                    // Try to resolve live group
-                     let liveGroupId = parseInt(Object.keys(state.liveGroupToBookmark).find(key => state.liveGroupToBookmark[key] === logical.groupId));
-
-                        // If no live group exists for this bookmark folder, create one?
-                        if (!liveGroupId || isNaN(liveGroupId)) {
-                             // This is tricky. We need to create a live group.
-                             // But chrome.tabs.group requires tabIds.
-                             // We can do it now.
-                             try {
-                                 // We need the group title/color from the session
-                                 const groupInfo = session.groups[logical.groupId];
-                                 const parsed = parseSessionTitle(groupInfo.title); // actually parseGroupTitle logic needed
-                                 // Let's re-use parseGroupTitle logic locally or export it.
-                                 // Format: Name [color]
-                                 const match = groupInfo.title.match(/^(.*?) \[([a-z]+)\]$/);
-                                 const title = match ? match[1].trim() : groupInfo.title;
-                                 const color = match ? match[2].toLowerCase() : 'grey';
-
-                                 liveGroupId = await chrome.tabs.group({ tabIds: tab.id });
-                                 await chrome.tabGroups.update(liveGroupId, { title: title, color: color });
-                                 state.liveGroupToBookmark[liveGroupId] = logical.groupId;
-                             } catch (e) {
-                                 console.error("Failed to restore live group", e);
-                             }
-                        } else {
-                            // Add to existing group
-                            try {
-                                await chrome.tabs.group({ groupId: liveGroupId, tabIds: tab.id });
-                            } catch (e) {
-                                // Maybe group ceased to exist?
-                                delete state.liveGroupToBookmark[liveGroupId];
-                                // Retry creation? (omitted for brevity)
-                            }
-                        }
+                    await ensureLiveGroupForLogicalTab(tab.id, logical.groupId, session);
                 }
 
                 notifySidebarStateUpdated(windowId, sessionId);
@@ -1841,27 +1809,11 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
         if (logical && logical.liveTabIds.length > 0) {
             if (logical.groupId) {
                 // Should be in a group.
-                // Find or create live group
-                let liveGroupId = parseInt(Object.keys(state.liveGroupToBookmark).find(key => state.liveGroupToBookmark[key] === logical.groupId));
-
-                if (!liveGroupId || isNaN(liveGroupId)) {
-                     // Create live group
-                     try {
-                         const groupInfo = reloadedSession.groups[logical.groupId];
-                         const match = groupInfo.title.match(/^(.*?) \[([a-z]+)\]$/);
-                         const title = match ? match[1].trim() : groupInfo.title;
-                         const color = match ? match[2].toLowerCase() : 'grey';
-
-                         // Group just this tab
-                         liveGroupId = await chrome.tabs.group({ tabIds: logical.liveTabIds });
-                         await chrome.tabGroups.update(liveGroupId, { title: title, color: color });
-                         state.liveGroupToBookmark[liveGroupId] = logical.groupId;
-                     } catch(e) {}
-                } else {
-                    // Add to existing
-                    try {
-                        await chrome.tabs.group({ groupId: liveGroupId, tabIds: logical.liveTabIds });
-                    } catch(e) {}
+                // We assume user wants live tabs grouped if moving bookmark into a group
+                // Use the new helper
+                // Note: we iterate liveTabIds, which is array
+                for (const tid of logical.liveTabIds) {
+                    await ensureLiveGroupForLogicalTab(tid, logical.groupId, session);
                 }
             } else {
                 // Should be ungrouped
