@@ -43,7 +43,13 @@ let ignoreNextAutoScroll = false;
 // Group Collapse State (persisted per group ID or just transient? Task says "can be collapsed". Transient is fine for now.)
 let collapsedGroups = new Set();
 
-// --- Initialization ---
+/**
+ * Initialize the UI: bind event listeners, apply stored theme, and load initial session and workspace data.
+ *
+ * Sets up controls for session management, search, workspace/crash recovery, theme toggling, and top-level tab navigation,
+ * subscribes to runtime messages, migrates an old theme key if present, and triggers the first load of sessions, current session,
+ * past workspaces, and crash status.
+ */
 
 async function init() {
     // Get current window
@@ -513,7 +519,19 @@ function onKeyDown(e) {
     }
 }
 
-// --- Rendering ---
+/**
+ * Render a session's groups and tabs into the tabs container DOM.
+ *
+ * Updates the DOM to reflect the provided session state: it renders groups (with display names and colors)
+ * and tabs in session order, preserves and updates existing elements when possible, removes or appends elements
+ * to match the session, and applies group color indicators. Tabs belonging to groups recorded in `collapsedGroups`
+ * are omitted. The renderer will scroll to the session's last active tab unless auto-scroll is suppressed.
+ *
+ * @param {Object} session - Session state to render.
+ * @param {Object<string, Object>} session.groups - Map of groupId to group metadata (including `title`, `groupId`, `indexInSession`).
+ * @param {Array<Object>} session.logicalTabs - Ordered array of logical tab objects (each with `logicalId`, `groupId`, `indexInSession`, etc.).
+ * @param {string|number} [session.lastActiveLogicalTabId] - Logical ID of the last active tab in this session used to determine auto-scrolling.
+ */
 
 function renderSession(session) {
     if (!session.logicalTabs || session.logicalTabs.length === 0) {
@@ -606,6 +624,13 @@ function renderSession(session) {
     });
 }
 
+/**
+ * Create a draggable group header element that toggles the group's collapsed state and displays its title and color.
+ * @param {Object} group - Group metadata object; must include `groupId` and any data used by updateGroupElement.
+ * @param {string} displayName - Human-readable group title (extracted from the group's raw title).
+ * @param {string} color - CSS color value used to visually identify the group.
+ * @returns {HTMLDivElement} The div element representing the group header.
+ */
 function createGroupElement(group, displayName, color) {
     const el = document.createElement('div');
     el.className = 'group-header';
@@ -640,6 +665,13 @@ function createGroupElement(group, displayName, color) {
     return el;
 }
 
+/**
+ * Update a group header DOM element to reflect the group's display name, color, and collapsed state.
+ * @param {HTMLElement} el - The group header element to update; must contain an element with class `group-title-text`.
+ * @param {Object} group - The group data object containing at least a `groupId` property.
+ * @param {string} displayName - The human-visible group title to display.
+ * @param {string} color - The color key used to apply a `group-bg-{color}` CSS class.
+ */
 function updateGroupElement(el, group, displayName, color) {
     const titleSpan = el.querySelector('.group-title-text');
     if (titleSpan.textContent !== displayName) {
@@ -659,6 +691,15 @@ function updateGroupElement(el, group, displayName, color) {
     }
 }
 
+/**
+ * Create a DOM element that represents a logical tab, including its visual elements,
+ * event handlers (click, delete, unmount, drag) and initial rendered state.
+ * @param {Object} tab - Logical tab object (must include `logicalId` and may include metadata such as title, url, favIconUrl, liveTabIds).
+ * @param {Object} session - Session object used to determine tab live/active state and selection context.
+ * @param {boolean} shouldScroll - If true, the element may be scrolled into view when marked active.
+ * @param {string|undefined} groupColor - Optional CSS color used to render a group color indicator for this tab.
+ * @returns {HTMLDivElement} The constructed tab element ready for insertion into the DOM.
+ */
 function createTabElement(tab, session, shouldScroll, groupColor) {
     const el = document.createElement('div');
     el.dataset.id = tab.logicalId;
@@ -742,6 +783,20 @@ function createTabElement(tab, session, shouldScroll, groupColor) {
     return el;
 }
 
+/**
+ * Update a tab list DOM element to reflect the current tab state and metadata.
+ *
+ * Updates element classes for live/active/selected state, ensures a group color indicator
+ * is present or removed, sets the element tooltip to the tab URL, updates the favicon and
+ * title text, and scrolls the item into view when it is the session's active tab and scrolling is allowed.
+ *
+ * @param {HTMLElement} el - The existing tab item element to update.
+ * @param {Object} tab - Logical tab data; expected fields used: `logicalId`, `liveTabIds` (array), `url`, `title`, `groupId`.
+ * @param {Object} session - Session state used to determine activity; expected field: `lastActiveLogicalTabId`.
+ * @param {boolean} shouldScroll - If true, the active tab will be scrolled into view.
+ * @param {string|undefined} groupColor - Optional color key for the tab's group; when present a color line element
+ *     with class `group-line-<groupColor>` is added or updated, otherwise any existing color line is removed.
+ */
 function updateTabElement(el, tab, session, shouldScroll, groupColor) {
     const isLive = tab.liveTabIds.length > 0;
     const isActive = session.lastActiveLogicalTabId === tab.logicalId;
