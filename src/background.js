@@ -121,6 +121,7 @@ async function ensureRootFolder() {
  * @returns {Promise<Object>} The Session object.
  */
 async function loadSessionFromBookmarks(sessionId) {
+    console.log(`loadSessionFromBookmarks: Loading ${sessionId}`);
     const sessionNodes = await chrome.bookmarks.getSubTree(sessionId).catch(err => {
         console.error(`loadSessionFromBookmarks: getSubTree failed for ${sessionId}`, err);
         return null;
@@ -498,6 +499,7 @@ async function enrichSnapshotWithGeometry(snapshot) {
                 width: win.width,
                 height: win.height
             };
+            // console.log('Saving window geometry:', enriched);
             enrichedSessions.push(enriched);
         } else {
             // Window not found (likely closed but not yet cleaned up from state, or race condition)
@@ -616,18 +618,23 @@ async function restoreWorkspace(snapshot) {
                 if (sessionInfo.height !== undefined) createData.height = sessionInfo.height;
             }
 
+            console.log('restoreWorkspace: Creating window with geometry:', createData);
             const win = await chrome.windows.create(createData);
+            console.log('restoreWorkspace: Window created:', win.id);
 
             // Force maximization if needed (sometimes create doesn't apply it reliably?)
             if (sessionInfo.state === 'maximized' && win.state !== 'maximized') {
+                console.log('restoreWorkspace: Forcing maximization for window', win.id);
                 await chrome.windows.update(win.id, { state: 'maximized' });
             }
 
             newWindowIds.push(win.id);
 
             // Bind session
+            console.log('restoreWorkspace: Binding window', win.id, 'to session', sessionInfo.sessionId);
             try {
                 await bindWindowToSession(win.id, sessionInfo.sessionId);
+                console.log('restoreWorkspace: Bound successfully');
             } catch (err) {
                 console.error(`restoreWorkspace: Failed to bind session ${sessionInfo.sessionId}`, err);
                 // Fallback: Create a new session for this window so it's not orphaned
