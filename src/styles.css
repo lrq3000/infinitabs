@@ -265,6 +265,10 @@ body.dark-mode .top-level-tab.active {
   color: var(--text-color);
 }
 
+.tab-item.live .live-indicator {
+  opacity: 1;
+}
+
 .tab-item.logical {
   /* Indicates purely logical (not open) */
   color: #888;
