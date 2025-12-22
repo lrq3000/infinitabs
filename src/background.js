@@ -860,6 +860,15 @@ chrome.tabs.onCreated.addListener(async (tab) => {
     const newLogical = reloadedSession.logicalTabs.find(l => l.bookmarkId === createdBookmark.id);
     if (newLogical) {
         attachLiveTabToLogical(tab, newLogical);
+
+        // Fix for race condition: If the new tab is active, update the selection immediately
+        // because onActivated might have fired before we established the mapping.
+        if (tab.active) {
+             const session = state.sessionsById[sessionId];
+             if (session) {
+                 session.lastActiveLogicalTabId = newLogical.logicalId;
+             }
+        }
     }
 
     notifySidebarStateUpdated(windowId, sessionId);
