@@ -517,7 +517,12 @@ async function trackCurrentWorkspace() {
                 last.timestamp = snapshot.timestamp;
                 // last.windowCount/sessionCount are same.
 
-                state.lastKnownWorkspace = last;
+                // Store simplified 'isTrivial' flag on the lastKnownWorkspace object (not in history)
+                // for robust crash detection on startup (when sessions aren't loaded yet).
+                state.lastKnownWorkspace = {
+                    ...last,
+                    isTrivial: isWorkspaceTrivial(snapshot)
+                };
                 await persistState();
 
                 // Notify UI that history updated (even if just timestamp/geometry)
@@ -534,7 +539,12 @@ async function trackCurrentWorkspace() {
         state.workspaceHistory = state.workspaceHistory.slice(-state.historySize);
     }
 
-    state.lastKnownWorkspace = snapshot;
+    // Store simplified 'isTrivial' flag on the lastKnownWorkspace object (not in history)
+    // for robust crash detection on startup (when sessions aren't loaded yet).
+    state.lastKnownWorkspace = {
+        ...snapshot,
+        isTrivial: isWorkspaceTrivial(snapshot)
+    };
     await persistState();
 }
 
@@ -776,8 +786,15 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
         console.log(`Window ${windowId} closed, updating workspace history.`);
         delete state.windowToSession[windowId];
 
-        // Immediate update to capture the closure in history
-        await trackCurrentWorkspace();
+        // Check if all windows are closed (Clean Exit)
+        if (Object.keys(state.windowToSession).length === 0) {
+            console.log("All windows closed. Clearing lastKnownWorkspace to prevent false crash detection.");
+            state.lastKnownWorkspace = null;
+            await persistState();
+        } else {
+            // Immediate update to capture the closure in history
+            await trackCurrentWorkspace();
+        }
     }
 });
 
@@ -1211,12 +1228,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     // 3. Current state is "trivial"
 
                     const last = state.lastKnownWorkspace;
+                    if (!last) {
+                        sendResponse({ crashed: false });
+                        break;
+                    }
+
+                    // Use persisted 'isTrivial' flag if available (robust for 1-window crash detection)
+                    // Fallback to calculation for older states (might fail for 1-window case due to missing loaded sessions)
+                    const lastWasTrivial = (last.isTrivial !== undefined)
+                        ? last.isTrivial
+                        : isWorkspaceTrivial(last);
+
                     const current = getCurrentWorkspaceSnapshot();
+                    const currentIsTrivial = isWorkspaceTrivial(current);
 
-                    const isLastRich = last && !isWorkspaceTrivial(last);
-                    const isCurrentTrivial = isWorkspaceTrivial(current);
-
-                    if (isLastRich && isCurrentTrivial) {
+                    if (!lastWasTrivial && currentIsTrivial) {
                         sendResponse({ crashed: true, lastWorkspace: last });
                     } else {
                         sendResponse({ crashed: false });
