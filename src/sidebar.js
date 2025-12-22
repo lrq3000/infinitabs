@@ -782,7 +782,10 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
     const icon = el.querySelector('.tab-icon');
     const title = el.querySelector('.tab-title');
 
-    const faviconUrl = chrome.runtime.getURL("/_favicon/") + "?pageUrl=" + encodeURIComponent(tab.url) + "&size=16";
+    let faviconUrl = chrome.runtime.getURL("/_favicon/") + "?pageUrl=" + encodeURIComponent(tab.url) + "&size=16";
+    if (tab.favIconUrl) {
+        faviconUrl = tab.favIconUrl;
+    }
     if (icon.src !== faviconUrl) icon.src = faviconUrl;
 
     if (title.textContent !== tab.title) title.textContent = tab.title;

@@ -337,6 +337,9 @@ function attachLiveTabToLogical(tab, logical) {
     if (!logical.liveTabIds.includes(tab.id)) {
         logical.liveTabIds.push(tab.id);
     }
+    if (tab.favIconUrl) {
+        logical.favIconUrl = tab.favIconUrl;
+    }
 }
 
 /**
@@ -1238,6 +1241,10 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     }
     if (changeInfo.title && changeInfo.title !== logical.title) {
         logical.title = changeInfo.title;
+        changed = true;
+    }
+    if (changeInfo.favIconUrl && changeInfo.favIconUrl !== logical.favIconUrl) {
+        logical.favIconUrl = changeInfo.favIconUrl;
         changed = true;
     }
 
