@@ -774,7 +774,7 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
     if (groupColor) {
         if (!line) {
             const newLine = document.createElement('div');
-            newLine.className = 'group-color-line';
+            newLine.className = `group-color-line group-line-${groupColor}`;
             el.insertBefore(newLine, el.firstChild);
         } else {
             // Update color class
