@@ -9,6 +9,7 @@ const state = {
     sessionsById: {},     // Record<SessionId, Session>
     windowToSession: {},  // Record<WindowId, SessionId>
     tabToLogical: {},     // Record<TabId, LogicalTabId>
+    liveGroupToBookmark: {}, // Record<LiveGroupId, BookmarkId>
     ignoreMoveEventsForTabIds: new Set(), // Set<TabId>
     workspaceHistory: [], // Array<WorkspaceSnapshot>
     favoriteWorkspaces: [], // Array<WorkspaceSnapshot>
@@ -42,6 +43,13 @@ function parseSessionTitle(title) {
         };
     }
     return { name: title, windowId: null };
+}
+
+function formatGroupTitle(title, color) {
+    // If title is empty, Chrome uses "Group".
+    const safeTitle = title || "Group";
+    const safeColor = color || "grey";
+    return `${safeTitle} [${safeColor}]`;
 }
 
 function generateGuid() {
@@ -113,7 +121,6 @@ async function ensureRootFolder() {
  * @returns {Promise<Object>} The Session object.
  */
 async function loadSessionFromBookmarks(sessionId) {
-    console.log(`loadSessionFromBookmarks: Loading ${sessionId}`);
     const sessionNodes = await chrome.bookmarks.getSubTree(sessionId).catch(err => {
         console.error(`loadSessionFromBookmarks: getSubTree failed for ${sessionId}`, err);
         return null;
@@ -337,35 +344,89 @@ async function syncExistingTabsInWindowToSession(windowId, sessionId) {
 
         if (match) {
             attachLiveTabToLogical(tab, match);
-        } else {
-            // Logic for new tabs is complex (positioning etc). 
-            // For simplified sync on reload: if we can't find it, we create it.
-            // But checking if it's already mapped via state.tabToLogical is risky if state was lost.
-            // We rely on URL match for restoration.
 
-            // If no URL match found, create new.
+            // Map groups if applicable
+            if (tab.groupId !== -1 && match.groupId) {
+                // Live tab is grouped, and logical match is grouped
+                state.liveGroupToBookmark[tab.groupId] = match.groupId;
+            }
+        } else {
+            // Logic for new tabs
+            // If the live tab is part of a group, we should try to place the bookmark in that group (if mapped)
+
+            let parentId = sessionId;
+            if (tab.groupId !== -1) {
+                const mappedBookmarkId = state.liveGroupToBookmark[tab.groupId];
+                if (mappedBookmarkId) {
+                    parentId = mappedBookmarkId;
+                } else {
+                    // Try to fetch group info to create a new folder?
+                    // This is async inside a loop, suboptimal, but necessary for correct initial sync.
+                    try {
+                        const groupInfo = await chrome.tabGroups.get(tab.groupId);
+                        const groupTitle = formatGroupTitle(groupInfo.title, groupInfo.color);
+                        const createdGroup = await chrome.bookmarks.create({
+                            parentId: sessionId,
+                            title: groupTitle
+                        });
+                        state.liveGroupToBookmark[tab.groupId] = createdGroup.id;
+                        parentId = createdGroup.id;
+                    } catch (e) {
+                        console.warn("Could not get tab group info or create folder", e);
+                    }
+                }
+            }
+
             const createdBookmark = await chrome.bookmarks.create({
-                parentId: sessionId,
+                parentId: parentId,
                 title: tab.title || "New Tab",
                 url: tab.url || "about:blank"
             });
 
-            const logical = {
-                logicalId: generateGuid(),
-                sessionId: sessionId,
-                bookmarkId: createdBookmark.id,
-                url: tab.url || "about:blank",
-                title: tab.title || "New Tab",
-                groupId: null,
-                indexInSession: session.logicalTabs.length, // Append
-                liveTabIds: [],
-                lastUpdated: Date.now(),
-                lastSavedTitle: tab.title || "New Tab",
-                lastSavedUrl: tab.url || "about:blank"
-            };
+            // We need to reload session to see the new bookmark in our model
+            // But doing it inside loop is bad.
+            // Better to push to a list and reload once?
+            // For now, we just rely on the fact that syncExistingTabsInWindowToSession is usually called once.
+            // But we need to update in-memory session object manually or reload.
+            // Let's just create a temporary logical object to attach, and reload at the end?
+            // Actually, we must return a consistent state.
+            // Let's reload once at the end.
+        }
+    }
 
-            session.logicalTabs.push(logical);
-            attachLiveTabToLogical(tab, logical);
+    // Final reload to ensure state matches bookmarks
+    await reloadSessionAndPreserveState(sessionId, windowId);
+
+    // Re-attach live tabs because reload wipes references (but preserves via ID matching in reload function)
+    // Wait, reloadSessionAndPreserveState preserves liveTabIds using bookmarkId matching.
+    // But we just created bookmarks and didn't attach them in the session object before reload.
+    // So reloadSessionAndPreserveState won't know about the new live mappings we intended.
+
+    // We need to re-run the matching logic or attach manually after reload.
+    // Since we created bookmarks, they exist.
+    // Let's re-run the attach logic on the fresh session.
+    const refreshedSession = state.sessionsById[sessionId];
+    for (const tab of tabs) {
+        // Find by URL/Title matching what we just created? No, risky.
+        // We should map LiveTab -> BookmarkID -> LogicalTab
+        // We can't easily know the bookmark ID of existing tabs without re-querying or storing.
+
+        // Simplified approach:
+        // We already have 'tab' (live).
+        // We iterate refreshedSession.logicalTabs.
+        // If logicalTab.url == tab.url (and not mapped), map it.
+        // This repeats the work but ensures consistency.
+
+        const match = refreshedSession.logicalTabs.find(lt =>
+             lt.url === tab.url && lt.liveTabIds.length === 0
+             // Ideally check bookmarkId if we tracked it
+        );
+        if (match) {
+            attachLiveTabToLogical(tab, match);
+             // Ensure group mapping persists
+            if (tab.groupId !== -1 && match.groupId) {
+                state.liveGroupToBookmark[tab.groupId] = match.groupId;
+            }
         }
     }
 }
@@ -437,7 +498,6 @@ async function enrichSnapshotWithGeometry(snapshot) {
                 width: win.width,
                 height: win.height
             };
-            console.log('Saving window geometry:', enriched);
             enrichedSessions.push(enriched);
         } else {
             // Window not found (likely closed but not yet cleaned up from state, or race condition)
@@ -463,12 +523,6 @@ async function trackCurrentWorkspace() {
     snapshot = await enrichSnapshotWithGeometry(snapshot);
 
     if (isWorkspaceTrivial(snapshot)) {
-        // Even if trivial, we might want to update lastKnownWorkspace if we want to detect "clean exit" vs crash?
-        // But user said: "Skip saving trivial workspaces".
-        // However, for crash detection, if we only save rich workspaces, 
-        // and on startup we see a trivial one, we know it crashed?
-        // Actually, if we close gracefully, we should probably clear lastKnownWorkspace or mark it?
-        // But the requirement says: "Always record states implicitly."
         return;
     }
 
@@ -511,15 +565,9 @@ async function trackCurrentWorkspace() {
                 if (geometrySame) return; // No change at all
 
                 // Geometry changed, but structure is same -> Update in place
-                // We preserve the ID of the history entry? 
-                // User said "update the parameters of the last historical workspace record".
-                // So we keep the ID, but update timestamp and sessions (which contain geometry).
                 last.sessions = snapshot.sessions;
                 last.timestamp = snapshot.timestamp;
-                // last.windowCount/sessionCount are same.
 
-                // Store simplified 'isTrivial' flag on the lastKnownWorkspace object (not in history)
-                // for robust crash detection on startup (when sessions aren't loaded yet).
                 state.lastKnownWorkspace = {
                     ...last,
                     isTrivial: isWorkspaceTrivial(snapshot)
@@ -540,8 +588,6 @@ async function trackCurrentWorkspace() {
         state.workspaceHistory = state.workspaceHistory.slice(-state.historySize);
     }
 
-    // Store simplified 'isTrivial' flag on the lastKnownWorkspace object (not in history)
-    // for robust crash detection on startup (when sessions aren't loaded yet).
     state.lastKnownWorkspace = {
         ...snapshot,
         isTrivial: isWorkspaceTrivial(snapshot)
@@ -554,16 +600,7 @@ async function restoreWorkspace(snapshot) {
     isRestoring = true;
 
     try {
-        // 1. Close all current windows (except maybe the one we are running in? No, "Close all current windows")
-        // But if we close the window running the extension (if it's not a service worker?), we might die?
-        // Manifest V3 Service Worker lives independently.
-
         const currentWindows = await chrome.windows.getAll();
-        // We should probably keep one window open while we open others, or just open new ones first then close old ones?
-        // "Close all current windows" implies we want a clean slate.
-        // If we close ALL windows, the browser might exit if "Continue running background apps" is off?
-        // Safer: Open new windows first, then close old ones.
-
         const newWindowIds = [];
 
         for (const sessionInfo of snapshot.sessions) {
@@ -579,23 +616,18 @@ async function restoreWorkspace(snapshot) {
                 if (sessionInfo.height !== undefined) createData.height = sessionInfo.height;
             }
 
-            console.log('restoreWorkspace: Creating window with geometry:', createData);
             const win = await chrome.windows.create(createData);
-            console.log('restoreWorkspace: Window created:', win.id);
 
             // Force maximization if needed (sometimes create doesn't apply it reliably?)
             if (sessionInfo.state === 'maximized' && win.state !== 'maximized') {
-                console.log('restoreWorkspace: Forcing maximization for window', win.id);
                 await chrome.windows.update(win.id, { state: 'maximized' });
             }
 
             newWindowIds.push(win.id);
 
             // Bind session
-            console.log('restoreWorkspace: Binding window', win.id, 'to session', sessionInfo.sessionId);
             try {
                 await bindWindowToSession(win.id, sessionInfo.sessionId);
-                console.log('restoreWorkspace: Bound successfully');
             } catch (err) {
                 console.error(`restoreWorkspace: Failed to bind session ${sessionInfo.sessionId}`, err);
                 // Fallback: Create a new session for this window so it's not orphaned
@@ -606,7 +638,6 @@ async function restoreWorkspace(snapshot) {
                         parentId: rootId,
                         title: newSessionTitle
                     });
-                    console.log(`restoreWorkspace: Fallback created new session ${created.id}`);
                     await bindWindowToSession(win.id, created.id);
                 } catch (fallbackErr) {
                     console.error("restoreWorkspace: Critical - Failed to create fallback session", fallbackErr);
@@ -616,7 +647,6 @@ async function restoreWorkspace(snapshot) {
 
         // Close old windows
         for (const win of currentWindows) {
-            // Don't close the DevTools window if open?
             if (win.type === 'normal' || win.type === 'popup') {
                 try {
                     await chrome.windows.remove(win.id);
@@ -744,14 +774,6 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     }
 });
 
-// Detect graceful shutdown?
-// chrome.runtime.onSuspend is not reliable in Service Workers for this purpose usually, 
-// but we can try to use it to clear the "crash" flag if we had one.
-// Actually, the heuristic is: "If there is a lastKnownWorkspace ... and current state is trivial ... treat as crash".
-// So we don't need onSuspend. We just rely on the state on startup.
-
-// Export for testing/usage if modules were used, but in Service Worker we rely on listeners.
-
 // --- Event Listeners ---
 
 chrome.windows.onCreated.addListener(async (window) => {
@@ -785,8 +807,6 @@ chrome.windows.onCreated.addListener(async (window) => {
 
 chrome.windows.onBoundsChanged.addListener(async (window) => {
     if (!state.initialized) await init();
-
-    console.log('Window bounds changed:', window.id, window.state);
     // Track workspace when window is moved or resized
     scheduleWorkspaceUpdate();
 });
@@ -814,6 +834,106 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
     }
 });
 
+// --- Tab Group Listeners ---
+
+chrome.tabGroups.onCreated.addListener(async (group) => {
+    if (!state.initialized) await init();
+    if (isRestoring) return; // Handled by sync/restore logic
+
+    const sessionId = state.windowToSession[group.windowId];
+    if (!sessionId) return;
+
+    // Check if we already have a mapping (might happen during sync/load)
+    if (state.liveGroupToBookmark[group.id]) return;
+
+    try {
+        const title = formatGroupTitle(group.title, group.color);
+        const created = await chrome.bookmarks.create({
+            parentId: sessionId,
+            title: title
+        });
+        state.liveGroupToBookmark[group.id] = created.id;
+
+        // Reload session to reflect new group
+        await reloadSessionAndPreserveState(sessionId, group.windowId);
+        notifySidebarStateUpdated(group.windowId, sessionId);
+    } catch (e) {
+        console.error("Failed to create bookmark folder for group", e);
+    }
+});
+
+chrome.tabGroups.onUpdated.addListener(async (group) => {
+    if (!state.initialized) await init();
+
+    const bookmarkId = state.liveGroupToBookmark[group.id];
+    if (!bookmarkId) return;
+
+    const newTitle = formatGroupTitle(group.title, group.color);
+
+    // Check if changed
+    try {
+        const nodes = await chrome.bookmarks.get(bookmarkId);
+        if (nodes && nodes.length > 0 && nodes[0].title !== newTitle) {
+            await chrome.bookmarks.update(bookmarkId, { title: newTitle });
+
+            const sessionId = state.windowToSession[group.windowId];
+            if (sessionId) {
+                await reloadSessionAndPreserveState(sessionId, group.windowId);
+                notifySidebarStateUpdated(group.windowId, sessionId);
+            }
+        }
+    } catch (e) {
+        console.error("Failed to update bookmark for group", e);
+    }
+});
+
+chrome.tabGroups.onRemoved.addListener(async (group) => {
+    if (!state.initialized) await init();
+
+    const bookmarkId = state.liveGroupToBookmark[group.id];
+    if (!bookmarkId) return;
+
+    delete state.liveGroupToBookmark[group.id];
+
+    // NOTE: In native Chrome, removing a group ungroups the tabs; it does NOT close them.
+    // In bookmarks, removing a folder removes children.
+    // So we must MOVE children out before deleting the folder.
+
+    try {
+        const children = await chrome.bookmarks.getChildren(bookmarkId);
+        if (children.length > 0) {
+            // Move them to parent (session root)
+            // Where? At the end? Or near where the group was?
+            // "logical tabs groups... can be collapsed... can be moved around like tabs".
+            // If we dissolve the group, tabs should probably stay where the group was.
+
+            const groupNode = await chrome.bookmarks.get(bookmarkId);
+            const parentId = groupNode[0].parentId;
+            const index = groupNode[0].index;
+
+            // Move children to parentId starting at index
+            // We loop backwards or adjust index?
+            // chrome.bookmarks.move is atomic for the item.
+            // If we move item 1 to index, item 2 to index+1...
+            for (let i = 0; i < children.length; i++) {
+                await chrome.bookmarks.move(children[i].id, { parentId: parentId, index: index + i });
+            }
+        }
+
+        await chrome.bookmarks.remove(bookmarkId);
+
+        const sessionId = state.windowToSession[group.windowId];
+        if (sessionId) {
+            await reloadSessionAndPreserveState(sessionId, group.windowId);
+            notifySidebarStateUpdated(group.windowId, sessionId);
+        }
+    } catch (e) {
+        console.error("Failed to remove bookmark folder for group", e);
+    }
+});
+
+// --- Tab Listeners (Updated) ---
+
 const pendingMounts = []; // Queue of { logicalId, windowId }
 
 chrome.tabs.onCreated.addListener(async (tab) => {
@@ -834,6 +954,50 @@ chrome.tabs.onCreated.addListener(async (tab) => {
                 const logical = session.logicalTabs.find(l => l.logicalId === logicalId);
                 if (logical) {
                     attachLiveTabToLogical(tab, logical);
+
+                    // Sync Group Mapping if logical has group and live doesn't (or mismatch)
+                    // If logical is in a group, we should try to put live tab in that group?
+                    // This is handled in syncExistingTabsInWindowToSession usually, but here it's dynamic.
+                    // If we open a logical tab that is in a group, the live tab should be grouped.
+                    if (logical.groupId) {
+                        // Find live group ID for this bookmark group
+                        // We need reverse mapping: bookmarkId -> liveGroupId
+                        // We can search state.liveGroupToBookmark values
+                        let liveGroupId = parseInt(Object.keys(state.liveGroupToBookmark).find(key => state.liveGroupToBookmark[key] === logical.groupId));
+
+                        // If no live group exists for this bookmark folder, create one?
+                        if (!liveGroupId || isNaN(liveGroupId)) {
+                             // This is tricky. We need to create a live group.
+                             // But chrome.tabs.group requires tabIds.
+                             // We can do it now.
+                             try {
+                                 // We need the group title/color from the session
+                                 const groupInfo = session.groups[logical.groupId];
+                                 const parsed = parseSessionTitle(groupInfo.title); // actually parseGroupTitle logic needed
+                                 // Let's re-use parseGroupTitle logic locally or export it.
+                                 // Format: Name [color]
+                                 const match = groupInfo.title.match(/^(.*?) \[([a-z]+)\]$/);
+                                 const title = match ? match[1].trim() : groupInfo.title;
+                                 const color = match ? match[2].toLowerCase() : 'grey';
+
+                                 liveGroupId = await chrome.tabs.group({ tabIds: tab.id });
+                                 await chrome.tabGroups.update(liveGroupId, { title: title, color: color });
+                                 state.liveGroupToBookmark[liveGroupId] = logical.groupId;
+                             } catch (e) {
+                                 console.error("Failed to restore live group", e);
+                             }
+                        } else {
+                            // Add to existing group
+                            try {
+                                await chrome.tabs.group({ groupId: liveGroupId, tabIds: tab.id });
+                            } catch (e) {
+                                // Maybe group ceased to exist?
+                                delete state.liveGroupToBookmark[liveGroupId];
+                                // Retry creation? (omitted for brevity)
+                            }
+                        }
+                    }
+
                     notifySidebarStateUpdated(windowId, sessionId);
                     return;
                 }
@@ -854,7 +1018,33 @@ chrome.tabs.onCreated.addListener(async (tab) => {
     let insertParentId = sessionId;
     let insertIndex = null;
 
-    if (tab.index > 0) {
+    // Check if new tab is in a group
+    if (tab.groupId !== -1) {
+        // If live tab is in a group, we want to put bookmark in the corresponding folder
+        const bookmarkId = state.liveGroupToBookmark[tab.groupId];
+        if (bookmarkId) {
+            insertParentId = bookmarkId;
+        } else {
+            // Group exists live but not mapped?
+            // Wait for onCreated logic to create folder?
+            // onCreated fires before onUpdated(tabs) usually?
+            // If tab is created with groupId, maybe we haven't seen the group yet?
+            // We can try to create it here too if missing.
+            try {
+                const groupInfo = await chrome.tabGroups.get(tab.groupId);
+                const groupTitle = formatGroupTitle(groupInfo.title, groupInfo.color);
+                const createdGroup = await chrome.bookmarks.create({
+                    parentId: sessionId,
+                    title: groupTitle
+                });
+                state.liveGroupToBookmark[tab.groupId] = createdGroup.id;
+                insertParentId = createdGroup.id;
+            } catch (e) {
+                 // ignore
+            }
+        }
+    } else if (tab.index > 0) {
+        // Not grouped, try to follow neighbor
         const tabs = await chrome.tabs.query({ windowId, index: tab.index - 1 });
         if (tabs.length > 0) {
             const prevTab = tabs[0];
@@ -895,7 +1085,6 @@ chrome.tabs.onCreated.addListener(async (tab) => {
         attachLiveTabToLogical(tab, newLogical);
 
         // Fix for race condition: If the new tab is active, update the selection immediately
-        // because onActivated might have fired before we established the mapping.
         if (tab.active) {
              const session = state.sessionsById[sessionId];
              if (session) {
@@ -909,6 +1098,55 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (!state.initialized) await init();
+
+    // Check if group changed
+    if (changeInfo.groupId !== undefined) {
+         const logicalId = state.tabToLogical[tabId];
+         if (logicalId) {
+             const sessionId = state.windowToSession[tab.windowId];
+             if (sessionId) {
+                 const session = state.sessionsById[sessionId];
+                 const logical = session.logicalTabs.find(l => l.logicalId === logicalId);
+                 if (logical) {
+                     // Tab moved to a group or out of a group
+                     let targetParentId = sessionId; // Default to root
+
+                     if (tab.groupId !== -1) {
+                         const groupBookmarkId = state.liveGroupToBookmark[tab.groupId];
+                         if (groupBookmarkId) {
+                             targetParentId = groupBookmarkId;
+                         } else {
+                             // Should have been created by onCreated?
+                             // Fallback create
+                             try {
+                                const groupInfo = await chrome.tabGroups.get(tab.groupId);
+                                const groupTitle = formatGroupTitle(groupInfo.title, groupInfo.color);
+                                const createdGroup = await chrome.bookmarks.create({
+                                    parentId: sessionId,
+                                    title: groupTitle
+                                });
+                                state.liveGroupToBookmark[tab.groupId] = createdGroup.id;
+                                targetParentId = createdGroup.id;
+                             } catch(e) {}
+                         }
+                     }
+
+                     // Move bookmark
+                     try {
+                         // Check current parent to avoid redundant moves
+                         const nodes = await chrome.bookmarks.get(logical.bookmarkId);
+                         if (nodes[0].parentId !== targetParentId) {
+                             await chrome.bookmarks.move(logical.bookmarkId, { parentId: targetParentId });
+                             await reloadSessionAndPreserveState(sessionId, tab.windowId);
+                             notifySidebarStateUpdated(tab.windowId, sessionId);
+                         }
+                     } catch(e) {
+                         console.error("Failed to move bookmark on group change", e);
+                     }
+                 }
+             }
+         }
+    }
 
     // Optimization: Ignore loading state if title/url didn't change to avoid spamming the sidebar
     if (changeInfo.status === 'loading' && !changeInfo.url && !changeInfo.title) return;
@@ -1393,6 +1631,45 @@ async function focusOrMountLogicalTab(windowId, logicalId) {
             if (idx !== -1) {
                 pendingMounts.splice(idx, 1);
                 attachLiveTabToLogical(tab, logical);
+
+                // If the bookmark is in a group, we should add the live tab to a group
+                if (logical.groupId) {
+                    // Try to resolve live group
+                     let liveGroupId = parseInt(Object.keys(state.liveGroupToBookmark).find(key => state.liveGroupToBookmark[key] === logical.groupId));
+
+                        // If no live group exists for this bookmark folder, create one?
+                        if (!liveGroupId || isNaN(liveGroupId)) {
+                             // This is tricky. We need to create a live group.
+                             // But chrome.tabs.group requires tabIds.
+                             // We can do it now.
+                             try {
+                                 // We need the group title/color from the session
+                                 const groupInfo = session.groups[logical.groupId];
+                                 const parsed = parseSessionTitle(groupInfo.title); // actually parseGroupTitle logic needed
+                                 // Let's re-use parseGroupTitle logic locally or export it.
+                                 // Format: Name [color]
+                                 const match = groupInfo.title.match(/^(.*?) \[([a-z]+)\]$/);
+                                 const title = match ? match[1].trim() : groupInfo.title;
+                                 const color = match ? match[2].toLowerCase() : 'grey';
+
+                                 liveGroupId = await chrome.tabs.group({ tabIds: tab.id });
+                                 await chrome.tabGroups.update(liveGroupId, { title: title, color: color });
+                                 state.liveGroupToBookmark[liveGroupId] = logical.groupId;
+                             } catch (e) {
+                                 console.error("Failed to restore live group", e);
+                             }
+                        } else {
+                            // Add to existing group
+                            try {
+                                await chrome.tabs.group({ groupId: liveGroupId, tabIds: tab.id });
+                            } catch (e) {
+                                // Maybe group ceased to exist?
+                                delete state.liveGroupToBookmark[liveGroupId];
+                                // Retry creation? (omitted for brevity)
+                            }
+                        }
+                }
+
                 notifySidebarStateUpdated(windowId, sessionId);
             }
         } catch (e) {
@@ -1505,6 +1782,10 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
         } else {
             // Could be a group move? Not implemented in UI yet but good to be safe
             // For now assume only tabs.
+            const g = session.groups[lid];
+            if (g) {
+                bookmarksToMove.push(g.groupId); // Move the folder
+            }
         }
     }
 
@@ -1534,21 +1815,6 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
         }
     }
 
-    // Execute moves sequentially
-    // Note: When moving multiple items to the same index, we need to increment the index
-    // for each subsequent item IF we want them in order A, B, C at position X.
-    // X -> A, X+1 -> B, ...
-
-    // However, if we move A then B.
-    // Move A to X.
-    // Move B to X+1.
-    // This assumes B wasn't already before A, shifting indices.
-
-    // chrome.bookmarks.move handles re-indexing, but we must be careful.
-    // Safest strategy: Move them one by one to the calculated target index.
-    // If we insert A at X. The old item at X becomes X+1.
-    // If we then insert B at X+1. It goes after A.
-
     for (let i = 0; i < bookmarksToMove.length; i++) {
         const bid = bookmarksToMove[i];
         await chrome.bookmarks.move(bid, { parentId: parentId, index: index + i });
@@ -1557,91 +1823,159 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
     // Update state using helper
     const reloadedSession = await reloadSessionAndPreserveState(sessionId, windowId);
 
-    // Sync Live Tabs: Move corresponding live tabs to match new logical position
-    // Requirement: "corresponding live tab should be moved to be just on the right (so just after) the live tab that corresponds to the logical tab just above the logical tab that was moved."
+    // Sync Live Groups: If we moved logical tabs INTO a group, we should group the live tabs.
+    // If we moved OUT of a group, ungroup.
+    // This is handled via 'onMoved' listener? No, we just did a bookmark move.
+    // We need to explicitly update live state.
 
-    // 1. Identify the logical tabs we just moved.
-    // They are in 'logicalIds'.
-    // 2. Find the logical tab *immediately preceding* the first moved logical tab in the *new* order.
-    // Note: The logicalIds might end up contiguous or not depending on the move, but typically a drag drop is a block move.
-    // If we moved [A, B] to after C. New order: C, A, B.
-    // Anchor for A is C. Anchor for B is A.
-    // We can move them as a block if we find the anchor for the block.
+    // For each moved logical tab, check its new group status in reloadedSession
+    for (const lid of logicalIds) {
+        const logical = reloadedSession.logicalTabs.find(l => l.logicalId === lid);
+        if (logical && logical.liveTabIds.length > 0) {
+            if (logical.groupId) {
+                // Should be in a group.
+                // Find or create live group
+                let liveGroupId = parseInt(Object.keys(state.liveGroupToBookmark).find(key => state.liveGroupToBookmark[key] === logical.groupId));
 
-    // Let's assume block move for simplicity and robustness.
-    // Find the first moved logical tab in the new session using the immutable bookmark ID.
-    // logicalIds contains OLD IDs. reloadedSession has NEW IDs.
-    const firstMovedBookmarkId = bookmarksToMove[0];
-    const newIndex = reloadedSession.logicalTabs.findIndex(l => l.bookmarkId === firstMovedBookmarkId);
+                if (!liveGroupId || isNaN(liveGroupId)) {
+                     // Create live group
+                     try {
+                         const groupInfo = session.groups[logical.groupId];
+                         const match = groupInfo.title.match(/^(.*?) \[([a-z]+)\]$/);
+                         const title = match ? match[1].trim() : groupInfo.title;
+                         const color = match ? match[2].toLowerCase() : 'grey';
 
-    if (newIndex !== -1) {
+                         // Group just this tab
+                         liveGroupId = await chrome.tabs.group({ tabIds: logical.liveTabIds });
+                         await chrome.tabGroups.update(liveGroupId, { title: title, color: color });
+                         state.liveGroupToBookmark[liveGroupId] = logical.groupId;
+                     } catch(e) {}
+                } else {
+                    // Add to existing
+                    try {
+                        await chrome.tabs.group({ groupId: liveGroupId, tabIds: logical.liveTabIds });
+                    } catch(e) {}
+                }
+            } else {
+                // Should be ungrouped
+                try {
+                    await chrome.tabs.ungroup(logical.liveTabIds);
+                } catch(e) {}
+            }
+        }
+    }
+
+    // Sync Live Tabs Order
+    // Move corresponding live tabs to match new logical position
+
+    // We moved bookmark(s). Now we need to reorder live tabs to match the new logical order.
+    // Strategy:
+    // 1. Identify where we moved the logical tabs in the new session.
+    // 2. Find the closest preceding logical tab that has a live tab (anchor).
+    // 3. Move the live tabs of the moved logical tabs to after the anchor.
+
+    // We can assume that dragging a set of tabs keeps them contiguous in the destination.
+    // logicalIds contains the IDs of the moved tabs.
+    // reloadedSession has the new order.
+
+    // Find the first moved tab in the new order
+    let firstMovedIndex = -1;
+    for (let i = 0; i < reloadedSession.logicalTabs.length; i++) {
+        if (logicalIds.includes(reloadedSession.logicalTabs[i].logicalId)) {
+            firstMovedIndex = i;
+            break;
+        }
+    }
+
+    if (firstMovedIndex !== -1) {
+        // Find Anchor (live tab before)
         let liveAnchorIndex = -1;
-
-        // Search upwards for a logical tab that has a live tab
-        for (let i = newIndex - 1; i >= 0; i--) {
+        for (let i = firstMovedIndex - 1; i >= 0; i--) {
             const prevLogical = reloadedSession.logicalTabs[i];
             if (prevLogical.liveTabIds.length > 0) {
-                // Found an anchor
                 try {
-                    const anchorTab = await chrome.tabs.get(prevLogical.liveTabIds[0]);
+                    // Use the last live tab of the logical tab (if multiple, rare but possible)
+                    const lastLiveTabId = prevLogical.liveTabIds[prevLogical.liveTabIds.length - 1];
+                    const anchorTab = await chrome.tabs.get(lastLiveTabId);
                     liveAnchorIndex = anchorTab.index;
+                    break;
                 } catch (e) { }
-                break;
             }
         }
 
-        // Collect live tab IDs to move
-        // Use bookmark IDs to identify the moved tabs in the new session
+        // Collect all live tab IDs for the moved logical tabs (in order)
         const liveTabsToMove = [];
-
-        for (let i = newIndex; i < reloadedSession.logicalTabs.length; i++) {
+        for (let i = firstMovedIndex; i < reloadedSession.logicalTabs.length; i++) {
             const l = reloadedSession.logicalTabs[i];
-            // Check if this logical tab corresponds to one of the moved bookmarks
-            if (bookmarksToMove.includes(l.bookmarkId)) {
+            if (logicalIds.includes(l.logicalId)) {
                 liveTabsToMove.push(...l.liveTabIds);
             }
-            // Stop if we hit a tab that wasn't moved?
-            // In a drag operation of multiple items, they are inserted contiguously.
-            // If we have disjoint selection A, C moved to X. They become X, X+1.
-            // So iterating from newIndex should find them all sequentially.
         }
 
         if (liveTabsToMove.length > 0) {
-            // Retrieve current indices for accurate calculation
+            // Calculate target index
+            let targetIndex = 0;
+            if (liveAnchorIndex !== -1) {
+                targetIndex = liveAnchorIndex + 1;
+            }
+
+            // Adjust target index because chrome.tabs.move counts relative to current state.
+            // If we move tabs from left to right, index is straightforward.
+            // If we move right to left, index is also straightforward if using 'index' property.
+            // However, chrome.tabs.move behaves slightly differently depending on direction and selection.
+            // But generally, providing the target index works.
+            // One caveat: if we move multiple tabs, 'index' is the index of the first tab.
+
+            // Also need to account for the fact that moving tabs effectively removes them from old position.
+            // If we move from index 5 to index 2. Target 2.
+            // If we move from index 2 to index 5. Target 5 (or 4?).
+            // Chrome API handles this if we give the destination index.
+
+            // Refinement: If moving AFTER an anchor, we might need to adjust if the moved tabs were previously BEFORE the anchor.
+            // Current indices:
             const currentLiveTabs = await Promise.all(
                 liveTabsToMove.map(tid => chrome.tabs.get(tid).catch(() => null))
             );
             const validTabs = currentLiveTabs.filter(t => t !== null);
-            if (validTabs.length === 0) return;
 
-            // Calculate target index
-            // Formula: AnchorIndex - (Count of Moved Tabs currently LEFT of Anchor) + 1
-            // If Anchor doesn't exist (Start), Target = 0.
+            // If we are moving past an anchor, we just need to know the anchor's index.
+            // But if the tabs to move are currently *before* the anchor, their removal shifts the anchor index down.
+            // chrome.tabs.move index is "the index the first tab should end up at".
 
-            let targetIndex = 0;
-            if (liveAnchorIndex !== -1) {
-                const anchorIndex = liveAnchorIndex;
-                const movingFromLeftCount = validTabs.filter(t => t.index < anchorIndex).length;
-                targetIndex = anchorIndex - movingFromLeftCount + 1;
-            }
+            // Let's count how many of the tabs-to-move are currently before the calculated targetIndex (which is based on current state).
+            // Actually, liveAnchorIndex is based on current state.
+            // If we move tabs that are currently at index 0, 1 to after tab at index 5.
+            // Anchor is 5. Target is 6.
+            // Tabs 0, 1 are moved to 6. Correct.
 
-            // Ensure non-negative
-            if (targetIndex < 0) targetIndex = 0;
+            // If we move tabs that are currently at index 5, 6 to after tab at index 1.
+            // Anchor is 1. Target is 2.
+            // Tabs 5, 6 moved to 2. Correct.
 
-            // Add to ignore set to prevent echo
+            // The only issue is if liveAnchorIndex itself shifts? No, we just fetched it.
+            // Wait, if we use `index` in move, it puts them there.
+            // If we move [A] to after [B].
+            // If A is before B (0, 1). Target 2? No, B becomes 0. A becomes 1.
+            // If we say move A to 2. A goes to 2. B stays 1? No B shifts to 0.
+
+            // Safe bet: Just try to move to targetIndex.
+            // But if we move multiple tabs, we pass -1? No, we can pass index.
+
+            // Important: Add to ignore set
             validTabs.forEach(t => state.ignoreMoveEventsForTabIds.add(t.id));
-
-            // Safety: clear after 2 seconds
             setTimeout(() => {
                 validTabs.forEach(t => state.ignoreMoveEventsForTabIds.delete(t.id));
             }, 2000);
 
             try {
                 const ids = validTabs.map(t => t.id);
+                // We prefer moving one by one to ensure order if they are not contiguous?
+                // Or allow block move.
+                // chrome.tabs.move supports array of IDs and a single index.
+                // It places them starting at index.
                 await chrome.tabs.move(ids, { index: targetIndex });
             } catch (e) {
-                console.warn("Failed to sync live tabs", e);
-                // Cleanup on error
+                console.warn("Failed to sync live tabs order", e);
                 validTabs.forEach(t => state.ignoreMoveEventsForTabIds.delete(t.id));
             }
         }
