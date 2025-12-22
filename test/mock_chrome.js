@@ -65,7 +65,8 @@ global.chrome = {
         local: {
             get: async (keys) => storage.local,
             set: async (items) => Object.assign(storage.local, items)
-        }
+        },
+        onChanged: { addListener: (fn) => listeners['storage.onChanged'] = fn }
     },
     bookmarks: {
         search: async (query) => bookmarks.filter(b => b.title === query.title),

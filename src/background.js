@@ -1,5 +1,7 @@
 // background.js
 
+import { WORD_LIST } from './words.js';
+
 // --- Constants ---
 const ROOT_FOLDER_TITLE = "InfiniTabs Sessions";
 
@@ -46,6 +48,18 @@ function parseSessionTitle(title) {
 
 function generateGuid() {
     return self.crypto.randomUUID();
+}
+
+function generateSessionName() {
+    const count = 6;
+    const words = [];
+    for (let i = 0; i < count; i++) {
+        const randomIndex = Math.floor(Math.random() * WORD_LIST.length);
+        words.push(WORD_LIST[randomIndex]);
+    }
+    // Capitalize each word
+    const capitalized = words.map(w => w.charAt(0).toUpperCase() + w.slice(1));
+    return capitalized.join(' ');
 }
 
 // Debounce helper
@@ -601,7 +615,8 @@ async function restoreWorkspace(snapshot) {
                 // Fallback: Create a new session for this window so it's not orphaned
                 try {
                     const rootId = await ensureRootFolder();
-                    const newSessionTitle = formatSessionTitle(`Session - Window ${win.id}`, win.id);
+                    const baseName = generateSessionName();
+                    const newSessionTitle = formatSessionTitle(baseName, win.id);
                     const created = await chrome.bookmarks.create({
                         parentId: rootId,
                         title: newSessionTitle
@@ -697,7 +712,8 @@ function init(options = {}) {
                         await bindWindowToSession(win.id, sessionFoldersByWindowId[win.id]);
                     } else {
                         // Create a new session folder
-                        const newSessionTitle = formatSessionTitle(`Session - Window ${win.id}`, win.id);
+                        const baseName = generateSessionName();
+                        const newSessionTitle = formatSessionTitle(baseName, win.id);
                         const created = await chrome.bookmarks.create({
                             parentId: rootId,
                             title: newSessionTitle
@@ -771,7 +787,8 @@ chrome.windows.onCreated.addListener(async (window) => {
 
         try {
             const rootId = await ensureRootFolder();
-            const newSessionTitle = formatSessionTitle(`Session - Window ${windowId}`, windowId);
+            const baseName = generateSessionName();
+            const newSessionTitle = formatSessionTitle(baseName, windowId);
             const created = await chrome.bookmarks.create({
                 parentId: rootId,
                 title: newSessionTitle
@@ -1135,7 +1152,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                             }
 
                             const rootId = await ensureRootFolder();
-                            const newSessionTitle = formatSessionTitle(`Session - Window ${windowId}`, windowId);
+                            const baseName = generateSessionName();
+                            const newSessionTitle = formatSessionTitle(baseName, windowId);
                             const created = await chrome.bookmarks.create({
                                 parentId: rootId,
                                 title: newSessionTitle
