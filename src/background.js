@@ -22,6 +22,16 @@ const state = {
 // Kept outside 'state' object to ensure it's not accidentally reset or lost during state operations
 let isRestoring = false;
 
+// --- Helper Functions ---
+function formatSessionTitle(name, windowId) {
+    if (windowId) {
+        // Remove any existing windowId from the name to avoid duplication
+        const cleanName = name.replace(/ \[windowId:\d+\]$/, '');
+        return `${cleanName} [windowId:${windowId}]`;
+    }
+    return name;
+}
+
 import { formatSessionTitle, parseSessionTitle, generateGuid, isWorkspaceTrivial as isWorkspaceTrivialUtils } from './utils.js';
 
 // --- Helper Functions ---
