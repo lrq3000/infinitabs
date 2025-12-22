@@ -13,7 +13,7 @@ const searchClearBtn = document.getElementById('search-clear');
 const searchPrevBtn = document.getElementById('search-prev');
 const searchNextBtn = document.getElementById('search-next');
 
-// Global/Workspace Elements
+// Workspace Elements
 const pastWorkspacesSelector = document.getElementById('past-workspaces-selector');
 const reloadWorkspaceBtn = document.getElementById('reload-workspace-btn');
 const favoriteWorkspaceBtn = document.getElementById('favorite-workspace-btn');
