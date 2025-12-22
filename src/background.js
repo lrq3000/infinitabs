@@ -14,6 +14,7 @@ const state = {
     favoriteWorkspaces: [], // Array<WorkspaceSnapshot>
     lastKnownWorkspace: null, // WorkspaceSnapshot
     historySize: 50,
+    reloadOnRestart: false, // User Preference
     initialized: false
 };
 
@@ -635,7 +636,7 @@ async function restoreWorkspace(snapshot) {
 
 let initPromise = null;
 
-function init() {
+function init(options = {}) {
     if (state.initialized) return Promise.resolve();
     if (initPromise) return initPromise;
 
@@ -650,58 +651,66 @@ function init() {
             }
 
             // Restore persisted state
-            const storage = await chrome.storage.local.get(['windowToSession', 'workspaceHistory', 'favoriteWorkspaces', 'lastKnownWorkspace', 'historySize']);
+            const storage = await chrome.storage.local.get(['windowToSession', 'workspaceHistory', 'favoriteWorkspaces', 'lastKnownWorkspace', 'historySize', 'reloadOnRestart']);
             if (storage.windowToSession) state.windowToSession = storage.windowToSession;
             if (storage.workspaceHistory) state.workspaceHistory = storage.workspaceHistory;
             if (storage.favoriteWorkspaces) state.favoriteWorkspaces = storage.favoriteWorkspaces;
             if (storage.lastKnownWorkspace) state.lastKnownWorkspace = storage.lastKnownWorkspace;
             if (storage.historySize) state.historySize = storage.historySize;
+            if (storage.reloadOnRestart !== undefined) state.reloadOnRestart = storage.reloadOnRestart;
 
-            const windows = await chrome.windows.getAll();
-            const rootId = await ensureRootFolder();
-            const sessionFolders = await chrome.bookmarks.getChildren(rootId);
+            // Only skip binding if we are in a startup context AND auto-reload is enabled
+            const shouldSkipBinding = options.isStartup && state.reloadOnRestart && state.lastKnownWorkspace;
 
-            const sessionFoldersByWindowId = {};
-            for (const folder of sessionFolders) {
-                const parsed = parseSessionTitle(folder.title);
-                if (parsed.windowId) {
-                    sessionFoldersByWindowId[parsed.windowId] = folder.id;
-                } else {
-                    // Try to parse old format "Session - Window 12345"
-                    const match = folder.title.match(/^Session - Window (\d+)$/);
-                    if (match) {
-                        const windowId = parseInt(match[1], 10);
-                        sessionFoldersByWindowId[windowId] = folder.id;
+            if (!shouldSkipBinding) {
+                const windows = await chrome.windows.getAll();
+                const rootId = await ensureRootFolder();
+                const sessionFolders = await chrome.bookmarks.getChildren(rootId);
+
+                const sessionFoldersByWindowId = {};
+                for (const folder of sessionFolders) {
+                    const parsed = parseSessionTitle(folder.title);
+                    if (parsed.windowId) {
+                        sessionFoldersByWindowId[parsed.windowId] = folder.id;
+                    } else {
+                        // Try to parse old format "Session - Window 12345"
+                        const match = folder.title.match(/^Session - Window (\d+)$/);
+                        if (match) {
+                            const windowId = parseInt(match[1], 10);
+                            sessionFoldersByWindowId[windowId] = folder.id;
+                        }
                     }
                 }
-            }
 
-            for (const win of windows) {
-                const storedSessionId = state.windowToSession[win.id];
-                if (storedSessionId) {
-                    try {
-                        await bindWindowToSession(win.id, storedSessionId);
-                    } catch (e) {
-                        console.warn(`Could not restore session ${storedSessionId} for window ${win.id}`, e);
-                        delete state.windowToSession[win.id];
-                        await persistState();
+                for (const win of windows) {
+                    const storedSessionId = state.windowToSession[win.id];
+                    if (storedSessionId) {
+                        try {
+                            await bindWindowToSession(win.id, storedSessionId);
+                        } catch (e) {
+                            console.warn(`Could not restore session ${storedSessionId} for window ${win.id}`, e);
+                            delete state.windowToSession[win.id];
+                            await persistState();
+                        }
+                    } else if (sessionFoldersByWindowId[win.id]) {
+                        // Found an existing session folder for this window
+                        await bindWindowToSession(win.id, sessionFoldersByWindowId[win.id]);
+                    } else {
+                        // Create a new session folder
+                        const newSessionTitle = formatSessionTitle(`Session - Window ${win.id}`, win.id);
+                        const created = await chrome.bookmarks.create({
+                            parentId: rootId,
+                            title: newSessionTitle
+                        });
+                        await bindWindowToSession(win.id, created.id);
                     }
-                } else if (sessionFoldersByWindowId[win.id]) {
-                    // Found an existing session folder for this window
-                    await bindWindowToSession(win.id, sessionFoldersByWindowId[win.id]);
-                } else {
-                    // Create a new session folder
-                    const newSessionTitle = formatSessionTitle(`Session - Window ${win.id}`, win.id);
-                    const created = await chrome.bookmarks.create({
-                        parentId: rootId,
-                        title: newSessionTitle
-                    });
-                    await bindWindowToSession(win.id, created.id);
                 }
-            }
 
-            // Initial workspace track
-            scheduleWorkspaceUpdate(2000);
+                // Initial workspace track
+                scheduleWorkspaceUpdate(2000);
+            } else {
+                console.log("InfiniTabs: Auto-reload enabled. Skipping initial window binding.");
+            }
 
             state.initialized = true;
             console.log("InfiniTabs: Background initialized.");
@@ -715,8 +724,25 @@ function init() {
     return initPromise;
 }
 
+async function onStartupHandler() {
+    await init({ isStartup: true });
+    if (state.reloadOnRestart && state.lastKnownWorkspace) {
+        console.log("InfiniTabs: Auto-reloading last workspace on startup...");
+        // We restore specifically the sessions that were open.
+        // NOTE: This will close current windows (which might be the browser's own session restore).
+        // This effectively overrides the browser's session restore if both are active.
+        await restoreWorkspace(state.lastKnownWorkspace);
+    }
+}
+
 chrome.runtime.onInstalled.addListener(init);
-chrome.runtime.onStartup.addListener(init);
+chrome.runtime.onStartup.addListener(onStartupHandler);
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === 'local' && changes.reloadOnRestart) {
+        state.reloadOnRestart = changes.reloadOnRestart.newValue;
+    }
+});
 
 // Detect graceful shutdown?
 // chrome.runtime.onSuspend is not reliable in Service Workers for this purpose usually, 
