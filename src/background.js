@@ -1171,7 +1171,9 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
                                 });
                                 state.liveGroupToBookmark[tab.groupId] = createdGroup.id;
                                 targetParentId = createdGroup.id;
-                             } catch(e) {}
+                             } catch(e) {
+                                console.warn("Failed to create group bookmark on tab group change", e);
+                             }
                          }
                      }
 
