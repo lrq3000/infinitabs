@@ -620,7 +620,14 @@ function createTabElement(tab, session, shouldScroll) {
     indicatorWrapper.title = 'Close live tab (keep bookmark)';
     indicatorWrapper.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (tab.liveTabIds.length > 0) {
+        // Look up latest tab status from currentSession
+        let currentTab = tab;
+        if (currentSession && currentSession.logicalTabs) {
+            const found = currentSession.logicalTabs.find(t => t.logicalId === tab.logicalId);
+            if (found) currentTab = found;
+        }
+
+        if (currentTab.liveTabIds.length > 0) {
             chrome.runtime.sendMessage({
                 type: "UNMOUNT_LOGICAL_TAB",
                 windowId: currentWindowId,
