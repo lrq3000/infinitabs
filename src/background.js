@@ -757,19 +757,6 @@ chrome.windows.onCreated.addListener(async (window) => {
     }
 });
 
-chrome.windows.onRemoved.addListener(async (windowId) => {
-    if (!state.initialized) await init();
-
-    if (state.windowToSession[windowId]) {
-        delete state.windowToSession[windowId];
-        await persistState();
-    }
-
-    scheduleWorkspaceUpdate();
-});
-
-
-
 chrome.windows.onBoundsChanged.addListener(async (window) => {
     if (!state.initialized) await init();
 
@@ -795,6 +782,9 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
             // Immediate update to capture the closure in history
             await trackCurrentWorkspace();
         }
+    } else {
+        // Even if not tracking a session, update workspace to ensure consistency
+        scheduleWorkspaceUpdate();
     }
 });
 
