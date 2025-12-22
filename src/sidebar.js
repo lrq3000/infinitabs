@@ -27,6 +27,10 @@ const crashPopupClose = document.getElementById('crash-popup-close');
 const crashPopupRestoreBtn = document.getElementById('crash-popup-restore-btn');
 const crashPopupNoBtn = document.getElementById('crash-popup-no-btn');
 
+// Global Search Elements
+const globalSearchInput = document.getElementById('global-search-input');
+const globalSearchResults = document.getElementById('global-search-results');
+
 let currentSession = null;
 let currentWindowId = null;
 let isDarkMode = false;
@@ -78,6 +82,17 @@ async function init() {
     crashPopupRestoreBtn.addEventListener('click', onCrashRestore);
     crashPopupClose.addEventListener('click', onCrashPopupClose);
     crashPopupNoBtn.addEventListener('click', onCrashPopupClose);
+
+    // Global Search Listeners
+    if (globalSearchInput) {
+        globalSearchInput.addEventListener('input', debounce(performGlobalSearch, 300));
+        globalSearchInput.addEventListener('keydown', (e) => {
+             if (e.key === 'Escape') {
+                 globalSearchInput.value = '';
+                 globalSearchResults.innerHTML = '';
+             }
+        });
+    }
 
     chrome.runtime.onMessage.addListener(onMessage);
 
@@ -137,6 +152,16 @@ function setTheme(dark) {
 
 function toggleTheme() {
     setTheme(!isDarkMode);
+}
+
+// Debounce Utility
+function debounce(func, wait) {
+    let timeout;
+    return function (...args) {
+        const context = this;
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(context, args), wait);
+    };
 }
 
 async function loadSessionsList() {
@@ -397,6 +422,15 @@ function onMessage(message, sender, sendResponse) {
             renderSession(currentSession);
             // Re-apply search if exists
             if (searchInput.value) performSearch();
+
+            // Note: Global search results are independent of current session state
+            // so we don't need to re-render them here unless we want to reflect
+            // real-time changes in search results (like title updates).
+            // For MVP, we can leave it as is. If user wants fresh results, they type again.
+            // Or we could re-trigger search if input is active.
+            if (globalSearchInput && globalSearchInput.value) {
+                // performGlobalSearch(); // Optional: might be too heavy?
+            }
         }
     } else if (message.type === "HISTORY_UPDATED") {
         loadPastWorkspaces();
@@ -500,6 +534,118 @@ function navigateSearch(direction) {
     const activeEl = currentMatches[currentMatchIndex];
     activeEl.classList.add('active-match');
     activeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function performGlobalSearch() {
+    const query = globalSearchInput.value;
+    if (!query || !query.trim()) {
+        globalSearchResults.innerHTML = '';
+        return;
+    }
+
+    const response = await chrome.runtime.sendMessage({
+        type: "SEARCH_ALL_SESSIONS",
+        query: query
+    });
+
+    const results = response.results || [];
+    renderGlobalSearchResults(results);
+}
+
+function renderGlobalSearchResults(results) {
+    globalSearchResults.innerHTML = '';
+
+    if (results.length === 0) {
+        globalSearchResults.innerHTML = '<div style="padding:10px; color:#888;">No matches found.</div>';
+        return;
+    }
+
+    results.forEach(item => {
+        // item: { sessionId, sessionName, tab: { title, url, id } }
+        const el = document.createElement('div');
+        el.className = 'tab-item logical'; // Reuse styles
+        el.style.height = 'auto'; // Allow variable height
+        el.style.padding = '8px';
+        el.style.flexDirection = 'column';
+        el.style.alignItems = 'flex-start';
+
+        // Container for Top Row (Icon + Title)
+        const topRow = document.createElement('div');
+        topRow.style.display = 'flex';
+        topRow.style.alignItems = 'center';
+        topRow.style.width = '100%';
+
+        const icon = document.createElement('img');
+        icon.className = 'tab-icon';
+        const faviconUrl = chrome.runtime.getURL("/_favicon/") + "?pageUrl=" + encodeURIComponent(item.tab.url) + "&size=16";
+        icon.src = faviconUrl;
+        topRow.appendChild(icon);
+
+        const title = document.createElement('span');
+        title.className = 'tab-title';
+        title.textContent = item.tab.title;
+        title.style.marginLeft = '8px';
+        topRow.appendChild(title);
+
+        el.appendChild(topRow);
+
+        // Subtitle (Session Name)
+        // Context (Prev)
+        if (item.context && item.context.prev) {
+            const prevRow = document.createElement('div');
+            prevRow.className = 'search-context prev';
+            prevRow.textContent = `... ${item.context.prev}`;
+            el.appendChild(prevRow);
+        }
+
+        // Subtitle (Session Name)
+        const subRow = document.createElement('div');
+        subRow.style.fontSize = '0.85em';
+        subRow.style.color = 'var(--text-muted)';
+        subRow.style.marginTop = '4px';
+        subRow.style.marginLeft = '24px'; // Indent to align with text
+        subRow.textContent = `Session: ${item.sessionName}`;
+        el.appendChild(subRow);
+
+        // Context (Next)
+        if (item.context && item.context.next) {
+            const nextRow = document.createElement('div');
+            nextRow.className = 'search-context next';
+            nextRow.textContent = `${item.context.next} ...`;
+            el.appendChild(nextRow);
+        }
+
+        el.title = item.tab.url;
+
+        // Click Handler
+        el.addEventListener('click', async (e) => {
+            if (e.ctrlKey || e.metaKey) {
+                // Open in current window
+                await chrome.tabs.create({ url: item.tab.url });
+            } else {
+                // Switch Session
+                if (currentSession && currentSession.sessionId === item.sessionId) {
+                    // Already in session, just focus tab?
+                    // We don't have logic to find logicalId from bookmarkId easily here
+                    // without iterating currentSession.
+                    // But we can just try to focus via URL or let user find it.
+                    // The requirement says "switch to the relevant session".
+                    // If we are already there, maybe just do nothing or reload?
+                    // Let's call SWITCH_SESSION anyway, it handles idempotency or rebind.
+                    // Or better, just ensure we are bound.
+                }
+
+                await chrome.runtime.sendMessage({
+                    type: "SWITCH_SESSION",
+                    windowId: currentWindowId,
+                    sessionId: item.sessionId
+                });
+                // Do NOT switch tab view to "Session". Stay on "Workspaces".
+            }
+        });
+
+        globalSearchResults.appendChild(el);
+    });
 }
 
 function onKeyDown(e) {

@@ -3,6 +3,7 @@
 :root {
   --bg-color: #f7f9fc;
   --text-color: #333;
+  --text-muted: #888; /* Added for context */
   --header-bg: #fff;
   --border-color: #ddd;
   --hover-bg: #eef3f8;
@@ -23,6 +24,7 @@
 body.dark-mode {
   --bg-color: #1e1e1e;
   --text-color: #eee;
+  --text-muted: #aaa; /* Added for context */
   --header-bg: #252526;
   --border-color: #3e3e42;
   --hover-bg: #2a2d2e;
@@ -536,4 +538,46 @@ body.dark-mode .live-indicator-wrapper:hover {
 
 .crash-popup .secondary-btn:hover {
   background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #ccc;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #aaa;
+}
+
+/* Global Search */
+.global-search-container {
+    margin-top: 20px;
+    border-top: 1px solid var(--border-color);
+    padding-top: 15px;
+}
+
+#global-search-results {
+    margin-top: 10px;
+}
+
+/* Search Context (Faded Text) */
+.search-context {
+    color: var(--text-muted);
+    opacity: 0.7;
+    font-size: 0.8em;
+    margin-left: 24px;
+}
+
+.search-context.prev {
+    margin-bottom: 2px;
+}
+
+.search-context.next {
+    margin-top: 2px;
 }
