@@ -1847,7 +1847,7 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
                 if (!liveGroupId || isNaN(liveGroupId)) {
                      // Create live group
                      try {
-                         const groupInfo = session.groups[logical.groupId];
+                         const groupInfo = reloadedSession.groups[logical.groupId];
                          const match = groupInfo.title.match(/^(.*?) \[([a-z]+)\]$/);
                          const title = match ? match[1].trim() : groupInfo.title;
                          const color = match ? match[2].toLowerCase() : 'grey';
