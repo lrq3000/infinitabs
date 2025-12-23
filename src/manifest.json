@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "InfiniTabs",
-  "version": "0.2.9",
+  "version": "0.2.8",
   "description": "Unlimited tabs. Zero clutter. Near-zero RAM.",
   "permissions": [
     "tabs",
@@ -9,7 +9,8 @@
     "windows",
     "storage",
     "sidePanel",
-    "favicon"
+    "favicon",
+    "tabGroups"
   ],
   "background": {
     "service_worker": "background.js"
