@@ -112,14 +112,8 @@ const newTab = {
 // background.js: `chrome.tabs.query({ windowId, index: tab.index - 1 })`
 // We need to improve mock query to handle index.
 
-const originalQuery = chrome.tabs.query;
-chrome.tabs.query = async (queryInfo) => {
-    const result = await originalQuery(queryInfo);
-    if (queryInfo.index !== undefined) {
-        return result.filter(t => t.index === queryInfo.index);
-    }
-    return result;
-};
+ // Add new tab to mock tabs list
+ await chrome.tabs.create(newTab);
 
 // Add new tab to mock tabs list
 await chrome.tabs.create(newTab);
