@@ -1110,8 +1110,27 @@ chrome.tabs.onCreated.addListener(async (tab) => {
                     try {
                         const nodes = await chrome.bookmarks.get(prevLogical.bookmarkId);
                         if (nodes && nodes.length > 0) {
-                            insertParentId = nodes[0].parentId;
-                            insertIndex = nodes[0].index + 1;
+                            const prevNode = nodes[0];
+                            // If prev bookmark is in a folder (group) but new tab is NOT in a group,
+                            // we must put the new bookmark after the group folder, in the session root.
+                            // Unless the parent is the session root itself.
+
+                            if (prevNode.parentId !== sessionId) {
+                                // Previous bookmark is inside a subfolder (group)
+                                // New tab is not in a group (checked earlier)
+                                // So we place it in session root, after the group folder.
+
+                                // Find the group folder node to determine where to insert
+                                const groupFolderNodes = await chrome.bookmarks.get(prevNode.parentId);
+                                if (groupFolderNodes && groupFolderNodes.length > 0) {
+                                    insertParentId = sessionId;
+                                    insertIndex = groupFolderNodes[0].index + 1;
+                                }
+                            } else {
+                                // Previous bookmark is at root level
+                                insertParentId = prevNode.parentId;
+                                insertIndex = prevNode.index + 1;
+                            }
                         }
                     } catch (e) {
                         console.warn("Could not find prev bookmark", e);

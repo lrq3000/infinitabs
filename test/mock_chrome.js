@@ -1,5 +1,5 @@
 
-// Basic mock of chrome API
+// mock_chrome.js
 const listeners = {};
 const storage = { local: {} };
 const windows = [];
@@ -12,7 +12,7 @@ global.chrome = {
         onStartup: { addListener: (fn) => listeners['onStartup'] = fn },
         onSuspend: { addListener: (fn) => listeners['onSuspend'] = fn },
         onMessage: { addListener: (fn) => listeners['onMessage'] = fn },
-        sendMessage: async (msg) => { console.log('sendMessage', msg); }
+        sendMessage: async (msg) => { /* console.log('sendMessage', msg); */ }
     },
     windows: {
         onCreated: { addListener: (fn) => listeners['windows.onCreated'] = fn },
@@ -22,7 +22,6 @@ global.chrome = {
         create: async (data) => {
             const win = { id: data.id || Date.now(), ...data };
             windows.push(win);
-            // Trigger onCreated? In real browser yes.
             if (listeners['windows.onCreated']) listeners['windows.onCreated'](win);
             return win;
         },
@@ -39,10 +38,10 @@ global.chrome = {
         onMoved: { addListener: (fn) => listeners['tabs.onMoved'] = fn },
         onActivated: { addListener: (fn) => listeners['tabs.onActivated'] = fn },
         query: async (queryInfo) => {
-             // simplified query logic
              return tabs.filter(t => {
                  if (queryInfo.windowId && t.windowId !== queryInfo.windowId) return false;
                  if (queryInfo.active !== undefined && t.active !== queryInfo.active) return false;
+                 if (queryInfo.index !== undefined && t.index !== queryInfo.index) return false;
                  return true;
              });
         },
@@ -59,23 +58,40 @@ global.chrome = {
                  if (idx !== -1) tabs.splice(idx, 1);
              }
         },
-        move: async (ids, moveInfo) => {}
+        move: async (ids, moveInfo) => {},
+        group: async (options) => { return 999; }, // Mock group ID
+        ungroup: async (ids) => {},
+    },
+    tabGroups: {
+        onCreated: { addListener: (fn) => listeners['tabGroups.onCreated'] = fn },
+        onUpdated: { addListener: (fn) => listeners['tabGroups.onUpdated'] = fn },
+        onRemoved: { addListener: (fn) => listeners['tabGroups.onRemoved'] = fn },
+        get: async (groupId) => ({ title: "Group", color: "blue", id: groupId }),
+        update: async () => {}
     },
     storage: {
         local: {
             get: async (keys) => storage.local,
             set: async (items) => Object.assign(storage.local, items)
-        }
+        },
+        onChanged: { addListener: (fn) => listeners['storage.onChanged'] = fn }
     },
     bookmarks: {
         search: async (query) => bookmarks.filter(b => b.title === query.title),
         create: async (data) => {
             const b = { id: Math.random().toString(), ...data, children: [] };
             bookmarks.push(b);
-            // Also need to put it in parent if parentId is set
             if (data.parentId) {
                 const parent = findBookmark(data.parentId);
-                if (parent && parent.children) parent.children.push(b);
+                if (parent && parent.children) {
+                    if (data.index !== undefined) {
+                        parent.children.splice(data.index, 0, b);
+                        b.index = data.index;
+                    } else {
+                        b.index = parent.children.length;
+                        parent.children.push(b);
+                    }
+                }
             }
             return b;
         },
@@ -98,7 +114,7 @@ global.chrome = {
              return b ? [b] : [];
         },
         move: async (id, dest) => {
-             // Implement move if needed for tests
+             // Implement basic move
         },
         remove: async (id) => {}
     },
@@ -113,8 +129,32 @@ global.self = {
     }
 }
 
+// Add importScripts shim
+global.importScripts = (path) => {
+    // In node environment, we can't easily eval another file in global scope synchronously
+    // without reading it. But since we know what utils.js contains (helper functions),
+    // and we can't easily require it (ESM vs CommonJS mess), we can just mock the functions
+    // it provides if they are global.
+    // However, background.js relies on them.
+    // For this test, I'll just define them globally here.
+};
+
+global.formatGroupTitle = function(title, color) {
+    const safeTitle = title || "Group";
+    const safeColor = color || "grey";
+    return `${safeTitle} [${safeColor}]`;
+};
+
+global.parseGroupTitle = function(fullTitle) {
+    const match = fullTitle.match(/^(.*?) \[([a-z]+)\]$/);
+    if (match) {
+        return { name: match[1].trim(), color: match[2].toLowerCase() };
+    }
+    return { name: fullTitle, color: 'grey' };
+};
+
+
 function findBookmark(id) {
-    // DFS search
     const stack = [...bookmarks];
     while (stack.length) {
         const node = stack.pop();
