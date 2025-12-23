@@ -38,6 +38,7 @@ global.chrome = {
         onMoved: { addListener: (fn) => listeners['tabs.onMoved'] = fn },
         onActivated: { addListener: (fn) => listeners['tabs.onActivated'] = fn },
         query: async (queryInfo) => {
+             // console.log('Mock Query:', queryInfo, 'Current Tabs:', tabs);
              return tabs.filter(t => {
                  if (queryInfo.windowId && t.windowId !== queryInfo.windowId) return false;
                  if (queryInfo.active !== undefined && t.active !== queryInfo.active) return false;
@@ -47,6 +48,7 @@ global.chrome = {
         },
         create: async (data) => {
              const tab = { id: Math.floor(Math.random() * 1000), ...data };
+             console.log('Mock Tab Created:', tab);
              tabs.push(tab);
              return tab;
         },
@@ -126,7 +128,41 @@ global.chrome = {
              return b ? [b] : [];
         },
         move: async (id, dest) => {
-             // Implement basic move
+            const node = findBookmark(id);
+            if (!node) return undefined;
+
+            // Remove from old parent
+            const oldParent = findBookmark(node.parentId);
+            if (oldParent && oldParent.children) {
+                const oldIndex = oldParent.children.indexOf(node);
+                if (oldIndex !== -1) {
+                    oldParent.children.splice(oldIndex, 1);
+                    // Update indices of remaining siblings
+                    oldParent.children.forEach((c, i) => c.index = i);
+                }
+            }
+
+            // Add to new parent
+            if (dest.parentId) {
+                const newParent = findBookmark(dest.parentId);
+                if (newParent && newParent.children) {
+                    node.parentId = dest.parentId;
+                    if (dest.index !== undefined) {
+                        newParent.children.splice(dest.index, 0, node);
+                    } else {
+                        // Append
+                        newParent.children.push(node);
+                    }
+                    // Update all indices in new parent
+                    newParent.children.forEach((c, i) => c.index = i);
+                }
+            } else if (dest.index !== undefined && oldParent) {
+                 // Move within same parent
+                 node.parentId = oldParent.id; // redundant but safe
+                 oldParent.children.splice(dest.index, 0, node);
+                 oldParent.children.forEach((c, i) => c.index = i);
+            }
+            return node;
         },
         remove: async (id) => {}
     },

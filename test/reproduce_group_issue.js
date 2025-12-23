@@ -1,146 +1,153 @@
 
 import { listeners } from './mock_chrome.js';
+import '../src/background.js';
 
 // Wait for initialization
-// await new Promise(r => setTimeout(r, 100));
+await new Promise(r => setTimeout(r, 100));
 
 // Setup environment
 const windowId = 1;
-const sessionId = "session_1";
+await chrome.windows.create({ id: windowId, type: 'normal' });
 
-// Mock existing session bookmark
+// Create Session
 const rootId = await chrome.bookmarks.create({ title: "InfiniTabs Sessions" });
 const sessionFolder = await chrome.bookmarks.create({
-    id: sessionId,
     parentId: rootId.id,
     title: "Session - Window 1 [windowId:1]"
 });
 
-// Create a Group Folder
+// Create Group Folder
 const groupFolder = await chrome.bookmarks.create({
-    parentId: sessionId,
-    title: "My Group [red]"
+    parentId: sessionFolder.id,
+    title: "My Group [blue]"
 });
+const groupId = groupFolder.id;
 
-// Create a tab inside the group
-const tabInGroupBookmark = await chrome.bookmarks.create({
-    parentId: groupFolder.id,
+// Create Logical Tab in Group
+const tabBookmark = await chrome.bookmarks.create({
+    parentId: groupId,
     title: "Tab In Group",
-    url: "http://example.com/1"
+    url: "https://example.com"
 });
 
-// Create a corresponding live tab for the group tab
-const tabInGroup = {
-    id: 100,
-    windowId: windowId,
-    active: false,
-    index: 0,
-    url: "http://example.com/1",
-    groupId: 555 // Native Group ID
-};
-await chrome.tabs.create(tabInGroup);
-
-// Import background AFTER mock setup
-await import('../src/background.js');
+console.log('Setup: Session', sessionFolder.id, 'Group', groupId, 'Tab', tabBookmark.id);
 
 // Initialize background
 const onStartup = listeners['onStartup'];
 if (onStartup) await onStartup();
 
-console.log('Background initialized');
+// Wait for sync
+await new Promise(r => setTimeout(r, 200));
 
-// Populate state (simulate window binding)
-// We need to make sure the background script knows about the existing tabs
-// This usually happens during init -> bindWindowToSession -> syncExistingTabsInWindowToSession
-// Since we manually created bookmarks and tabs, we can trigger a session reload or re-bind.
-// But 'init' is already called.
-// Let's force a "window created" event or similar if needed, but onStartup handles init.
+// Verify initial state
+let response = await new Promise(r => listeners['onMessage']({ type: "GET_CURRENT_SESSION_STATE", windowId: windowId }, {}, r));
+let session = response.session;
+let logicalTab = session.logicalTabs.find(l => l.bookmarkId === tabBookmark.id);
 
-// We need to make sure `state.windowToSession` is populated.
-// Since we didn't put it in storage, `init` might have auto-bound it by matching window ID in title.
-// Let's verify.
-
-const onMessage = listeners['onMessage'];
-const sendMessage = (msg) => {
-    return new Promise(resolve => {
-        onMessage(msg, {}, resolve);
-    });
-};
-
-// Wait a bit for async init
-await new Promise(r => setTimeout(r, 500));
-
-let response = await sendMessage({ type: "GET_CURRENT_SESSION_STATE", windowId: windowId });
-if (!response.session) {
-    console.log("Session not bound yet, creating window event...");
-    // Simulate window creation
-    const onWindowCreated = listeners['windows.onCreated'];
-    await onWindowCreated({ id: windowId });
-    await new Promise(r => setTimeout(r, 500));
-    response = await sendMessage({ type: "GET_CURRENT_SESSION_STATE", windowId: windowId });
+if (!logicalTab) {
+    console.error('Setup Fail: Logical tab not found');
+    process.exit(1);
+}
+if (logicalTab.groupId !== groupId) {
+    console.error(`Setup Fail: Logical tab not in group. Expected ${groupId}, got ${logicalTab.groupId}`);
+    process.exit(1);
 }
 
-console.log('Session Loaded:', response.session ? 'Yes' : 'No');
+// Simulate Live Tab attached
+const liveTabId = 200;
+const liveGroupId = 999;
 
-// Verify 'Tab In Group' is correctly mapped
-const session = response.session;
-const logicalInGroup = session.logicalTabs.find(l => l.url === tabInGroup.url);
-// console.log("Logical in Group:", logicalInGroup);
-
-// Now simulate creating a NEW tab (Ctrl+T)
-// It will be at index 1 (after tabInGroup)
-// It is NOT in a group (groupId: -1)
-
-const newTabId = 101;
-const newTab = {
-    id: newTabId,
+const liveTab = {
+    id: liveTabId,
     windowId: windowId,
     active: true,
-    index: 1, // After the grouped tab
-    url: "about:blank",
-    title: "New Tab",
-    groupId: -1 // Not in a group
+    index: 0,
+    url: "https://example.com",
+    title: "Tab In Group",
+    groupId: liveGroupId
 };
 
-// Mock chrome.tabs.query to return the previous tab when queried
-// background.js does: const tabs = await chrome.tabs.query({ windowId, index: tab.index - 1 });
-// We need to ensure query works. The mock_chrome.js simplified query should handle windowId.
-// But it doesn't handle 'index'.
+// Override just the get method, preserving other tabGroups functionality
+const originalTabGroups = chrome.tabGroups;
+chrome.tabGroups = {
+    ...originalTabGroups,
+    get: async (gid) => ({ id: gid, title: "My Group", color: "blue", windowId: windowId })
+};
 
-// Let's patch chrome.tabs.query in mock if needed, or just rely on 'tabs' array being correct.
-// The mock 'query' filters by windowId and active. It ignores index.
-// background.js: `chrome.tabs.query({ windowId, index: tab.index - 1 })`
-// We need to improve mock query to handle index.
+// Create tab in mock (so queries work)
+await chrome.tabs.create(liveTab);
 
- // Add new tab to mock tabs list
- await chrome.tabs.create(newTab);
+// Fire onCreated listener (so background logic runs)
+// Note: onCreated logic in background uses `state.liveGroupToBookmark` or matches by URL.
+// We hope it matches by URL because we set the URL to match the bookmark.
+await listeners['tabs.onCreated'](liveTab);
 
-// Add new tab to mock tabs list
-await chrome.tabs.create(newTab);
+// Wait for processing
+await new Promise(r => setTimeout(r, 100));
 
-// Trigger onCreated
-console.log('Simulating New Tab Creation...');
-const onCreated = listeners['tabs.onCreated'];
-await onCreated(newTab);
+// Force map if not mapped (in case onCreated logic failed to match)
+response = await new Promise(r => listeners['onMessage']({ type: "GET_CURRENT_SESSION_STATE", windowId: windowId }, {}, r));
+session = response.session;
+logicalTab = session.logicalTabs.find(l => l.bookmarkId === tabBookmark.id);
 
-// Check where the bookmark was created
-const bBookmark = await chrome.bookmarks.get(session.logicalTabs.find(l => l.liveTabIds.includes(newTabId))?.bookmarkId);
-const bookmark = bBookmark[0];
+if (!logicalTab.liveTabIds.includes(liveTabId)) {
+    console.log("Tab not attached automatically. Attempting explicit mount/focus...");
+    // If not attached, maybe URL mismatch or something?
+    // Let's try to simulate what happens when we "Mount" the tab.
+    // Actually, simply attaching it manually via our 'knowledge' of internal state is hard.
+    // But we can force it via FOCUS_OR_MOUNT.
+    // However, since the tab exists in mock now, FOCUS_OR_MOUNT will try to activate it?
+    // No, FOCUS_OR_MOUNT checks logical.liveTabIds. If empty, it creates NEW tab.
 
-if (!bookmark) {
-    console.error("FAIL: Bookmark not created for new tab");
-} else {
-    console.log("New Bookmark Parent ID:", bookmark.parentId);
-    console.log("Group Folder ID:", groupFolder.id);
-    console.log("Session ID:", sessionId);
+    // So if it's empty, we create NEW tab.
+    await new Promise(r => listeners['onMessage']({
+        type: "FOCUS_OR_MOUNT_TAB",
+        windowId: windowId,
+        logicalId: logicalTab.logicalId
+    }, {}, r));
 
-    if (bookmark.parentId === groupFolder.id) {
-        console.error("FAIL: Bookmark was created inside the group folder!");
-    } else if (bookmark.parentId === sessionId) {
-        console.log("SUCCESS: Bookmark was created in session root.");
-    } else {
-        console.log("UNKNOWN: Bookmark created in " + bookmark.parentId);
-    }
+    await new Promise(r => setTimeout(r, 100));
 }
 
-process.exit(0);
+// Re-check mapping
+response = await new Promise(r => listeners['onMessage']({ type: "GET_CURRENT_SESSION_STATE", windowId: windowId }, {}, r));
+session = response.session;
+logicalTab = session.logicalTabs.find(l => l.bookmarkId === tabBookmark.id);
+
+if (!logicalTab.liveTabIds.length) {
+    console.error("Failed to map tab to logical tab.");
+    process.exit(1);
+}
+
+const mountedTabId = logicalTab.liveTabIds[0];
+console.log(`Mounted Tab ID: ${mountedTabId}`);
+
+// ISSUE REPRODUCTION SIMULATION:
+
+console.log('Simulating Issue: Tab Close Race Condition');
+
+// 1. Chrome fires onUpdated with groupId = -1 (Ungrouped)
+console.log('Event: tabs.onUpdated (groupId: -1)');
+const mountedTab = await chrome.tabs.get(mountedTabId);
+await listeners['tabs.onUpdated'](mountedTabId, { groupId: -1 }, { ...mountedTab, groupId: -1 });
+
+// 2. Chrome fires onRemoved quickly after onUpdated (simulating real behavior)
+// This should happen BEFORE the 100ms timeout in background.js completes
+await new Promise(r => setTimeout(r, 20)); // Small delay to simulate "immediately before"
+console.log('Event: tabs.onRemoved');
+await listeners['tabs.onRemoved'](mountedTabId, { windowId: windowId, isWindowClosing: false });
+
+// Wait for the 100ms timeout in background.js to complete
+await new Promise(r => setTimeout(r, 150));
+
+// Final Check
+const finalCheck = await chrome.bookmarks.get(tabBookmark.id);
+console.log(`Final Parent: ${finalCheck[0].parentId} (Expected: ${groupId})`);
+
+if (finalCheck[0].parentId !== groupId) {
+    console.error("Test Failed: Bookmark was moved out of group.");
+    process.exit(1);
+} else {
+    console.log("Test Passed: Bookmark preserved.");
+    process.exit(0);
+}
