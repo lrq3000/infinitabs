@@ -12,7 +12,8 @@ global.chrome = {
         onStartup: { addListener: (fn) => listeners['onStartup'] = fn },
         onSuspend: { addListener: (fn) => listeners['onSuspend'] = fn },
         onMessage: { addListener: (fn) => listeners['onMessage'] = fn },
-        sendMessage: async (msg) => { /* console.log('sendMessage', msg); */ }
+        getURL: (path) => "chrome-extension://mock_id" + path,
+        sendMessage: async (msg) => { console.log('sendMessage', msg); }
     },
     windows: {
         onCreated: { addListener: (fn) => listeners['windows.onCreated'] = fn },

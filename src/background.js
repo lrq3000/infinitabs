@@ -1258,9 +1258,6 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
                 return;
             }
 
-            // Note: favIconUrl is not persisted to bookmarks as Chrome bookmarks don't support storing favicon (or any kind of meta) data.
-            // Favicons will fall back to the /_favicon/ service after reload until live tabs reattach.
-            // TODO: store favIconUrl data in a local database in the extension. More generally, the extension should have a local database to store bookmarks' metadata, which should only be metadata that is not necessary for core functionality (ie, not necessary for managing or storing or recalling sessions and workspaces and tabs and tabs groups) but can be used to improve UX (eg, favicons recall after browser close and reopening).
             chrome.bookmarks.update(logical.bookmarkId, {
                 title: logical.title,
                 url: logical.url
