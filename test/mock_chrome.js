@@ -58,7 +58,19 @@ global.chrome = {
                  if (idx !== -1) tabs.splice(idx, 1);
              }
         },
-        move: async (ids, moveInfo) => {},
+        move: async (ids, moveInfo) => {
+            const idArr = Array.isArray(ids) ? ids : [ids];
+            const toMove = tabs.filter(t => idArr.includes(t.id));
+            // Remove from current positions
+            for (const t of toMove) {
+                const idx = tabs.indexOf(t);
+                if (idx !== -1) tabs.splice(idx, 1);
+            }
+            // Insert at new position
+            tabs.splice(moveInfo.index, 0, ...toMove);
+            // Update indices
+            tabs.forEach((t, i) => t.index = i);
+        },
         group: async (options) => { return 999; }, // Mock group ID
         ungroup: async (ids) => {},
     },
