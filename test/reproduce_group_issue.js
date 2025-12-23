@@ -67,7 +67,10 @@ const liveTab = {
     groupId: liveGroupId
 };
 
+// Override just the get method, preserving other tabGroups functionality
+const originalTabGroups = chrome.tabGroups;
 chrome.tabGroups = {
+    ...originalTabGroups,
     get: async (gid) => ({ id: gid, title: "My Group", color: "blue", windowId: windowId })
 };
 
