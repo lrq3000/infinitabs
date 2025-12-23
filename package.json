@@ -1,7 +1,7 @@
 {
   "name": "infinitabs",
-  "version": "1.0.0",
-  "description": "InfiniTabs Extension",
+  "version": "0.3.0",
+  "description": "Unlimited tabs. Zero clutter. Near-zero RAM.",
   "scripts": {
     "build": "crx3 src/ --zip --private-key my-extension.pem"
   },
