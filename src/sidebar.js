@@ -40,9 +40,6 @@ let lastSelectedLogicalId = null; // For shift-click range
 let draggedLogicalIds = [];
 let ignoreNextAutoScroll = false;
 
-// Group Collapse State (persisted per group ID or just transient? Task says "can be collapsed". Transient is fine for now.)
-let collapsedGroups = new Set();
-
 // --- Initialization ---
 
 async function init() {
@@ -535,40 +532,22 @@ function renderSession(session) {
     }
 
     const itemsToRender = [];
-    const groupColors = {};
-
-    Object.values(session.groups).forEach(group => {
-        const { name, color } = parseGroupTitle(group.title);
-        itemsToRender.push({
-            type: 'group',
-            id: group.groupId,
-            data: group,
-            index: group.indexInSession,
-            color: color,
-            displayName: name
-        });
-        groupColors[group.groupId] = color;
-    });
 
     session.logicalTabs.forEach(tab => {
-        // Skip rendering if group is collapsed
-        if (tab.groupId && collapsedGroups.has(tab.groupId)) {
-            return;
-        }
+        itemsToRender.push({ type: 'tab', id: tab.logicalId, data: tab, index: tab.indexInSession });
+    });
 
-        itemsToRender.push({
-            type: 'tab',
-            id: tab.logicalId,
-            data: tab,
-            index: tab.indexInSession,
-            groupColor: tab.groupId ? (groupColors[tab.groupId] || 'grey') : null
-        });
+    Object.values(session.groups).forEach(group => {
+        itemsToRender.push({ type: 'group', id: group.groupId, data: group, index: group.indexInSession });
     });
 
     itemsToRender.sort((a, b) => a.index - b.index);
 
     // Diff and patch DOM
     const currentChildren = Array.from(tabsContainer.children);
+
+    // If length mismatch or major structural change, simpler to clear if the list size changed significantly?
+    // For robustness, let's iterate and match.
 
     // Remove excess children
     while (currentChildren.length > itemsToRender.length) {
@@ -583,17 +562,17 @@ function renderSession(session) {
         if (el && el.dataset.id === item.id && el.dataset.type === item.type) {
             // Update existing
             if (item.type === 'group') {
-                updateGroupElement(el, item.data, item.displayName, item.color);
+                updateGroupElement(el, item.data);
             } else {
-                updateTabElement(el, item.data, session, shouldScroll, item.groupColor);
+                updateTabElement(el, item.data, session, shouldScroll);
             }
         } else {
             // Create new
             let newEl;
             if (item.type === 'group') {
-                newEl = createGroupElement(item.data, item.displayName, item.color);
+                newEl = createGroupElement(item.data);
             } else {
-                newEl = createTabElement(item.data, session, shouldScroll, item.groupColor);
+                newEl = createTabElement(item.data, session, shouldScroll);
             }
 
             if (el) {
@@ -606,60 +585,24 @@ function renderSession(session) {
     });
 }
 
-function createGroupElement(group, displayName, color) {
+function createGroupElement(group) {
     const el = document.createElement('div');
     el.className = 'group-header';
     el.dataset.id = group.groupId;
     el.dataset.type = 'group';
     el.draggable = true;
     setupDragHandlers(el);
-
-    // Header Structure: [Arrow] [Title]
-    const toggle = document.createElement('span');
-    toggle.className = 'group-toggle';
-    toggle.textContent = '▼';
-    toggle.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (collapsedGroups.has(group.groupId)) {
-            collapsedGroups.delete(group.groupId);
-            el.classList.remove('collapsed');
-        } else {
-            collapsedGroups.add(group.groupId);
-            el.classList.add('collapsed');
-        }
-        // Re-render to show/hide tabs
-        if (currentSession) renderSession(currentSession);
-    });
-    el.appendChild(toggle);
-
-    const titleSpan = document.createElement('span');
-    titleSpan.className = 'group-title-text';
-    el.appendChild(titleSpan);
-
-    updateGroupElement(el, group, displayName, color);
+    updateGroupElement(el, group);
     return el;
 }
 
-function updateGroupElement(el, group, displayName, color) {
-    const titleSpan = el.querySelector('.group-title-text');
-    if (titleSpan.textContent !== displayName) {
-        titleSpan.textContent = displayName;
-    }
-
-    // Update color styles
-    // Remove old color classes
-    el.className = el.className.split(' ').filter(c => !c.startsWith('group-bg-')).join(' ');
-    el.classList.add(`group-bg-${color}`);
-
-    // Update collapsed state
-    if (collapsedGroups.has(group.groupId)) {
-        if (!el.classList.contains('collapsed')) el.classList.add('collapsed');
-    } else {
-        if (el.classList.contains('collapsed')) el.classList.remove('collapsed');
+function updateGroupElement(el, group) {
+    if (el.textContent !== group.title) {
+        el.textContent = group.title;
     }
 }
 
-function createTabElement(tab, session, shouldScroll, groupColor) {
+function createTabElement(tab, session, shouldScroll) {
     const el = document.createElement('div');
     el.dataset.id = tab.logicalId;
     el.dataset.type = 'tab';
@@ -667,17 +610,10 @@ function createTabElement(tab, session, shouldScroll, groupColor) {
     setupDragHandlers(el);
 
     // Structure
-    // [GroupLine] (if grouped)
     // <span class="live-indicator"></span>
     // <img class="tab-icon" src="...">
     // <span class="tab-title">...</span>
     // <button class="tab-delete-btn">x</button>
-
-    if (groupColor) {
-        const line = document.createElement('div');
-        line.className = 'group-color-line';
-        el.appendChild(line);
-    }
 
     const indicatorWrapper = document.createElement('div');
     indicatorWrapper.className = 'live-indicator-wrapper';
@@ -738,11 +674,11 @@ function createTabElement(tab, session, shouldScroll, groupColor) {
         handleTabClick(e, tab.logicalId);
     });
 
-    updateTabElement(el, tab, session, shouldScroll, groupColor);
+    updateTabElement(el, tab, session, shouldScroll);
     return el;
 }
 
-function updateTabElement(el, tab, session, shouldScroll, groupColor) {
+function updateTabElement(el, tab, session, shouldScroll) {
     const isLive = tab.liveTabIds.length > 0;
     const isActive = session.lastActiveLogicalTabId === tab.logicalId;
     const isSelected = selectedLogicalIds.has(tab.logicalId);
@@ -756,23 +692,17 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
 
     if (isSelected) className += ' selected';
 
-    if (el.className !== className) {
-        el.className = className;
-    }
+    // Preserve search match if present (handled by performSearch, but we might be overwriting classes)
+    // Ideally search should re-run or we preserve the class.
+    // Since performSearch runs after render if input exists, it will fix it.
 
-    // Group line color
-    const line = el.querySelector('.group-color-line');
-    if (groupColor) {
-        if (!line) {
-            const newLine = document.createElement('div');
-            newLine.className = 'group-color-line';
-            el.insertBefore(newLine, el.firstChild);
-        } else {
-            // Update color class
-            line.className = `group-color-line group-line-${groupColor}`;
-        }
-    } else if (line) {
-        line.remove();
+    if (el.className !== className) {
+        // We might lose 'search-match' here.
+        // Let's verify if we need to re-add search classes.
+        // Actually `renderSession` is called on update. 
+        // If we overwrite className, we lose search highlights until `performSearch` runs again.
+        // `onMessage` calls `renderSession` then `performSearch`. So it's fine.
+        el.className = className;
     }
 
     // Tooltip
