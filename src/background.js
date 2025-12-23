@@ -13,6 +13,7 @@ const state = {
     liveGroupToBookmark: {}, // Record<LiveGroupId, BookmarkId>
     ignoreMoveEventsForTabIds: new Set(), // Set<TabId>
     isCreatingGroup: false, // Flag to suppress bookmark creation during programmatic group creation
+    pendingGroupCreations: {}, // Record<LiveGroupId, Promise<BookmarkId>> - Locks for group creation
     workspaceHistory: [], // Array<WorkspaceSnapshot>
     favoriteWorkspaces: [], // Array<WorkspaceSnapshot>
     lastKnownWorkspace: null, // WorkspaceSnapshot
@@ -49,6 +50,66 @@ function parseSessionTitle(title) {
 
 function generateGuid() {
     return self.crypto.randomUUID();
+}
+
+/**
+ * Gets or creates a bookmark folder for a given live group ID.
+ * Uses a lock mechanism to prevent duplicate folders from race conditions.
+ * @param {number} groupId - The live group ID.
+ * @param {number} windowId - The window ID.
+ * @returns {Promise<string|null>} The bookmark ID.
+ */
+async function getOrCreateGroupBookmark(groupId, windowId) {
+    if (!groupId || groupId === -1) return null;
+
+    // 1. Check existing mapping
+    if (state.liveGroupToBookmark[groupId]) {
+        return state.liveGroupToBookmark[groupId];
+    }
+
+    // 2. Check pending creation
+    if (state.pendingGroupCreations[groupId]) {
+        return state.pendingGroupCreations[groupId];
+    }
+
+    const sessionId = state.windowToSession[windowId];
+    if (!sessionId) return null;
+
+    // 3. Start creation process
+    const creationPromise = (async () => {
+        try {
+            // Fetch group details
+            let groupInfo;
+            try {
+                groupInfo = await chrome.tabGroups.get(groupId);
+            } catch (e) {
+                // Group might be gone
+                return null;
+            }
+
+            const title = formatGroupTitle(groupInfo.title, groupInfo.color);
+            const created = await chrome.bookmarks.create({
+                parentId: sessionId,
+                title: title
+            });
+
+            state.liveGroupToBookmark[groupId] = created.id;
+
+            // Reload session to reflect new group
+            await reloadSessionAndPreserveState(sessionId, windowId);
+            notifySidebarStateUpdated(windowId, sessionId);
+
+            return created.id;
+        } catch (e) {
+            console.error("Failed to create bookmark folder for group", e);
+            return null;
+        } finally {
+            delete state.pendingGroupCreations[groupId];
+        }
+    })();
+
+    state.pendingGroupCreations[groupId] = creationPromise;
+    return creationPromise;
 }
 
 /**
@@ -888,26 +949,7 @@ chrome.tabGroups.onCreated.addListener(async (group) => {
     if (isRestoring) return; // Handled by sync/restore logic
     if (state.isCreatingGroup) return; // Handled programmatically
 
-    const sessionId = state.windowToSession[group.windowId];
-    if (!sessionId) return;
-
-    // Check if we already have a mapping (might happen during sync/load)
-    if (state.liveGroupToBookmark[group.id]) return;
-
-    try {
-        const title = formatGroupTitle(group.title, group.color);
-        const created = await chrome.bookmarks.create({
-            parentId: sessionId,
-            title: title
-        });
-        state.liveGroupToBookmark[group.id] = created.id;
-
-        // Reload session to reflect new group
-        await reloadSessionAndPreserveState(sessionId, group.windowId);
-        notifySidebarStateUpdated(group.windowId, sessionId);
-    } catch (e) {
-        console.error("Failed to create bookmark folder for group", e);
-    }
+    await getOrCreateGroupBookmark(group.id, group.windowId);
 });
 
 chrome.tabGroups.onUpdated.addListener(async (group) => {
@@ -1125,51 +1167,17 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
                      let targetParentId = sessionId; // Default to root
 
                      if (tab.groupId !== -1) {
-                         // If we are creating a group programmatically, we expect the mapping to be set (or set shortly).
-                         // If we are in the middle of creating, we should rely on that process to handle bookmark moves if needed,
-                         // or simply skip the fallback creation logic here because we know we are setting it up.
-                         // But if the tab is moved to a *new* group (which is what tabs.group does),
-                         // onUpdated fires.
-                         // If state.isCreatingGroup is true, we assume the group ID matches the one being created.
-                         // We can skip the fallback creation.
+                         // If we are creating a group programmatically, we expect the mapping to be set.
+                         // If state.isCreatingGroup is true, the bookmark creation is handled elsewhere or assumed unnecessary for this specific event flow.
 
-                         let groupBookmarkId = state.liveGroupToBookmark[tab.groupId];
-
-                         if (!groupBookmarkId && state.isCreatingGroup) {
-                             // Suppress fallback creation. The bookmark is already in the correct logical group folder
-                             // because we just created the tab there (or moved it there logically).
-                             // We just need to ensure we don't move it *out* or to a garbage folder.
-                             // If we skip, targetParentId remains sessionId (default)? No, we need to keep it where it is.
-                             // But we can't easily know "keep where it is" without checking current parent.
-                             // However, logic below checks current parent.
-                             // So if we set targetParentId to something valid...
-                             // Actually, if we skip setting targetParentId to a new group, it stays sessionId?
-                             // If targetParentId != currentParentId, we move.
-                             // If we are programmatically grouping, the bookmark IS in the group folder (logically)?
-                             // No, if we just created the tab, it's in the logical group folder.
-                             // The live tab is put in the live group.
-                             // liveGroupToBookmark might be set or not yet.
-                             // If not set, we should assume it maps to the current bookmark parent?
-
-                             // Simplest: If isCreatingGroup, return/skip.
+                         if (state.isCreatingGroup) {
                              return;
                          }
 
+                         // Use helper to get or create bookmark (handles race conditions)
+                         const groupBookmarkId = await getOrCreateGroupBookmark(tab.groupId, tab.windowId);
                          if (groupBookmarkId) {
                              targetParentId = groupBookmarkId;
-                         } else {
-                             // Should have been created by onCreated?
-                             // Fallback create
-                             try {
-                                const groupInfo = await chrome.tabGroups.get(tab.groupId);
-                                const groupTitle = formatGroupTitle(groupInfo.title, groupInfo.color);
-                                const createdGroup = await chrome.bookmarks.create({
-                                    parentId: sessionId,
-                                    title: groupTitle
-                                });
-                                state.liveGroupToBookmark[tab.groupId] = createdGroup.id;
-                                targetParentId = createdGroup.id;
-                             } catch(e) {}
                          }
                      }
 
