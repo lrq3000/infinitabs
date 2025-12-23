@@ -131,24 +131,14 @@ console.log('Event: tabs.onUpdated (groupId: -1)');
 const mountedTab = await chrome.tabs.get(mountedTabId);
 await listeners['tabs.onUpdated'](mountedTabId, { groupId: -1 }, { ...mountedTab, groupId: -1 });
 
-// Allow async processing (bookmarks move)
-await new Promise(r => setTimeout(r, 100));
-
-// Check bookmark position (Should be MOVED to root if bug exists)
-const bookmarkCheck = await chrome.bookmarks.get(tabBookmark.id);
-const parentId = bookmarkCheck[0].parentId;
-
-if (parentId === sessionFolder.id) {
-    console.log('FAIL: Bookmark moved to session root (bug reproduced).');
-} else if (parentId === groupId) {
-    console.log('SUCCESS: Bookmark stayed in group.');
-} else {
-    console.log(`WTF: Bookmark is at ${parentId}`);
-}
-
-// 2. Chrome fires onRemoved
+// 2. Chrome fires onRemoved quickly after onUpdated (simulating real behavior)
+// This should happen BEFORE the 100ms timeout in background.js completes
+await new Promise(r => setTimeout(r, 20)); // Small delay to simulate "immediately before"
 console.log('Event: tabs.onRemoved');
 await listeners['tabs.onRemoved'](mountedTabId, { windowId: windowId, isWindowClosing: false });
+
+// Wait for the 100ms timeout in background.js to complete
+await new Promise(r => setTimeout(r, 150));
 
 // Final Check
 const finalCheck = await chrome.bookmarks.get(tabBookmark.id);
