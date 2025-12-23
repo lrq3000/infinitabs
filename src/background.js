@@ -1201,6 +1201,39 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
                          if (groupBookmarkId) {
                              targetParentId = groupBookmarkId;
                          }
+                     } else {
+                        // Tab was ungrouped (tab.groupId === -1)
+                        // Wait a bit to see if the tab is being closed (race condition fix)
+                        // When a tab is closed, Chrome might emit an onUpdated event with groupId: -1 right before onRemoved.
+                        // If we process this immediately, we might move the bookmark to the root folder, which is incorrect if the tab is about to be deleted (logical tab should stay where it is, just unlinked).
+                        setTimeout(async () => {
+                            let currentTab;
+                            try {
+                                currentTab = await chrome.tabs.get(tabId);
+                            } catch (e) {
+                                // Tab is gone (closed), ignore this update
+                                return;
+                            }
+
+                            // Check if tab is still mapped (onRemoved cleans up the mapping)
+                            if (!state.tabToLogical[tabId]) return;
+
+                            // Check if tab is still ungrouped (might have been added to another group quickly?)
+                            if (currentTab.groupId !== -1) return;
+
+                            // Now safe to move
+                            try {
+                                const nodes = await chrome.bookmarks.get(logical.bookmarkId);
+                                if (nodes[0].parentId !== targetParentId) {
+                                    await chrome.bookmarks.move(logical.bookmarkId, { parentId: targetParentId });
+                                    await reloadSessionAndPreserveState(sessionId, tab.windowId);
+                                    notifySidebarStateUpdated(tab.windowId, sessionId);
+                                }
+                            } catch(e) {
+                                console.error("Failed to move bookmark on group change (delayed)", e);
+                            }
+                        }, 100);
+                        return;
                      }
 
                      // Move bookmark
