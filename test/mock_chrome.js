@@ -129,13 +129,17 @@ global.chrome = {
         },
         move: async (id, dest) => {
             const node = findBookmark(id);
-            if (!node) return;
+            if (!node) return undefined;
 
             // Remove from old parent
             const oldParent = findBookmark(node.parentId);
             if (oldParent && oldParent.children) {
                 const oldIndex = oldParent.children.indexOf(node);
-                if (oldIndex !== -1) oldParent.children.splice(oldIndex, 1);
+                if (oldIndex !== -1) {
+                    oldParent.children.splice(oldIndex, 1);
+                    // Update indices of remaining siblings
+                    oldParent.children.forEach((c, i) => c.index = i);
+                }
             }
 
             // Add to new parent
@@ -145,19 +149,20 @@ global.chrome = {
                     node.parentId = dest.parentId;
                     if (dest.index !== undefined) {
                         newParent.children.splice(dest.index, 0, node);
-                        node.index = dest.index;
                     } else {
                         // Append
-                        node.index = newParent.children.length;
                         newParent.children.push(node);
                     }
+                    // Update all indices in new parent
+                    newParent.children.forEach((c, i) => c.index = i);
                 }
             } else if (dest.index !== undefined && oldParent) {
                  // Move within same parent
                  node.parentId = oldParent.id; // redundant but safe
                  oldParent.children.splice(dest.index, 0, node);
-                 node.index = dest.index;
+                 oldParent.children.forEach((c, i) => c.index = i);
             }
+            return node;
         },
         remove: async (id) => {}
     },
