@@ -18,6 +18,17 @@
   --search-match-bg: #fff7b3;
   /* Light yellow */
   --search-match-active-outline: #1890ff;
+
+  /* Tab Group Colors */
+  --group-grey: #dadce0;
+  --group-blue: #8ab4f8;
+  --group-red: #f28b82;
+  --group-yellow: #fdd663;
+  --group-green: #81c995;
+  --group-pink: #ff8bcb;
+  --group-purple: #c58af9;
+  --group-cyan: #78d9ec;
+  --group-orange: #fcad70;
 }
 
 body.dark-mode {
@@ -38,6 +49,17 @@ body.dark-mode {
   --search-match-bg: #5a5a2a;
   /* Darker yellow/olive */
   --search-match-active-outline: #0078d4;
+
+  /* Tab Group Colors (Dark Mode) */
+  --group-grey: #5f6368;
+  --group-blue: #394457; /* Adjusted for readability */
+  --group-red: #5c2b29;
+  --group-yellow: #63521d;
+  --group-green: #2c5237;
+  --group-pink: #632d48;
+  --group-purple: #4a2c66;
+  --group-cyan: #264e56;
+  --group-orange: #663d21;
 }
 
 body {
@@ -387,19 +409,46 @@ body.dark-mode .group-header.dragging {
   font-weight: bold;
   font-size: 11px;
   text-transform: uppercase;
-  color: var(--group-text);
+  color: var(--text-color);
   background-color: var(--group-bg);
   border-top: 1px solid var(--border-color);
   border-bottom: 1px solid var(--border-color);
   margin-top: 5px;
+  display: flex;
+  align-items: center;
+  cursor: default; /* Not selectable */
 }
 
 .group-header:first-child {
   margin-top: 0;
 }
 
+/* Toggle Arrow for Groups (Collapsible) */
+.group-toggle {
+    margin-right: 5px;
+    cursor: pointer;
+    font-size: 10px;
+    width: 12px;
+    display: inline-block;
+    text-align: center;
+    transition: transform 0.2s;
+}
+.group-header.collapsed .group-toggle {
+    transform: rotate(-90deg);
+}
+
+
 .tab-item.indented {
-  padding-left: 20px;
+  padding-left: 10px; /* Base padding */
+  display: flex;
+  align-items: stretch; /* Stretch to fill height */
+}
+
+.group-color-line {
+    width: 3px;
+    margin-right: 7px; /* 10px + 3px + 7px = 20px total indent visually roughly */
+    flex-shrink: 0;
+    border-radius: 1px;
 }
 
 /* Indicators */
@@ -537,3 +586,24 @@ body.dark-mode .live-indicator-wrapper:hover {
 .crash-popup .secondary-btn:hover {
   background-color: rgba(255, 255, 255, 0.1);
 }
+
+/* Group Colors Utility Classes (dynamically applied) */
+.group-bg-grey { background-color: var(--group-grey); }
+.group-bg-blue { background-color: var(--group-blue); }
+.group-bg-red { background-color: var(--group-red); }
+.group-bg-yellow { background-color: var(--group-yellow); }
+.group-bg-green { background-color: var(--group-green); }
+.group-bg-pink { background-color: var(--group-pink); }
+.group-bg-purple { background-color: var(--group-purple); }
+.group-bg-cyan { background-color: var(--group-cyan); }
+.group-bg-orange { background-color: var(--group-orange); }
+
+.group-line-grey { background-color: var(--group-grey); }
+.group-line-blue { background-color: var(--group-blue); }
+.group-line-red { background-color: var(--group-red); }
+.group-line-yellow { background-color: var(--group-yellow); }
+.group-line-green { background-color: var(--group-green); }
+.group-line-pink { background-color: var(--group-pink); }
+.group-line-purple { background-color: var(--group-purple); }
+.group-line-cyan { background-color: var(--group-cyan); }
+.group-line-orange { background-color: var(--group-orange); }
