@@ -417,6 +417,7 @@ body.dark-mode .group-header.dragging {
   display: flex;
   align-items: center;
   cursor: default; /* Not selectable */
+  position: relative; /* Required for absolute positioning of delete button */
 }
 
 .group-header:first-child {
