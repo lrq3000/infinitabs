@@ -988,40 +988,13 @@ chrome.tabGroups.onRemoved.addListener(async (group) => {
 
     delete state.liveGroupToBookmark[group.id];
 
-    // NOTE: In native Chrome, removing a group ungroups the tabs; it does NOT close them.
-    // In bookmarks, removing a folder removes children.
-    // So we must MOVE children out before deleting the folder.
+    // The logical group (bookmark folder) should persist even if the live group is removed.
+    // We only update the session state to reflect that the live group connection is gone.
 
-    try {
-        const children = await chrome.bookmarks.getChildren(bookmarkId);
-        if (children.length > 0) {
-            // Move them to parent (session root)
-            // Where? At the end? Or near where the group was?
-            // "logical tabs groups... can be collapsed... can be moved around like tabs".
-            // If we dissolve the group, tabs should probably stay where the group was.
-
-            const groupNode = await chrome.bookmarks.get(bookmarkId);
-            const parentId = groupNode[0].parentId;
-            const index = groupNode[0].index;
-
-            // Move children to parentId starting at index
-            // We loop backwards or adjust index?
-            // chrome.bookmarks.move is atomic for the item.
-            // If we move item 1 to index, item 2 to index+1...
-            for (let i = 0; i < children.length; i++) {
-                await chrome.bookmarks.move(children[i].id, { parentId: parentId, index: index + i });
-            }
-        }
-
-        await chrome.bookmarks.remove(bookmarkId);
-
-        const sessionId = state.windowToSession[group.windowId];
-        if (sessionId) {
-            await reloadSessionAndPreserveState(sessionId, group.windowId);
-            notifySidebarStateUpdated(group.windowId, sessionId);
-        }
-    } catch (e) {
-        console.error("Failed to remove bookmark folder for group", e);
+    const sessionId = state.windowToSession[group.windowId];
+    if (sessionId) {
+        await reloadSessionAndPreserveState(sessionId, group.windowId);
+        notifySidebarStateUpdated(group.windowId, sessionId);
     }
 });
 
@@ -1508,6 +1481,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     sendResponse({ success: true });
                     break;
                 }
+                case "DELETE_LOGICAL_GROUP": {
+                    await handleDeleteLogicalGroup(message.windowId, message.groupId);
+                    sendResponse({ success: true });
+                    break;
+                }
                 case "RENAME_SESSION": {
                     await handleRenameSession(message.sessionId, message.newName);
                     sendResponse({ success: true });
@@ -1795,6 +1773,51 @@ async function handleDeleteLogicalTab(windowId, logicalId) {
         });
     }
 
+    notifySidebarStateUpdated(windowId, sessionId);
+}
+
+async function handleDeleteLogicalGroup(windowId, groupId) {
+    const sessionId = state.windowToSession[windowId];
+    if (!sessionId) return;
+    const session = state.sessionsById[sessionId];
+    if (!session) return;
+
+    const group = session.groups[groupId];
+    if (!group) return;
+
+    // 1. Remove bookmark folder and children
+    try {
+        await chrome.bookmarks.removeTree(groupId);
+    } catch (e) {
+        console.error("Failed to delete bookmark group", e);
+    }
+
+    // 2. Identify logical tabs in this group to close their live counterparts
+    const tabsInGroup = session.logicalTabs.filter(t => t.groupId === groupId);
+    const liveTabsToClose = [];
+
+    tabsInGroup.forEach(t => {
+        if (t.liveTabIds && t.liveTabIds.length > 0) {
+            liveTabsToClose.push(...t.liveTabIds);
+        }
+    });
+
+    // 3. Close live tabs
+    if (liveTabsToClose.length > 0) {
+        try {
+            await chrome.tabs.remove(liveTabsToClose);
+        } catch (e) {
+            console.warn("Failed to close live tabs for deleted group", e);
+        }
+    }
+
+    // 4. Clean up state
+    const liveGroupId = Object.keys(state.liveGroupToBookmark).find(k => state.liveGroupToBookmark[k] === groupId);
+    if (liveGroupId) {
+        delete state.liveGroupToBookmark[liveGroupId];
+    }
+
+    await reloadSessionAndPreserveState(sessionId, windowId);
     notifySidebarStateUpdated(windowId, sessionId);
 }
 

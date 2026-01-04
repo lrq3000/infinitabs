@@ -636,6 +636,22 @@ function createGroupElement(group, displayName, color) {
     titleSpan.className = 'group-title-text';
     el.appendChild(titleSpan);
 
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'group-delete-btn';
+    deleteBtn.textContent = '×';
+    deleteBtn.title = 'Delete logical group and all tabs within';
+    deleteBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (confirm("Are you sure you want to delete this group? This will delete all tabs inside it.")) {
+             chrome.runtime.sendMessage({
+                type: "DELETE_LOGICAL_GROUP",
+                windowId: currentWindowId,
+                groupId: group.groupId
+            });
+        }
+    });
+    el.appendChild(deleteBtn);
+
     updateGroupElement(el, group, displayName, color);
     return el;
 }

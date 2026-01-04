@@ -11,7 +11,7 @@ global.chrome = {
         onInstalled: { addListener: (fn) => listeners['onInstalled'] = fn },
         onStartup: { addListener: (fn) => listeners['onStartup'] = fn },
         onSuspend: { addListener: (fn) => listeners['onSuspend'] = fn },
-        onMessage: { addListener: (fn) => listeners['onMessage'] = fn },
+        onMessage: { addListener: (fn) => listeners['onMessage'] = fn, dispatch: (m, s, r) => listeners['onMessage'] && listeners['onMessage'](m, s, r) },
         sendMessage: async (msg) => { /* console.log('sendMessage', msg); */ }
     },
     windows: {
@@ -50,6 +50,7 @@ global.chrome = {
              const tab = { id: Math.floor(Math.random() * 1000), ...data };
              console.log('Mock Tab Created:', tab);
              tabs.push(tab);
+             if (listeners['tabs.onCreated']) listeners['tabs.onCreated'](tab);
              return tab;
         },
         get: async (id) => tabs.find(t => t.id === id),
@@ -77,9 +78,9 @@ global.chrome = {
         ungroup: async (ids) => {},
     },
     tabGroups: {
-        onCreated: { addListener: (fn) => listeners['tabGroups.onCreated'] = fn },
-        onUpdated: { addListener: (fn) => listeners['tabGroups.onUpdated'] = fn },
-        onRemoved: { addListener: (fn) => listeners['tabGroups.onRemoved'] = fn },
+        onCreated: { addListener: (fn) => listeners['tabGroups.onCreated'] = fn, dispatch: (g) => listeners['tabGroups.onCreated'] && listeners['tabGroups.onCreated'](g) },
+        onUpdated: { addListener: (fn) => listeners['tabGroups.onUpdated'] = fn, dispatch: (g) => listeners['tabGroups.onUpdated'] && listeners['tabGroups.onUpdated'](g) },
+        onRemoved: { addListener: (fn) => listeners['tabGroups.onRemoved'] = fn, dispatch: (g) => listeners['tabGroups.onRemoved'] && listeners['tabGroups.onRemoved'](g) },
         get: async (groupId) => ({ title: "Group", color: "blue", id: groupId }),
         update: async () => {}
     },
@@ -164,7 +165,48 @@ global.chrome = {
             }
             return node;
         },
-        remove: async (id) => {}
+        remove: async (id) => {
+             const node = findBookmark(id);
+             if (node) {
+                 const parent = findBookmark(node.parentId);
+                 if (parent && parent.children) {
+                     const idx = parent.children.indexOf(node);
+                     if (idx !== -1) parent.children.splice(idx, 1);
+                 }
+                 // Remove from top level if needed
+                 const topIdx = bookmarks.indexOf(node);
+                 if (topIdx !== -1) bookmarks.splice(topIdx, 1);
+             }
+        },
+        removeTree: async (id) => {
+             // Mock removeTree same as remove for simple tree structures in memory
+             await global.chrome.bookmarks.remove(id);
+        },
+        getTree: () => {
+             // Return a mock tree structure wrapping our flat bookmarks array
+             // Ideally we should build a real tree from parentIds
+             // For the test case, we know the structure.
+             // Root -> "InfiniTabs Sessions" (first folder usually)
+             // We can just construct it.
+
+             // Find root folder
+             const rootFolder = bookmarks.find(b => b.parentId === undefined) || { id: '0', title: '', children: [] };
+             // Assuming flat list, let's build tree on the fly or just return root if we maintained children
+             // In create/move/remove we maintained 'children' array on nodes.
+             // So we just need to find the top level nodes.
+             // Usually Chrome has root '0', then '1' (Bookmarks Bar), etc.
+             // Our mock creates everything with parentId if specified.
+             // If parentId is missing, it's a top level node (like the "InfiniTabs Sessions" root we create first).
+
+             // Our code ensures Root Folder.
+             const roots = bookmarks.filter(b => !b.parentId);
+             // Wrap in a fake root node as getTree returns [rootNode]
+             return [{
+                 id: 'root',
+                 title: '',
+                 children: roots
+             }];
+        }
     },
     sidePanel: {
         setPanelBehavior: async () => {}
