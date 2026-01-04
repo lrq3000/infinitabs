@@ -1850,6 +1850,11 @@ async function handleDeleteLogicalGroup(windowId, groupId) {
         } catch (e) {
             console.warn("Failed to close live tabs for deleted group", e);
         }
+
+        // Clean up tabToLogical mappings
+        liveTabsToClose.forEach(tid => {
+            delete state.tabToLogical[tid];
+        });
     }
 
     // 4. Clean up state
