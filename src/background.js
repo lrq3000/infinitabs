@@ -988,13 +988,54 @@ chrome.tabGroups.onRemoved.addListener(async (group) => {
 
     delete state.liveGroupToBookmark[group.id];
 
-    // The logical group (bookmark folder) should persist even if the live group is removed.
-    // We only update the session state to reflect that the live group connection is gone.
-
     const sessionId = state.windowToSession[group.windowId];
-    if (sessionId) {
+    if (!sessionId) {
+        // Fallback: If session not found, just ensure we don't leave empty folders?
+        // But safer to do nothing if we can't determine context.
+        return;
+    }
+
+    try {
+        const session = state.sessionsById[sessionId];
+        if (!session) return; // Should be loaded if sessionId exists
+
+        // Distinguish between "Group Closed" (tabs closed) and "Group Ungrouped" (tabs moved out/ungrouped).
+        // - "Closed": Tabs are dead. We want to PERSIST the logical group (folder).
+        // - "Ungrouped": Tabs are alive. We want to DISSOLVE the logical group (flatten tabs).
+
+        const children = await chrome.bookmarks.getChildren(bookmarkId);
+
+        // 1. If folder is empty, delete it regardless.
+        if (children.length === 0) {
+            await chrome.bookmarks.remove(bookmarkId);
+        } else {
+            // 2. Check if this is an "Ungroup" operation.
+            // If any logical tab *currently in this group* has live tabs, it means the user likely ungrouped them
+            // (or dragged them out, triggering this removal).
+            // Note: If tabs were closed, onRemoved(tab) would have fired and cleared liveTabIds.
+
+            const tabsInGroup = session.logicalTabs.filter(t => t.groupId === bookmarkId);
+            const hasLiveTabs = tabsInGroup.some(t => t.liveTabIds.length > 0);
+
+            if (hasLiveTabs) {
+                // Ungroup detected: Move children out and delete folder.
+                const groupNode = await chrome.bookmarks.get(bookmarkId);
+                const parentId = groupNode[0].parentId;
+                const index = groupNode[0].index;
+
+                // Move children to parent (flatten)
+                for (let i = 0; i < children.length; i++) {
+                    await chrome.bookmarks.move(children[i].id, { parentId: parentId, index: index + i });
+                }
+                await chrome.bookmarks.remove(bookmarkId);
+            }
+            // Else: Closed detected: Preserve folder.
+        }
+
         await reloadSessionAndPreserveState(sessionId, group.windowId);
         notifySidebarStateUpdated(group.windowId, sessionId);
+    } catch (e) {
+        console.error("Failed to handle group removal", e);
     }
 });
 
