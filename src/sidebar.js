@@ -5,6 +5,7 @@ const renameSessionBtn = document.getElementById('rename-session-btn');
 const refreshSessionsBtn = document.getElementById('refresh-sessions');
 const unmountOthersBtn = document.getElementById('unmount-others-btn');
 const themeToggleBtn = document.getElementById('theme-toggle-btn');
+const settingsBtn = document.getElementById('settings-btn');
 const tabsContainer = document.getElementById('tabs-container');
 
 // Search Elements
@@ -56,6 +57,7 @@ async function init() {
     sessionSelector.addEventListener('change', onSessionSwitch);
     unmountOthersBtn.addEventListener('click', onUnmountOthers);
     themeToggleBtn.addEventListener('click', toggleTheme);
+    settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
     // Search Listeners
     searchInput.addEventListener('input', performSearch);

@@ -163,7 +163,14 @@ body.dark-mode .top-level-tab.active {
   align-items: center;
 }
 
-#theme-toggle-btn {
+.header-left-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+#theme-toggle-btn,
+#settings-btn {
   background: none;
   border: none;
   cursor: pointer;
@@ -172,7 +179,8 @@ body.dark-mode .top-level-tab.active {
   border-radius: 4px;
 }
 
-#theme-toggle-btn:hover {
+#theme-toggle-btn:hover,
+#settings-btn:hover {
   background-color: var(--hover-bg);
 }
 
