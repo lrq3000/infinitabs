@@ -143,7 +143,11 @@ function toggleTheme() {
 }
 
 async function loadSessionsList() {
-    const response = await chrome.runtime.sendMessage({ type: "GET_SESSION_LIST" });
+    const response = await chrome.runtime.sendMessage({
+        type: "GET_SESSION_LIST"
+    }).catch((err) => {
+        console.error("Failed to get session list", err);
+    });
     const sessions = response.sessions || [];
 
     sessionSelector.innerHTML = '<option value="" disabled>Select Session...</option>';
@@ -164,6 +168,8 @@ async function refreshCurrentSession() {
     const response = await chrome.runtime.sendMessage({
         type: "GET_CURRENT_SESSION_STATE",
         windowId: currentWindowId
+    }).catch((err) => {
+        console.error("Failed to get current session state", err);
     });
 
     if (response.session) {
@@ -184,6 +190,9 @@ async function onSessionSwitch(e) {
         type: "SWITCH_SESSION",
         windowId: currentWindowId,
         sessionId: newSessionId
+    }).catch((err) => {
+        console.error("Failed to switch session", err);
+        alert("Failed to switch session. Please try again.");
     });
 
     // The background will reply, but we also expect a STATE_UPDATED message
@@ -210,9 +219,9 @@ async function onRenameSession() {
             }
             // The state update message from background will refresh the UI, but we also need to refresh the list of sessions
             await loadSessionsList();
-        } catch (e) {
-            console.error("Failed to rename session", e);
-            alert("Failed to rename session.");
+        } catch (err) {
+            console.error("Failed to rename session", err);
+            alert("Failed to rename session. Please try again.");
         }
     }
 }
@@ -232,6 +241,8 @@ async function onUnmountOthers() {
             type: "UNMOUNT_ALL_EXCEPT",
             windowId: currentWindowId,
             logicalIdsToKeep: toKeep
+        }).catch((err) => {
+            console.error("Failed to unmount all logical tabs except active one", err);
         });
     }
 
@@ -239,7 +250,11 @@ async function onUnmountOthers() {
 }
 
 async function loadPastWorkspaces() {
-    const response = await chrome.runtime.sendMessage({ type: "GET_WORKSPACE_HISTORY" });
+    const response = await chrome.runtime.sendMessage({
+        type: "GET_WORKSPACE_HISTORY"
+    }).catch((err) => {
+        console.error("Failed to get workspace history", err);
+    });
     const history = response.history || [];
     const favorites = response.favorites || [];
 
@@ -286,6 +301,9 @@ async function onReloadWorkspace() {
         type: "RESTORE_WORKSPACE",
         snapshotId: id,
         source: isFav ? 'favorite' : 'history'
+    }).catch((err) => {
+        console.error("Failed to restore workspace", err);
+        alert("Failed to restore workspace. Please try again.");
     });
 }
 
@@ -295,13 +313,20 @@ async function onFavoriteWorkspace() {
         await chrome.runtime.sendMessage({
             type: "SAVE_FAVORITE_WORKSPACE",
             name: name
+        }).catch((err) => {
+            console.error("Failed to save favorite workspace", err);
+            alert("Failed to save favorite workspace. Please try again.");
         });
         await loadPastWorkspaces();
     }
 }
 
 async function checkCrashStatus() {
-    const response = await chrome.runtime.sendMessage({ type: "CHECK_CRASH_STATUS" });
+    const response = await chrome.runtime.sendMessage({
+        type: "CHECK_CRASH_STATUS"
+    }).catch((err) => {
+        console.error("Failed to check crash status", err);
+    });
     if (response.crashed && response.lastWorkspace) {
         crashRecoveryContainer.style.display = 'block';
         crashRecoveryContainer.dataset.workspace = JSON.stringify(response.lastWorkspace);
@@ -319,6 +344,9 @@ async function onCrashRestore() {
         await chrome.runtime.sendMessage({
             type: "RESTORE_WORKSPACE",
             snapshot: ws
+        }).catch((err) => {
+            console.error("Failed to restore workspace", err);
+            alert("Failed to restore workspace. Please try again.");
         });
         crashRecoveryContainer.style.display = 'none';
         crashPopup.style.display = 'none';
@@ -647,6 +675,9 @@ function createGroupElement(group, displayName, color) {
                 type: "DELETE_LOGICAL_GROUP",
                 windowId: currentWindowId,
                 groupId: group.groupId
+            }).catch((err) => {
+                console.error("Failed to delete group", err);
+                alert("Failed to delete group. Please try again.");
             });
         }
     });
@@ -714,6 +745,9 @@ function createTabElement(tab, session, shouldScroll, groupColor) {
                 type: "UNMOUNT_LOGICAL_TAB",
                 windowId: currentWindowId,
                 logicalId: tab.logicalId
+            }).catch((err) => {
+                console.error("Failed to unmount logical tab", err);
+                alert("Failed to unmount logical tab. Please try again.");
             });
         }
     });
@@ -744,6 +778,9 @@ function createTabElement(tab, session, shouldScroll, groupColor) {
                     type: "DELETE_LOGICAL_TAB",
                     windowId: currentWindowId,
                     logicalId: tab.logicalId
+                }).catch((err) => {
+                    console.error("Failed to delete logical tab", err);
+                    alert("Failed to delete logical tab. Please try again.");
                 });
             }
         });
@@ -884,6 +921,8 @@ function handleTabClick(e, logicalId) {
             type: "FOCUS_OR_MOUNT_TAB",
             windowId: currentWindowId,
             logicalId: logicalId
+        }).catch((err) => {
+            console.error("Failed to focus or mount logical tab", err);
         });
     }
 
@@ -991,6 +1030,9 @@ function onDrop(e) {
         logicalIds: draggedLogicalIds,
         targetLogicalId: targetId,
         position: position
+    }).catch((err) => {
+        console.error("Failed to move logical tab", err);
+        alert("Failed to move logical tab. Please try again.");
     });
 }
 
