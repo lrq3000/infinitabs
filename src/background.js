@@ -1218,7 +1218,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 
     const pendingIndex = pendingMounts.findIndex(p => p.windowId === windowId);
     if (pendingIndex !== -1) {
-        const { logicalId } = pendingMounts[pendingIndex];
+        const { logicalId, insertIndex } = pendingMounts[pendingIndex];
         pendingMounts.splice(pendingIndex, 1);
 
         const sessionId = state.windowToSession[windowId];
@@ -1235,6 +1235,18 @@ chrome.tabs.onCreated.addListener(async (tab) => {
                     // If we open a logical tab that is in a group, the live tab should be grouped.
                     if (logical.groupId) {
                         await ensureLiveGroupForLogicalTab(tab.id, logical.groupId, session);
+                    }
+
+                    // Move to correct position if needed (since we created at end to avoid sticky groups)
+                    if (insertIndex !== undefined && insertIndex !== null) {
+                        try {
+                            // Check if current index matches desired
+                            if (tab.index !== insertIndex) {
+                                await chrome.tabs.move(tab.id, { index: insertIndex });
+                            }
+                        } catch (e) {
+                            console.warn("Failed to move mounted tab to position", e);
+                        }
                     }
 
                     notifySidebarStateUpdated(windowId, sessionId);
@@ -1924,12 +1936,15 @@ async function focusOrMountLogicalTab(windowId, logicalId) {
             }
         }
 
+        // Store desired index in pending entry for onCreated handler
+        pendingEntry.insertIndex = insertIndex;
+
         try {
+            // Create tab at the end (no index specified) to avoid sticky group behavior with neighbors
             const tab = await chrome.tabs.create({
                 windowId,
                 url: logical.url,
-                active: true,
-                index: insertIndex
+                active: true
             });
 
             const idx = pendingMounts.indexOf(pendingEntry);
@@ -1940,6 +1955,17 @@ async function focusOrMountLogicalTab(windowId, logicalId) {
                 // If the bookmark is in a group, we should add the live tab to a group
                 if (logical.groupId) {
                     await ensureLiveGroupForLogicalTab(tab.id, logical.groupId, session);
+                }
+
+                // Move to correct position
+                if (insertIndex !== undefined && insertIndex !== null) {
+                    try {
+                        if (tab.index !== insertIndex) {
+                            await chrome.tabs.move(tab.id, { index: insertIndex });
+                        }
+                    } catch (e) {
+                         console.warn("Failed to move mounted tab to position", e);
+                    }
                 }
 
                 notifySidebarStateUpdated(windowId, sessionId);
