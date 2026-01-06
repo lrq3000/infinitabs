@@ -62,7 +62,7 @@ async function init() {
     settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
     // Search Listeners
-    searchInput.addEventListener('input', performSearch);
+    searchInput.addEventListener('input', () => performSearch(true));
     searchInput.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
             e.preventDefault();
@@ -460,7 +460,7 @@ function onMessage(message, sender, sendResponse) {
             }
             renderSession(currentSession);
             // Re-apply search if exists
-            if (searchInput.value) performSearch();
+            if (searchInput.value) performSearch(false);
         }
     } else if (message.type === "HISTORY_UPDATED") {
         loadPastWorkspaces();
@@ -490,7 +490,7 @@ function clearSearch() {
     performSearch();
 }
 
-function performSearch() {
+function performSearch(navigate = true) {
     const query = searchInput.value;
 
     // Toggle clear button visibility
@@ -542,7 +542,7 @@ function performSearch() {
         }
     });
 
-    if (currentMatches.length > 0) {
+    if (currentMatches.length > 0 && navigate) {
         navigateSearch(1); // Go to first match
     }
 }
