@@ -16,6 +16,8 @@ This file provides instructions for automated coding agents working in this repo
 - The user likes literate programming, hence add as many pertinent and non-trivial comments as possible to your changes.
 - Do not delete comments and console logging unnecessarily. Keep or restore all relevant comments and still functional console logging, only removes them if not working anymore or deprecated because of your changes.
 - The user requires that all test files created during development (e.g., reproduction scripts, mocks) be committed to the repository.
+- Prefer object oriented style whenever possible, avoid functional style.
+- Modularize into encapsulable and separable functions, methods and objects whenever possible. Always avoid copying similar code blocks: rule of thumb: if a code is repeated twice, make it into a function or a method.
 
 ## High-level workflow
 - Work in **small PRs** (minimal diffs, minimal file touch).
