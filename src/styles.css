@@ -184,7 +184,8 @@ body.dark-mode .top-level-tab.active {
   background-color: var(--hover-bg);
 }
 
-#unmount-others-btn {
+#unmount-others-btn,
+#private-mode-btn {
   font-size: 12px;
   padding: 4px 8px;
   cursor: pointer;
@@ -194,8 +195,26 @@ body.dark-mode .top-level-tab.active {
   color: var(--btn-text);
 }
 
-#unmount-others-btn:hover {
+#unmount-others-btn:hover,
+#private-mode-btn:hover {
   background-color: var(--btn-hover);
+}
+
+#private-mode-btn {
+  background-color: #fff;
+  border-color: #ccc;
+  color: #333;
+}
+#private-mode-btn:hover {
+  background-color: #f0f0f0;
+}
+body.dark-mode #private-mode-btn {
+  background-color: #333;
+  border-color: #555;
+  color: #eee;
+}
+body.dark-mode #private-mode-btn:hover {
+  background-color: #444;
 }
 
 /* Search Styles */

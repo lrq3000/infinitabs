@@ -4,6 +4,7 @@ const sessionSelector = document.getElementById('session-selector');
 const renameSessionBtn = document.getElementById('rename-session-btn');
 const refreshSessionsBtn = document.getElementById('refresh-sessions');
 const unmountOthersBtn = document.getElementById('unmount-others-btn');
+const privateModeBtn = document.getElementById('private-mode-btn');
 const themeToggleBtn = document.getElementById('theme-toggle-btn');
 const settingsBtn = document.getElementById('settings-btn');
 const tabsContainer = document.getElementById('tabs-container');
@@ -56,6 +57,7 @@ async function init() {
     refreshSessionsBtn.addEventListener('click', loadSessionsList);
     sessionSelector.addEventListener('change', onSessionSwitch);
     unmountOthersBtn.addEventListener('click', onUnmountOthers);
+    privateModeBtn.addEventListener('click', onTogglePrivateMode);
     themeToggleBtn.addEventListener('click', toggleTheme);
     settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
@@ -247,8 +249,20 @@ async function onUnmountOthers() {
             console.error("Failed to unmount all logical tabs except active one", err);
         });
     }
+}
 
+async function onTogglePrivateMode() {
+    if (!currentSession) return;
 
+    if (confirm("Convert current session to a Private In-Memory Session?\n\nThis will stop saving changes to bookmarks. The current bookmark session will remain as a history item.")) {
+        await chrome.runtime.sendMessage({
+            type: "CONVERT_TO_PRIVATE",
+            windowId: currentWindowId
+        }).catch((err) => {
+             console.error("Failed to convert to private", err);
+             alert("Failed to convert to private mode.");
+        });
+    }
 }
 
 async function loadPastWorkspaces() {
