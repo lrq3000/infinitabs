@@ -1,5 +1,5 @@
 // background.js
-importScripts('utils.js');
+importScripts('utils.js', 'storage.js');
 
 // --- Constants ---
 const ROOT_FOLDER_TITLE = "InfiniTabs Sessions";
@@ -88,7 +88,7 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
             }
 
             const title = formatGroupTitle(groupInfo.title, groupInfo.color);
-            const created = await chrome.bookmarks.create({
+            const created = await storage.create({
                 parentId: sessionId,
                 title: title
             });
@@ -217,13 +217,13 @@ async function ensureRootFolder() {
 }
 
 /**
- * Loads a session from a bookmark folder.
- * @param {string} sessionId - The bookmark ID of the session folder.
+ * Loads a session from a bookmark or memory folder.
+ * @param {string} sessionId - The bookmark/memory ID of the session folder.
  * @returns {Promise<Object>} The Session object.
  */
 async function loadSessionFromBookmarks(sessionId) {
     console.log(`loadSessionFromBookmarks: Loading ${sessionId}`);
-    const sessionNodes = await chrome.bookmarks.getSubTree(sessionId).catch(err => {
+    const sessionNodes = await storage.getSubTree(sessionId).catch(err => {
         console.error(`loadSessionFromBookmarks: getSubTree failed for ${sessionId}`, err);
         return null;
     });
@@ -310,8 +310,8 @@ async function loadSessionFromBookmarks(sessionId) {
  */
 async function getSessionList() {
     const rootId = await ensureRootFolder();
-    const children = await chrome.bookmarks.getChildren(rootId);
-    return children
+    const allSessions = await storage.getAllSessions(rootId);
+    return allSessions
         .filter(node => !node.url) // Only folders
         .map(folder => ({ sessionId: folder.id, name: parseSessionTitle(folder.title).name }));
 }
@@ -369,9 +369,9 @@ async function bindWindowToSession(windowId, sessionId) {
     // Update the bookmark title to include the windowId
     const newTitle = formatSessionTitle(session.name, windowId);
     // Fetch current bookmark title to check if update is needed
-    const currentNodes = await chrome.bookmarks.get(sessionId);
+    const currentNodes = await storage.get(sessionId);
     if (currentNodes.length > 0 && currentNodes[0].title !== newTitle) {
-        await chrome.bookmarks.update(sessionId, { title: newTitle });
+        await storage.update(sessionId, { title: newTitle });
     }
     session.name = parseSessionTitle(newTitle).name; // Ensure in-memory name is clean
 
@@ -470,7 +470,7 @@ async function syncExistingTabsInWindowToSession(windowId, sessionId) {
                     try {
                         const groupInfo = await chrome.tabGroups.get(tab.groupId);
                         const groupTitle = formatGroupTitle(groupInfo.title, groupInfo.color);
-                        const createdGroup = await chrome.bookmarks.create({
+                        const createdGroup = await storage.create({
                             parentId: sessionId,
                             title: groupTitle
                         });
@@ -482,7 +482,7 @@ async function syncExistingTabsInWindowToSession(windowId, sessionId) {
                 }
             }
 
-            const createdBookmark = await chrome.bookmarks.create({
+            const createdBookmark = await storage.create({
                 parentId: parentId,
                 title: tab.title || "New Tab",
                 url: tab.url || "about:blank"
@@ -745,7 +745,7 @@ async function restoreWorkspace(snapshot) {
                 try {
                     const rootId = await ensureRootFolder();
                     const newSessionTitle = formatSessionTitle(`Session - Window ${win.id}`, win.id);
-                    const created = await chrome.bookmarks.create({
+                    const created = await storage.create({
                         parentId: rootId,
                         title: newSessionTitle
                     });
@@ -806,7 +806,7 @@ function init(options = {}) {
             if (!shouldSkipBinding) {
                 const windows = await chrome.windows.getAll();
                 const rootId = await ensureRootFolder();
-                const sessionFolders = await chrome.bookmarks.getChildren(rootId);
+                const sessionFolders = await storage.getAllSessions(rootId);
 
                 const sessionFoldersByWindowId = {};
                 for (const folder of sessionFolders) {
@@ -838,8 +838,11 @@ function init(options = {}) {
                         await bindWindowToSession(win.id, sessionFoldersByWindowId[win.id]);
                     } else {
                         // Create a new session folder
+                        // Note: Default to bookmark storage on startup unless window is incognito?
+                        // But onStartup windows are usually not incognito unless restored specifically.
+                        // We will use rootId which is bookmark root, so it creates bookmarks.
                         const newSessionTitle = formatSessionTitle(`Session - Window ${win.id}`, win.id);
-                        const created = await chrome.bookmarks.create({
+                        const created = await storage.create({
                             parentId: rootId,
                             title: newSessionTitle
                         });
@@ -903,10 +906,16 @@ chrome.windows.onCreated.addListener(async (window) => {
         console.log(`onCreated: Binding new session for window ${windowId} immediately.`);
 
         try {
-            const rootId = await ensureRootFolder();
+            // Auto-detect private mode
+            let targetParentId = await ensureRootFolder();
+            if (window.incognito) {
+                targetParentId = storage.getMemoryRootId();
+                console.log(`onCreated: Window is incognito, using memory storage.`);
+            }
+
             const newSessionTitle = formatSessionTitle(`Session - Window ${windowId}`, windowId);
-            const created = await chrome.bookmarks.create({
-                parentId: rootId,
+            const created = await storage.create({
+                parentId: targetParentId,
                 title: newSessionTitle
             });
             await bindWindowToSession(windowId, created.id);
@@ -965,9 +974,9 @@ chrome.tabGroups.onUpdated.addListener(async (group) => {
 
     // Check if changed
     try {
-        const nodes = await chrome.bookmarks.get(bookmarkId);
+        const nodes = await storage.get(bookmarkId);
         if (nodes && nodes.length > 0 && nodes[0].title !== newTitle) {
-            await chrome.bookmarks.update(bookmarkId, { title: newTitle });
+            await storage.update(bookmarkId, { title: newTitle });
 
             const sessionId = state.windowToSession[group.windowId];
             if (sessionId) {
@@ -1003,11 +1012,11 @@ chrome.tabGroups.onRemoved.addListener(async (group) => {
         // - "Closed": Tabs are dead. We want to PERSIST the logical group (folder).
         // - "Ungrouped": Tabs are alive. We want to DISSOLVE the logical group (flatten tabs).
 
-        const children = await chrome.bookmarks.getChildren(bookmarkId);
+        const children = await storage.getChildren(bookmarkId);
 
         // 1. If folder is empty, delete it regardless.
         if (children.length === 0) {
-            await chrome.bookmarks.remove(bookmarkId);
+            await storage.remove(bookmarkId);
         } else {
             // 2. Check if this is an "Ungroup" operation.
             // If any logical tab *currently in this group* has live tabs, it means the user likely ungrouped them
@@ -1019,15 +1028,15 @@ chrome.tabGroups.onRemoved.addListener(async (group) => {
 
             if (hasLiveTabs) {
                 // Ungroup detected: Move children out and delete folder.
-                const groupNode = await chrome.bookmarks.get(bookmarkId);
+                const groupNode = await storage.get(bookmarkId);
                 const parentId = groupNode[0].parentId;
                 const index = groupNode[0].index;
 
                 // Move children to parent (flatten)
                 for (let i = 0; i < children.length; i++) {
-                    await chrome.bookmarks.move(children[i].id, { parentId: parentId, index: index + i });
+                    await storage.move(children[i].id, { parentId: parentId, index: index + i });
                 }
-                await chrome.bookmarks.remove(bookmarkId);
+                await storage.remove(bookmarkId);
             }
             // Else: Closed detected: Preserve folder.
         }
@@ -1105,7 +1114,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
             try {
                 const groupInfo = await chrome.tabGroups.get(tab.groupId);
                 const groupTitle = formatGroupTitle(groupInfo.title, groupInfo.color);
-                const createdGroup = await chrome.bookmarks.create({
+                const createdGroup = await storage.create({
                     parentId: sessionId,
                     title: groupTitle
                 });
@@ -1125,7 +1134,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
                 const prevLogical = currentSessionSnapshot.logicalTabs.find(l => l.logicalId === prevLogicalId);
                 if (prevLogical) {
                     try {
-                        const nodes = await chrome.bookmarks.get(prevLogical.bookmarkId);
+                        const nodes = await storage.get(prevLogical.bookmarkId);
                         if (nodes && nodes.length > 0) {
                             const prevNode = nodes[0];
                             // If prev bookmark is in a folder (group) but new tab is NOT in a group,
@@ -1138,7 +1147,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
                                 // So we place it in session root, after the group folder.
 
                                 // Find the group folder node to determine where to insert
-                                const groupFolderNodes = await chrome.bookmarks.get(prevNode.parentId);
+                                const groupFolderNodes = await storage.get(prevNode.parentId);
                                 if (groupFolderNodes && groupFolderNodes.length > 0) {
                                     insertParentId = sessionId;
                                     insertIndex = groupFolderNodes[0].index + 1;
@@ -1166,7 +1175,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
         bookmarkData.index = insertIndex;
     }
 
-    const createdBookmark = await chrome.bookmarks.create(bookmarkData);
+    const createdBookmark = await storage.create(bookmarkData);
 
     // Reload session structure using helper
     const reloadedSession = await reloadSessionAndPreserveState(sessionId, windowId);
@@ -1237,9 +1246,9 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
                             // Now safe to move
                             try {
-                                const nodes = await chrome.bookmarks.get(logical.bookmarkId);
+                                const nodes = await storage.get(logical.bookmarkId);
                                 if (nodes[0].parentId !== targetParentId) {
-                                    await chrome.bookmarks.move(logical.bookmarkId, { parentId: targetParentId });
+                                    await storage.move(logical.bookmarkId, { parentId: targetParentId });
                                     await reloadSessionAndPreserveState(sessionId, tab.windowId);
                                     notifySidebarStateUpdated(tab.windowId, sessionId);
                                 }
@@ -1253,9 +1262,9 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
                      // Move bookmark
                      try {
                          // Check current parent to avoid redundant moves
-                         const nodes = await chrome.bookmarks.get(logical.bookmarkId);
+                         const nodes = await storage.get(logical.bookmarkId);
                          if (nodes[0].parentId !== targetParentId) {
-                             await chrome.bookmarks.move(logical.bookmarkId, { parentId: targetParentId });
+                             await storage.move(logical.bookmarkId, { parentId: targetParentId });
                              await reloadSessionAndPreserveState(sessionId, tab.windowId);
                              notifySidebarStateUpdated(tab.windowId, sessionId);
                          }
@@ -1308,7 +1317,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
             // Note: favIconUrl is not persisted to bookmarks as Chrome bookmarks don't support storing favicon (or any kind of meta) data.
             // Favicons will fall back to the /_favicon/ service after reload until live tabs reattach.
             // TODO: store favIconUrl data in a local database in the extension. More generally, the extension should have a local database to store bookmarks' metadata, which should only be metadata that is not necessary for core functionality (ie, not necessary for managing or storing or recalling sessions and workspaces and tabs and tabs groups) but can be used to improve UX (eg, favicons recall after browser close and reopening).
-            chrome.bookmarks.update(logical.bookmarkId, {
+            storage.update(logical.bookmarkId, {
                 title: logical.title,
                 url: logical.url
             }).then(() => {
@@ -1429,11 +1438,11 @@ chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
         if (anchorLogical) {
             // Move after anchorLogical
             try {
-                const nodes = await chrome.bookmarks.get(anchorLogical.bookmarkId);
+                const nodes = await storage.get(anchorLogical.bookmarkId);
                 if (nodes && nodes.length > 0) {
                     const anchorNode = nodes[0];
                     // Move to same parent, next index
-                    await chrome.bookmarks.move(logical.bookmarkId, {
+                    await storage.move(logical.bookmarkId, {
                         parentId: anchorNode.parentId,
                         index: anchorNode.index + 1
                     });
@@ -1445,7 +1454,7 @@ chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
             // No left anchor (moved to start, or only untracked tabs before it)
             // Move to the beginning of the session root
             try {
-                await chrome.bookmarks.move(logical.bookmarkId, { parentId: sessionId, index: 0 });
+                await storage.move(logical.bookmarkId, { parentId: sessionId, index: 0 });
             } catch (e) {
                 console.error("Failed to move bookmark to root", e);
             }
@@ -1500,7 +1509,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
                             const rootId = await ensureRootFolder();
                             const newSessionTitle = formatSessionTitle(`Session - Window ${windowId}`, windowId);
-                            const created = await chrome.bookmarks.create({
+                            const created = await storage.create({
                                 parentId: rootId,
                                 title: newSessionTitle
                             });
@@ -1634,6 +1643,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     }
                     break;
                 }
+                case "CONVERT_TO_PRIVATE": {
+                    await handleConvertToPrivate(message.windowId);
+                    sendResponse({ success: true });
+                    break;
+                }
             }
         } catch (error) {
             console.error("Message handler error", error);
@@ -1646,6 +1660,64 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // --- Actions Implementation ---
 
+async function handleConvertToPrivate(windowId) {
+    const sessionId = state.windowToSession[windowId];
+    if (!sessionId) return;
+    const session = state.sessionsById[sessionId];
+    if (!session) return;
+
+    // Check if already private (in memory)
+    const rootNodes = await storage.get(sessionId);
+    if (rootNodes.length && storage._isMemory(rootNodes[0].id)) {
+        console.log("Session is already private/in-memory");
+        return;
+    }
+
+    console.log(`Converting session ${sessionId} to private (in-memory)`);
+
+    // 1. Create new session root in memory
+    const memoryRootId = storage.getMemoryRootId();
+    const newSessionTitle = formatSessionTitle(session.name, windowId);
+
+    const newSessionRoot = await storage.create({
+        parentId: memoryRootId,
+        title: newSessionTitle
+    });
+
+    // 2. Recursively copy content
+    await copyFolderContent(sessionId, newSessionRoot.id);
+
+    // 3. Re-bind window to new session
+    // This will reload the session from the new memory source and update state
+    await bindWindowToSession(windowId, newSessionRoot.id);
+
+    // Note: The old session remains in bookmarks as a "history" item, but is no longer bound to this window.
+}
+
+async function copyFolderContent(sourceId, targetId) {
+    const children = await storage.getChildren(sourceId);
+    for (const child of children) {
+        if (child.url) {
+            // Copy bookmark
+            await storage.create({
+                parentId: targetId,
+                title: child.title,
+                url: child.url,
+                index: child.index
+            });
+        } else {
+            // Copy folder
+            const newFolder = await storage.create({
+                parentId: targetId,
+                title: child.title,
+                index: child.index
+            });
+            // Recurse
+            await copyFolderContent(child.id, newFolder.id);
+        }
+    }
+}
+
 async function handleRenameSession(sessionId, newName) {
     const session = state.sessionsById[sessionId];
     const windowId = session ? session.windowId : null;
@@ -1653,20 +1725,20 @@ async function handleRenameSession(sessionId, newName) {
     // If we don't have the session loaded, we need to get the bookmark to find the windowId
     if (!windowId) {
         try {
-            const nodes = await chrome.bookmarks.get(sessionId);
+            const nodes = await storage.get(sessionId);
             if (nodes && nodes.length > 0) {
                 const parsed = parseSessionTitle(nodes[0].title);
                 // Update with windowId if present, otherwise just use the new name
                 const newTitle = parsed.windowId
                     ? formatSessionTitle(newName, parsed.windowId)
                     : newName;
-                await chrome.bookmarks.update(sessionId, { title: newTitle });
+                await storage.update(sessionId, { title: newTitle });
             }
         } catch (e) {
             console.warn("Could not find bookmark to rename", e);
         }
     } else {
-        await chrome.bookmarks.update(sessionId, { title: formatSessionTitle(newName, windowId) });
+        await storage.update(sessionId, { title: formatSessionTitle(newName, windowId) });
     }
 
     // Update in-memory state if session is loaded
@@ -1792,7 +1864,7 @@ async function handleDeleteLogicalTab(windowId, logicalId) {
 
     // Remove bookmark
     try {
-        await chrome.bookmarks.remove(logical.bookmarkId);
+        await storage.remove(logical.bookmarkId);
     } catch (e) {
         console.error("Failed to delete bookmark", e);
     }
@@ -1828,7 +1900,7 @@ async function handleDeleteLogicalGroup(windowId, groupId) {
 
     // 1. Remove bookmark folder and children
     try {
-        await chrome.bookmarks.removeTree(groupId);
+        await storage.removeTree(groupId);
     } catch (e) {
         console.error("Failed to delete bookmark group", e);
     }
@@ -1947,11 +2019,11 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
         parentId = targetBookmarkId;
         // Append to end
         // Getting children count is async
-        const children = await chrome.bookmarks.getChildren(parentId);
+        const children = await storage.getChildren(parentId);
         index = children.length;
     } else {
         // 'before' or 'after' relative to target
-        const targetNodes = await chrome.bookmarks.get(targetBookmarkId);
+        const targetNodes = await storage.get(targetBookmarkId);
         if (!targetNodes || targetNodes.length === 0) return;
         const targetNode = targetNodes[0];
         parentId = targetNode.parentId;
@@ -1965,7 +2037,7 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
 
     for (let i = 0; i < bookmarksToMove.length; i++) {
         const bid = bookmarksToMove[i];
-        await chrome.bookmarks.move(bid, { parentId: parentId, index: index + i });
+        await storage.move(bid, { parentId: parentId, index: index + i });
     }
 
     // Update state using helper
