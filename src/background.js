@@ -119,6 +119,9 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
     // 3. Start creation process
     const creationPromise = (async () => {
         try {
+            // Debounce: Wait a bit to allow other extensions (e.g. Tabius) to rename the group
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
             // Fetch group details
             let groupInfo;
             try {
