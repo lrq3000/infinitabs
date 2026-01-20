@@ -915,20 +915,31 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
 
     // Scroll
     if (isActive && shouldScroll) {
-        window.requestAnimationFrame(() => {
-            // Check if element is still connected before scrolling
-            if (!el.isConnected) return;
+        scrollElementIntoViewWithContext(el);
+    }
+}
 
-            let target = el;
+/**
+ * Scrolls a logical tab element (or group header) into view with appropriate context.
+ * It attempts to show preceding siblings to provide context.
+ *
+ * @param {HTMLElement} element The element to scroll into view.
+ */
+function scrollElementIntoViewWithContext(element) {
+    window.requestAnimationFrame(() => {
+        // Check if element is still connected before scrolling
+        if (!element || !element.isConnected) return;
+
+        let target = element;
+        // Try to include previous siblings to provide context (e.g. 2 rows above)
+        if (target.previousElementSibling) {
+            target = target.previousElementSibling;
             if (target.previousElementSibling) {
                 target = target.previousElementSibling;
-                if (target.previousElementSibling) {
-                    target = target.previousElementSibling;
-                }
             }
-            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        });
-    }
+        }
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
 }
 
 function escapeHtml(text) {
