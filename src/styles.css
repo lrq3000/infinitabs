@@ -249,7 +249,8 @@ body.dark-mode .top-level-tab.active {
 }
 
 #search-prev,
-#search-next {
+#search-next,
+#locate-current {
   cursor: pointer;
   background: none;
   border: 1px solid #ccc;
@@ -260,7 +261,8 @@ body.dark-mode .top-level-tab.active {
 }
 
 #search-prev:hover,
-#search-next:hover {
+#search-next:hover,
+#locate-current:hover {
   background-color: var(--hover-bg);
 }
 

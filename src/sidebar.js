@@ -13,6 +13,7 @@ const searchInput = document.getElementById('search-input');
 const searchClearBtn = document.getElementById('search-clear');
 const searchPrevBtn = document.getElementById('search-prev');
 const searchNextBtn = document.getElementById('search-next');
+const locateCurrentBtn = document.getElementById('locate-current');
 
 // Workspace Elements
 const pastWorkspacesSelector = document.getElementById('past-workspaces-selector');
@@ -71,6 +72,7 @@ async function init() {
     searchClearBtn.addEventListener('click', clearSearch);
     searchPrevBtn.addEventListener('click', () => navigateSearch(-1));
     searchNextBtn.addEventListener('click', () => navigateSearch(1));
+    locateCurrentBtn.addEventListener('click', scrollToActiveTab);
     document.addEventListener('keydown', onKeyDown);
 
     // Workspace Listeners
@@ -533,6 +535,13 @@ function navigateSearch(direction) {
     const activeEl = currentMatches[currentMatchIndex];
     activeEl.classList.add('active-match');
     activeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function scrollToActiveTab() {
+    const activeEl = document.querySelector('.tab-item.active-live');
+    if (activeEl) {
+        activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
 }
 
 function onKeyDown(e) {
