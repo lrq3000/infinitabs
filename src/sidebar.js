@@ -541,6 +541,20 @@ function scrollToActiveTab() {
     const activeEl = document.querySelector('.tab-item.active-live');
     if (activeEl) {
         activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else if (currentSession?.lastActiveLogicalTabId) {
+        // Active tab might be in a collapsed group - find and expand it
+        const activeTab = currentSession.logicalTabs.find(
+            t => t.logicalId === currentSession.lastActiveLogicalTabId
+        );
+        if (activeTab?.groupId && collapsedGroups.has(activeTab.groupId)) {
+            collapsedGroups.delete(activeTab.groupId);
+            renderSession(currentSession);
+            // Scroll after re-render
+            requestAnimationFrame(() => {
+                const el = document.querySelector('.tab-item.active-live');
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            });
+        }
     }
 }
 
