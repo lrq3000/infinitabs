@@ -71,10 +71,11 @@ def test_locate_btn():
         page.goto(url)
 
         # Locate Button check
-        locate_btn = page.wait_for_selector("#locate-current", state="visible", timeout=2000)
-        if not locate_btn:
-             print("FAILURE: #locate-current not found or not visible.")
-             sys.exit(1)
+        try:
+            locate_btn = page.wait_for_selector("#locate-current", state="visible", timeout=2000)
+        except Exception as e:
+            print(f"FAILURE: `#locate-current` not found or not visible: {e}")
+            sys.exit(1)
 
         # Wait for tabs to render
         page.wait_for_selector(f"[data-id='{active_tab_id}']", state="attached", timeout=2000)
