@@ -17,8 +17,14 @@ jobs:
     # Bots filters
     # Optional safety: ignore PRs from forks (often limited permissions)
     if: >
-      (endsWith(github.actor, '[bot]') || github.actor == 'jules' || github.actor == 'jules-ai[bot]')
+      github.event.pull_request.user.type == 'Bot'
       && (github.event.pull_request.head.repo.full_name == github.repository)
+
+    # (Old behavior) Allow only Jules — kept as a comment
+    # if: >
+    #   (endsWith(github.actor, '[bot]') || github.actor == 'jules' || github.actor == 'jules-ai[bot]')
+    #   && (github.event.pull_request.head.repo.full_name == github.repository)
+
     runs-on: ubuntu-latest
 
     steps:
@@ -51,6 +57,6 @@ jobs:
               body: '@coderabbitai review'
             });
 
-            # Post @coderabbitai review as a comment
-            # Can also do @coderabbitai full review to avoid doing an incremental review, see https://docs.coderabbit.ai/reference/review-commands
+            // Post @coderabbitai review as a comment
+            // Can also do @coderabbitai full review to avoid doing an incremental review, see https://docs.coderabbit.ai/reference/review-commands
             core.info('Posted @coderabbitai review');
