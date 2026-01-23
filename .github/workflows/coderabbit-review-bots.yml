@@ -1,0 +1,54 @@
+name: Trigger CodeRabbit review on bot PRs (once, incl. drafts)
+
+on:
+  pull_request:
+    types:
+      - opened
+      # - reopened            # inutile si tu ne veux pas relancer
+      # - synchronize         # inutile si tu ne veux pas relancer à chaque commit
+      # - ready_for_review    # inutile si tu ne veux pas relancer quand on sort du draft
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  coderabbit_on_bot_pr:
+    # Filtre bots (ajuste selon tes bots)
+    # Option sécurité: ignorer les PRs venant de forks (permissions souvent limitées)
+    if: >
+      (endsWith(github.actor, '[bot]') || github.actor == 'jules' || github.actor == 'jules-ai[bot]')
+      && (github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Add @coderabbitai review comment (once)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.pull_request.number;
+
+            // Évite les doublons (au cas où un humain l’a déjà fait, ou si le workflow est relancé)
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100
+            });
+
+            const already = comments.some(c => {
+              const body = (c.body || '').toLowerCase();
+              return body.includes('@coderabbitai review') || body.includes('@coderabbitai full review');
+            });
+
+            if (already) {
+              core.info('CodeRabbit trigger already present, skipping.');
+              return;
+            }
+
+            // Déclenche CodeRabbit même si PR draft
+            await github.rest.issues.createComment({
+              owner, repo, issue_number,
+              body: '@coderabbitai review'
+            });
+
+            core.info('Posted @coderabbitai review');
