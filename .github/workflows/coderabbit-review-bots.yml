@@ -1,12 +1,12 @@
-name: Trigger CodeRabbit review on bot PRs (once, incl. drafts)
+name: Trigger CodeRabbitAI reviews automatically on bot PRs (once, incl. drafts)
 
 on:
   pull_request:
     types:
       - opened
-      # - reopened            # inutile si tu ne veux pas relancer
-      # - synchronize         # inutile si tu ne veux pas relancer à chaque commit
-      # - ready_for_review    # inutile si tu ne veux pas relancer quand on sort du draft
+      # - reopened            # to redo on PR close/reopen
+      # - synchronize         # to redo on each commit
+      # - ready_for_review    # to redo when draft PR -> ready for review
 
 permissions:
   pull-requests: write
@@ -14,8 +14,8 @@ permissions:
 
 jobs:
   coderabbit_on_bot_pr:
-    # Filtre bots (ajuste selon tes bots)
-    # Option sécurité: ignorer les PRs venant de forks (permissions souvent limitées)
+    # Bots filters
+    # Optional safety: ignore PRs from forks (often limited permissions)
     if: >
       (endsWith(github.actor, '[bot]') || github.actor == 'jules' || github.actor == 'jules-ai[bot]')
       && (github.event.pull_request.head.repo.full_name == github.repository)
@@ -51,4 +51,6 @@ jobs:
               body: '@coderabbitai review'
             });
 
+            # Post @coderabbitai review as a comment
+            # Can also do @coderabbitai full review to avoid doing an incremental review, see https://docs.coderabbit.ai/reference/review-commands
             core.info('Posted @coderabbitai review');
