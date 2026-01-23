@@ -41,7 +41,7 @@ reviews:
     labels: [] # modified
     drafts: true
     base_branches: []
-    ignore_usernames: [] # modified, avoids excluding bot-users
+    ignore_usernames: [] # modified, avoids excluding bot-users, see https://docs.coderabbit.ai/configuration/username-based-pr-review-control#regular-review
   finishing_touches:
     docstrings:
       enabled: true
