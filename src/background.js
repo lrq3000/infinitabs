@@ -88,10 +88,67 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
             }
 
             const title = formatGroupTitle(groupInfo.title, groupInfo.color);
-            const created = await chrome.bookmarks.create({
+
+            let insertIndex = null;
+            try {
+                const tabs = await chrome.tabs.query({ windowId });
+                const groupTabs = tabs.filter(t => t.groupId === groupId).sort((a, b) => a.index - b.index);
+
+                if (groupTabs.length > 0) {
+                    const firstTab = groupTabs[0];
+                    let anchorLogical = null;
+
+                    // Find closest preceding live tab that is mapped
+                    // Use the tabs array which contains all tabs for the window
+                    for (let i = firstTab.index - 1; i >= 0; i--) {
+                        const tab = tabs.find(t => t.index === i);
+                        if (tab) {
+                            const lid = state.tabToLogical[tab.id];
+                            if (lid) {
+                                // Find the logical tab object to get bookmark ID
+                                const session = state.sessionsById[sessionId];
+                                if (session) {
+                                    anchorLogical = session.logicalTabs.find(l => l.logicalId === lid);
+                                    if (anchorLogical) break;
+                                }
+                            }
+                        }
+                    }
+
+                    if (anchorLogical) {
+                        const anchorNodes = await chrome.bookmarks.get(anchorLogical.bookmarkId);
+                        if (anchorNodes && anchorNodes.length > 0) {
+                            const anchorNode = anchorNodes[0];
+                            if (anchorNode.parentId !== sessionId) {
+                                // Anchor is in a subfolder (another group)
+                                // We place AFTER that group folder
+                                const folderNodes = await chrome.bookmarks.get(anchorNode.parentId);
+                                if (folderNodes && folderNodes.length > 0) {
+                                    insertIndex = folderNodes[0].index + 1;
+                                }
+                            } else {
+                                // Anchor is in root
+                                insertIndex = anchorNode.index + 1;
+                            }
+                        }
+                    } else {
+                        // No anchor found to the left -> start of list
+                        insertIndex = 0;
+                    }
+                }
+            } catch (e) {
+                console.warn("Failed to calculate group insertion index", e);
+            }
+
+            const createData = {
                 parentId: sessionId,
                 title: title
-            });
+            };
+            if (insertIndex !== null) {
+                createData.index = insertIndex;
+            }
+
+            const created = await chrome.bookmarks.create(createData);
 
             state.liveGroupToBookmark[groupId] = created.id;
 
