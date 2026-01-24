@@ -860,10 +860,24 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
     const icon = el.querySelector('.tab-icon');
     const title = el.querySelector('.tab-title');
 
-    let faviconUrl = chrome.runtime.getURL("/_favicon/") + "?pageUrl=" + encodeURIComponent(tab.url) + "&size=16";
+    let defaultFaviconUrl = chrome.runtime.getURL("/_favicon/") + "?pageUrl=" + encodeURIComponent(tab.url) + "&size=16";
+    let faviconUrl = defaultFaviconUrl;
+
     if (tab.favIconUrl) {
+        // Validation: If it points to an extension resource, it might be stale.
+        // We can't synchronously check existence, but we can rely on error handling.
         faviconUrl = tab.favIconUrl;
     }
+
+    // Attach error handler to fallback
+    // We re-attach every time to ensure the closure captures the correct defaultFaviconUrl
+    icon.onerror = () => {
+         // Fallback to default if custom/stale icon fails
+         if (icon.src !== defaultFaviconUrl) {
+             icon.src = defaultFaviconUrl;
+         }
+    };
+
     if (icon.src !== faviconUrl) icon.src = faviconUrl;
 
     if (title.textContent !== tab.title) title.textContent = tab.title;
