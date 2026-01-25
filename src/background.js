@@ -68,9 +68,9 @@ async function activatePreviousTab(windowId, excludingTabIds = []) {
 
     const excludingSet = new Set(excludingTabIds);
 
-    // Iterate backwards
-    // Note: We clone the array to iterate safely if we modify it?
-    // Actually we shouldn't modify it in loop if we iterate backwards with index.
+    // Iterate backwards through the MRU history to find the most recently active tab that is still valid.
+    // We iterate backwards because the end of the array contains the most recent tabs.
+    // We also check against 'excludingSet' to ensure we don't try to activate a tab that is currently being closed.
     for (let i = history.length - 1; i >= 0; i--) {
         const tabId = history[i];
         if (excludingSet.has(tabId)) continue;
