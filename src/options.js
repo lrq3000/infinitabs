@@ -35,7 +35,10 @@ function restoreOptions() {
 function saveOptions() {
   const confirmDelete = confirmDeleteCheckbox.checked;
   const selectLastActive = selectLastActiveCheckbox.checked;
-  const maxTabHistory = parseInt(maxTabHistoryInput.value, 10) || 100;
+  const parsedMaxTabHistory = parseInt(maxTabHistoryInput.value, 10);
+  const maxTabHistory = Number.isFinite(parsedMaxTabHistory)
+    ? Math.min(500, Math.max(10, parsedMaxTabHistory))
+    : DEFAULT_MAX_TAB_HISTORY;
   const historySize = parseInt(historySizeInput.value, 10) || 50;
   const reloadOnRestart = reloadOnRestartCheckbox.checked;
   chrome.storage.local.set({
