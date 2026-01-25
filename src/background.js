@@ -922,6 +922,7 @@ async function onStartupHandler() {
 chrome.runtime.onInstalled.addListener(init);
 chrome.runtime.onStartup.addListener(onStartupHandler);
 
+// Listen for changes in local storage to update runtime configuration
 chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === 'local') {
         if (changes.reloadOnRestart) {
