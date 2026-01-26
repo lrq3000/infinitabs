@@ -932,7 +932,14 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
             state.selectLastActiveTab = changes.selectLastActiveTab.newValue;
         }
         if (changes.maxTabHistory) {
-            state.maxTabHistory = changes.maxTabHistory.newValue;
+            const parsed = parseInt(changes.maxTabHistory.newValue, 10);
+            const nextMax = Number.isFinite(parsed) && parsed > 0 ? parsed : state.maxTabHistory;
+            state.maxTabHistory = nextMax;
+            Object.values(state.tabHistory).forEach(history => {
+                if (history.length > nextMax) {
+                    history.splice(0, history.length - nextMax);
+                }
+            });
         }
     }
 });
