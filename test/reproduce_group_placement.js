@@ -69,6 +69,7 @@ console.log('Bookmarks after grouping:', children.map((c, i) => `${c.title} (Act
 const groupFolder = children.find(c => c.title.includes("Group"));
 if (!groupFolder) {
     console.error("FAIL: Group folder not found");
+    process.exit(1);
 } else {
     const actualIndex = children.indexOf(groupFolder);
     console.log(`Group Folder Actual Index: ${actualIndex}`);
