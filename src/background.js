@@ -19,7 +19,7 @@ const state = {
     lastKnownWorkspace: null, // WorkspaceSnapshot
     historySize: 50,
     reloadOnRestart: false, // User Preference
-    selectLastActiveTab: false, // User Preference
+    selectLastActiveTab: true, // User Preference
     maxTabHistory: 100, // User Preference
     tabHistory: {}, // Record<WindowId, Array<TabId>> - MRU Stack
     initialized: false
