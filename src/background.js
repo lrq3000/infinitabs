@@ -119,6 +119,15 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
     // 3. Start creation process
     const creationPromise = (async () => {
         try {
+            // Debounce: Wait a bit to allow other extensions (e.g. Tabius) to rename the group
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            // Re-check session binding after debounce in case the window was rebound
+            const currentSessionId = state.windowToSession[windowId];
+            if (!currentSessionId || currentSessionId !== sessionId) {
+                return null;
+            }
+
             // Fetch group details
             let groupInfo;
             try {
@@ -130,7 +139,7 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
 
             const title = formatGroupTitle(groupInfo.title, groupInfo.color);
             const created = await chrome.bookmarks.create({
-                parentId: sessionId,
+                parentId: currentSessionId,
                 title: title
             });
 
