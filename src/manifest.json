@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "InfiniTabs",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "description": "Unlimited tabs. Zero clutter. Near-zero RAM.",
   "permissions": [
     "tabs",
