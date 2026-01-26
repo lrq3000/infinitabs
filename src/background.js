@@ -152,6 +152,12 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
                 title: title
             });
 
+            // Ensure adequate placement of new logical tab groups in sidebar by:
+            // 1. Querying the live tabs in the window.
+            // 2. Identifying the tabs belonging to the new group.
+            // 3. Finding the closest preceding "anchor" tab (a live tab with a corresponding logical tab).
+            // 4. Inserting the new group folder bookmark immediately after the anchor tab (or its parent group folder if the anchor is grouped).
+            // This ensures that the sidebar order reflects the visual order of tabs and groups in the native live tabs strip.
             return moveMutex.run(async () => {
                 let insertIndex = null;
                 try {
