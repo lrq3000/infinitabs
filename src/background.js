@@ -108,10 +108,12 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
                         const firstTab = groupTabs[0];
                         let anchorLogical = null;
 
+                    // Build index-to-tab map for O(1) lookups
+                    const tabByIndex = new Map(tabs.map(t => [t.index, t]));
+
                         // Find closest preceding live tab that is mapped
-                        // Use the tabs array which contains all tabs for the window
                         for (let i = firstTab.index - 1; i >= 0; i--) {
-                            const tab = tabs.find(t => t.index === i);
+                        const tab = tabByIndex.get(i);
                             if (tab) {
                                 const lid = state.tabToLogical[tab.id];
                                 if (lid) {
