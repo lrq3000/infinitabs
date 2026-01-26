@@ -54,6 +54,27 @@ global.chrome = {
              return tab;
         },
         get: async (id) => tabs.find(t => t.id === id),
+        update: async (tabId, updateProperties) => {
+            const tab = tabs.find(t => t.id === tabId);
+            if (tab) {
+                Object.assign(tab, updateProperties);
+                if (updateProperties.active) {
+                    // Deactivate others in same window
+                    tabs.forEach(t => {
+                        if (t.windowId === tab.windowId && t.id !== tabId) {
+                            t.active = false;
+                        }
+                    });
+                    if (listeners['tabs.onActivated']) {
+                        listeners['tabs.onActivated']({ tabId: tabId, windowId: tab.windowId });
+                    }
+                }
+                if (listeners['tabs.onUpdated']) {
+                    listeners['tabs.onUpdated'](tabId, updateProperties, tab);
+                }
+            }
+            return tab;
+        },
         remove: async (ids) => {
              const idArr = Array.isArray(ids) ? ids : [ids];
              for (const id of idArr) {

@@ -17,8 +17,14 @@ jobs:
     # Bots filters
     # Optional safety: ignore PRs from forks (often limited permissions)
     if: >
-      (endsWith(github.actor, '[bot]') || github.actor == 'jules' || github.actor == 'jules-ai[bot]')
+      github.event.pull_request.user.type == 'Bot'
       && (github.event.pull_request.head.repo.full_name == github.repository)
+
+    # (Old behavior) Allow only Jules — kept as a comment
+    # if: >
+    #   (endsWith(github.actor, '[bot]') || github.actor == 'jules' || github.actor == 'jules-ai[bot]')
+    #   && (github.event.pull_request.head.repo.full_name == github.repository)
+
     runs-on: ubuntu-latest
 
     steps:
@@ -30,27 +36,12 @@ jobs:
             const repo = context.repo.repo;
             const issue_number = context.payload.pull_request.number;
 
-            // Évite les doublons (au cas où un humain l’a déjà fait, ou si le workflow est relancé)
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner, repo, issue_number, per_page: 100
-            });
-
-            const already = comments.some(c => {
-              const body = (c.body || '').toLowerCase();
-              return body.includes('@coderabbitai review') || body.includes('@coderabbitai full review');
-            });
-
-            if (already) {
-              core.info('CodeRabbit trigger already present, skipping.');
-              return;
-            }
-
             // Déclenche CodeRabbit même si PR draft
             await github.rest.issues.createComment({
               owner, repo, issue_number,
               body: '@coderabbitai review'
             });
 
-            # Post @coderabbitai review as a comment
-            # Can also do @coderabbitai full review to avoid doing an incremental review, see https://docs.coderabbit.ai/reference/review-commands
+            // Post @coderabbitai review as a comment
+            // Can also do @coderabbitai full review to avoid doing an incremental review, see https://docs.coderabbit.ai/reference/review-commands
             core.info('Posted @coderabbitai review');
