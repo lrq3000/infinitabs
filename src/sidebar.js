@@ -875,6 +875,7 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
          // Fallback to default if custom/stale icon fails
          if (icon.src !== defaultFaviconUrl) {
              console.warn(`Failed to load favicon: ${icon.src}. Falling back to default.`, e);
+             icon.onerror = null; // prevent repeat loop if fallback also fails
              icon.src = defaultFaviconUrl;
          }
     };
