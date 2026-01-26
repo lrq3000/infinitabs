@@ -121,7 +121,8 @@ async function runTest() {
     response = await new Promise(resolve => {
         listeners['onMessage']({ type: "GET_CURRENT_SESSION_STATE", windowId: window.id }, {}, resolve);
     });
-    const logicalTab2 = response.session.logicalTabs.find(t => t.liveTabIds.includes(tab2.id));
+    const logicalTab2 = response.session.logicalTabs.find(t => t.liveTabIds.includes(tab2.id))
+    assert(logicalTab2, "Logical tab 2 should exist");;
 
     await new Promise(resolve => {
         listeners['onMessage']({
