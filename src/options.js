@@ -9,7 +9,7 @@ const statusDiv = document.getElementById('status');
 
 // Defaults
 const DEFAULT_CONFIRM_DELETE = true;
-const DEFAULT_SELECT_LAST_ACTIVE = false;
+const DEFAULT_SELECT_LAST_ACTIVE = true;
 const DEFAULT_MAX_TAB_HISTORY = 100;
 const DEFAULT_HISTORY_SIZE = 50;
 const DEFAULT_RELOAD_ON_RESTART = false;
