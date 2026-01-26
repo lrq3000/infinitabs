@@ -11,6 +11,7 @@ const state = {
     windowToSession: {},  // Record<WindowId, SessionId>
     tabToLogical: {},     // Record<TabId, LogicalTabId>
     liveGroupToBookmark: {}, // Record<LiveGroupId, BookmarkId>
+    sessionMountedTabs: {}, // Record<SessionId, { mountedIds: LogicalId[], lastActiveId: LogicalId }>
     ignoreMoveEventsForTabIds: new Set(), // Set<TabId>
     isCreatingGroup: false, // Flag to suppress bookmark creation during programmatic group creation
     pendingGroupCreations: {}, // Record<LiveGroupId, Promise<BookmarkId>> - Locks for group creation
@@ -19,6 +20,7 @@ const state = {
     lastKnownWorkspace: null, // WorkspaceSnapshot
     historySize: 50,
     reloadOnRestart: false, // User Preference
+    restoreMountedTabs: false, // User Preference
     selectLastActiveTab: true, // User Preference
     maxTabHistory: 100, // User Preference
     tabHistory: {}, // Record<WindowId, Array<TabId>> - MRU Stack
@@ -29,6 +31,8 @@ const state = {
 // Global flag to suppress auto-session creation during restore
 // Kept outside 'state' object to ensure it's not accidentally reset or lost during state operations
 let isRestoring = false;
+
+const pendingMounts = []; // Queue of { logicalId, windowId }
 
 // --- Helper Functions ---
 // Queue for serializing move operations to handle group moves (SHIFT+Drag)
@@ -322,6 +326,94 @@ function scheduleWorkspaceUpdate(delay = 1000) {
     }, delay);
 }
 
+let mountedTabsUpdateTimer = null;
+function scheduleMountedTabsUpdate(delay = 2000) {
+    if (mountedTabsUpdateTimer) clearTimeout(mountedTabsUpdateTimer);
+    mountedTabsUpdateTimer = setTimeout(() => {
+        mountedTabsUpdateTimer = null;
+        persistMountedTabs();
+    }, delay);
+}
+
+async function persistMountedTabs() {
+    // Rebuild the state from current memory to ensure consistency
+    const mountedState = {};
+    for (const sessionId of Object.keys(state.sessionsById)) {
+        const session = state.sessionsById[sessionId];
+        if (!session) continue;
+
+        const mountedIds = session.logicalTabs
+            .filter(lt => lt.liveTabIds.length > 0)
+            .map(lt => lt.logicalId);
+
+        if (mountedIds.length > 0 || session.lastActiveLogicalTabId) {
+            mountedState[sessionId] = {
+                mountedIds: mountedIds,
+                lastActiveId: session.lastActiveLogicalTabId
+            };
+        }
+    }
+
+    state.sessionMountedTabs = mountedState;
+    await chrome.storage.local.set({ sessionMountedTabs: mountedState });
+}
+
+async function restoreMountedTabsForSession(sessionId, windowId) {
+    if (!state.restoreMountedTabs) return;
+
+    const mountedInfo = state.sessionMountedTabs[sessionId];
+    if (!mountedInfo || !mountedInfo.mountedIds) return;
+
+    const session = state.sessionsById[sessionId];
+    if (!session) return;
+
+    const mountedSet = new Set(mountedInfo.mountedIds);
+    const toMount = session.logicalTabs.filter(lt =>
+        mountedSet.has(lt.logicalId) && lt.liveTabIds.length === 0
+    );
+
+    if (toMount.length === 0) return;
+
+    console.log(`Restoring ${toMount.length} mounted tabs for session ${sessionId}`);
+
+    // Sort by index in session to preserve order
+    toMount.sort((a, b) => a.indexInSession - b.indexInSession);
+
+    for (const logical of toMount) {
+        try {
+             const pendingEntry = { logicalId: logical.logicalId, windowId };
+             pendingMounts.push(pendingEntry);
+
+             const tab = await chrome.tabs.create({
+                 windowId,
+                 url: logical.url,
+                 active: false
+             });
+
+             // Ensure group mapping
+             if (logical.groupId) {
+                 await ensureLiveGroupForLogicalTab(tab.id, logical.groupId, session);
+             }
+        } catch (e) {
+            console.error("Failed to restore tab", e);
+        }
+    }
+
+    // Restore active tab
+    if (mountedInfo.lastActiveId) {
+        // Wait a bit for tabs to be created and attached
+        setTimeout(async () => {
+            const logical = session.logicalTabs.find(l => l.logicalId === mountedInfo.lastActiveId);
+            if (logical && logical.liveTabIds.length > 0) {
+                const tabId = logical.liveTabIds[0];
+                try {
+                    await chrome.tabs.update(tabId, { active: true });
+                } catch(e) {}
+            }
+        }, 500);
+    }
+}
+
 /**
  * Ensures the root bookmark folder exists.
  * @returns {Promise<string>} The ID of the root folder.
@@ -466,6 +558,7 @@ function attachLiveTabToLogical(tab, logical) {
     state.tabToLogical[tab.id] = logical.logicalId;
     if (!logical.liveTabIds.includes(tab.id)) {
         logical.liveTabIds.push(tab.id);
+        scheduleMountedTabsUpdate();
     }
     if (tab.favIconUrl) {
         logical.favIconUrl = tab.favIconUrl;
@@ -515,10 +608,13 @@ async function bindWindowToSession(windowId, sessionId) {
     // 4. Sync existing tabs
     await syncExistingTabsInWindowToSession(windowId, sessionId);
 
-    // 5. Notify UI
+    // 5. Restore mounted tabs if enabled
+    await restoreMountedTabsForSession(sessionId, windowId);
+
+    // 6. Notify UI
     notifySidebarStateUpdated(windowId, sessionId);
 
-    // 6. Track Workspace
+    // 7. Track Workspace
     scheduleWorkspaceUpdate();
 }
 
@@ -922,7 +1018,7 @@ function init(options = {}) {
             }
 
             // Restore persisted state
-            const storage = await chrome.storage.local.get(['windowToSession', 'workspaceHistory', 'favoriteWorkspaces', 'lastKnownWorkspace', 'historySize', 'reloadOnRestart', 'selectLastActiveTab', 'maxTabHistory']);
+            const storage = await chrome.storage.local.get(['windowToSession', 'workspaceHistory', 'favoriteWorkspaces', 'lastKnownWorkspace', 'historySize', 'reloadOnRestart', 'selectLastActiveTab', 'maxTabHistory', 'restoreMountedTabs', 'sessionMountedTabs']);
             if (storage.windowToSession) state.windowToSession = storage.windowToSession;
             if (storage.workspaceHistory) state.workspaceHistory = storage.workspaceHistory;
             if (storage.favoriteWorkspaces) state.favoriteWorkspaces = storage.favoriteWorkspaces;
@@ -931,6 +1027,8 @@ function init(options = {}) {
             if (storage.reloadOnRestart !== undefined) state.reloadOnRestart = storage.reloadOnRestart;
             if (storage.selectLastActiveTab !== undefined) state.selectLastActiveTab = storage.selectLastActiveTab;
             if (storage.maxTabHistory !== undefined) state.maxTabHistory = storage.maxTabHistory;
+            if (storage.restoreMountedTabs !== undefined) state.restoreMountedTabs = storage.restoreMountedTabs;
+            if (storage.sessionMountedTabs) state.sessionMountedTabs = storage.sessionMountedTabs;
 
             // Only skip binding if we are in a startup context AND auto-reload is enabled
             const shouldSkipBinding = options.isStartup && state.reloadOnRestart && state.lastKnownWorkspace;
@@ -1016,6 +1114,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === 'local') {
         if (changes.reloadOnRestart) {
             state.reloadOnRestart = changes.reloadOnRestart.newValue;
+        }
+        if (changes.restoreMountedTabs) {
+            state.restoreMountedTabs = changes.restoreMountedTabs.newValue;
         }
         if (changes.selectLastActiveTab) {
             state.selectLastActiveTab = changes.selectLastActiveTab.newValue;
@@ -1188,8 +1289,6 @@ chrome.tabGroups.onRemoved.addListener(async (group) => {
 });
 
 // --- Tab Listeners (Updated) ---
-
-const pendingMounts = []; // Queue of { logicalId, windowId }
 
 chrome.tabs.onCreated.addListener(async (tab) => {
     // Ensure init if SW woke up just for this event
@@ -1485,6 +1584,7 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
                 if (logical) {
                     logical.liveTabIds = logical.liveTabIds.filter(id => id !== tabId);
                 }
+                scheduleMountedTabsUpdate();
                 notifySidebarStateUpdated(removeInfo.windowId, sessionId);
             }
         }
@@ -1627,6 +1727,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
     if (logicalId) {
         session.lastActiveLogicalTabId = logicalId;
+        scheduleMountedTabsUpdate();
         notifySidebarStateUpdated(windowId, sessionId);
     }
 });
@@ -1972,6 +2073,8 @@ async function handleDeleteLogicalTab(windowId, logicalId) {
         logical.liveTabIds.forEach(tid => {
             delete state.tabToLogical[tid];
         });
+
+        scheduleMountedTabsUpdate();
     }
 
     notifySidebarStateUpdated(windowId, sessionId);
@@ -2058,6 +2161,7 @@ async function handleUnmountLogicalTab(windowId, logicalId) {
         }
 
         toClose.forEach(tid => delete state.tabToLogical[tid]);
+        scheduleMountedTabsUpdate();
         notifySidebarStateUpdated(windowId, sessionId);
     }
 }
