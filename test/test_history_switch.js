@@ -48,12 +48,14 @@ async function runTest() {
 
     // Enable the option
     await chrome.storage.local.set({
+        selectLastActiveTab: true,
         maxTabHistory: 10
     });
 
     // Manually trigger onChanged because mock doesn't do it automatically
     if (listeners['storage.onChanged']) {
         listeners['storage.onChanged']({
+            selectLastActiveTab: { newValue: true },
             maxTabHistory: { newValue: 10 }
         }, 'local');
     }
