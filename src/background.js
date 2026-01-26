@@ -31,6 +31,15 @@ const state = {
 let isRestoring = false;
 
 // --- Helper Functions ---
+// Queue for serializing move operations to handle group moves (SHIFT+Drag)
+const moveMutex = new class {
+    constructor() { this.p = Promise.resolve(); }
+    run(fn) {
+        this.p = this.p.then(fn).catch(e => console.error("Mutex error", e));
+        return this.p;
+    }
+}();
+
 function formatSessionTitle(name, windowId) {
     if (windowId) {
         // Remove any existing windowId from the name to avoid duplication
@@ -143,13 +152,84 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
                 title: title
             });
 
-            state.liveGroupToBookmark[groupId] = created.id;
+            // Ensure adequate placement of new logical tab groups in sidebar by:
+            // 1. Querying the live tabs in the window.
+            // 2. Identifying the tabs belonging to the new group.
+            // 3. Finding the closest preceding "anchor" tab (a live tab with a corresponding logical tab).
+            // 4. Inserting the new group folder bookmark immediately after the anchor tab (or its parent group folder if the anchor is grouped).
+            // This ensures that the sidebar order reflects the visual order of tabs and groups in the native live tabs strip.
+            return moveMutex.run(async () => {
+                let insertIndex = null;
+                try {
+                    const tabs = await chrome.tabs.query({ windowId });
+                    const groupTabs = tabs.filter(t => t.groupId === groupId).sort((a, b) => a.index - b.index);
 
-            // Reload session to reflect new group
-            await reloadSessionAndPreserveState(sessionId, windowId);
-            notifySidebarStateUpdated(windowId, sessionId);
+                    if (groupTabs.length > 0) {
+                        const firstTab = groupTabs[0];
+                        let anchorLogical = null;
 
-            return created.id;
+                    // Build index-to-tab map for O(1) lookups
+                    const tabByIndex = new Map(tabs.map(t => [t.index, t]));
+
+                        // Find closest preceding live tab that is mapped
+                        for (let i = firstTab.index - 1; i >= 0; i--) {
+                        const tab = tabByIndex.get(i);
+                            if (tab) {
+                                const lid = state.tabToLogical[tab.id];
+                                if (lid) {
+                                    // Find the logical tab object to get bookmark ID
+                                    const session = state.sessionsById[sessionId];
+                                    if (session) {
+                                        anchorLogical = session.logicalTabs.find(l => l.logicalId === lid);
+                                        if (anchorLogical) break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (anchorLogical) {
+                            const anchorNodes = await chrome.bookmarks.get(anchorLogical.bookmarkId);
+                            if (anchorNodes && anchorNodes.length > 0) {
+                                const anchorNode = anchorNodes[0];
+                                if (anchorNode.parentId !== sessionId) {
+                                    // Anchor is in a subfolder (another group)
+                                    // We place AFTER that group folder
+                                    const folderNodes = await chrome.bookmarks.get(anchorNode.parentId);
+                                    if (folderNodes && folderNodes.length > 0) {
+                                        insertIndex = folderNodes[0].index + 1;
+                                    }
+                                } else {
+                                    // Anchor is in root
+                                    insertIndex = anchorNode.index + 1;
+                                }
+                            }
+                        } else {
+                            // No anchor found to the left -> start of list
+                            insertIndex = 0;
+                        }
+                    }
+                } catch (e) {
+                    console.warn("Failed to calculate group insertion index", e);
+                }
+
+                const createData = {
+                    parentId: sessionId,
+                    title: title
+                };
+                if (insertIndex !== null) {
+                    createData.index = insertIndex;
+                }
+
+                const created = await chrome.bookmarks.create(createData);
+
+                state.liveGroupToBookmark[groupId] = created.id;
+
+                // Reload session to reflect new group
+                await reloadSessionAndPreserveState(sessionId, windowId);
+                notifySidebarStateUpdated(windowId, sessionId);
+
+                return created.id;
+            });
         } catch (e) {
             console.error("Failed to create bookmark folder for group", e);
             return null;
@@ -1433,15 +1513,6 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
         }
     }, 100);
 });
-
-// Queue for serializing move operations to handle group moves (SHIFT+Drag)
-const moveMutex = new class {
-    constructor() { this.p = Promise.resolve(); }
-    run(fn) {
-        this.p = this.p.then(fn).catch(e => console.error("Mutex error", e));
-        return this.p;
-    }
-}();
 
 chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
     moveMutex.run(async () => {
