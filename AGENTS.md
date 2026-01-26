@@ -8,14 +8,17 @@ This file provides instructions for automated coding agents working in this repo
 - Do not apply PR-branch-only rules when operating on `main` (except where explicitly stated).
 
 ## Global rules (all branches)
-- **`main` is the source of truth.**
+- **`main` branch is the source of truth.**
 - Never make direct changes to `main` unless explicitly instructed by a human maintainer.
 - Prefer small, reviewable changes and keep commits focused.
 - Keep the repository buildable/testable; run the fastest relevant checks when possible.
 - When uncertain, search the repo for the canonical commands (README, CI config) and follow them.
+- Always assess algorithmic complexity and use the approaches that minimize algorithmic complexity (eg, if one method to fetch an item in a list is O(n) versus another with a prebuilt lookup index that is in O(1), prefer the latter).
 - The user likes literate programming, hence add as many pertinent and non-trivial comments as possible to your changes.
 - Do not delete comments and console logging unnecessarily. Keep or restore all relevant comments and still functional console logging, only removes them if not working anymore or deprecated because of your changes.
 - The user requires that all test files created during development (e.g., reproduction scripts, mocks) be committed to the repository.
+- Prefer object oriented style whenever possible, avoid functional style.
+- Modularize into encapsulable and separable functions, methods and objects whenever possible. Always avoid copying similar code blocks: rule of thumb: if a code is repeated twice, make it into a function or a method.
 
 ## High-level workflow
 - Work in **small PRs** (minimal diffs, minimal file touch).
