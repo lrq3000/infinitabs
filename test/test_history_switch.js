@@ -20,6 +20,17 @@ async function runTest() {
 
     // Helper to wait
     const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    // small helper that waits for the active tab reduces flakiness
+    const waitForActiveTab = async (windowId, expectedTabId, timeoutMs = 500) => {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            const tabs = await chrome.tabs.query({ windowId });
+            const active = tabs.find(t => t.active);
+            if (active && active.id === expectedTabId) return;
+            await wait(10);
+        }
+        throw new Error(`Timed out waiting for active tab ${expectedTabId}`);
+    };
 
     // 2. Setup Scenario
     // Create a window
@@ -54,13 +65,13 @@ async function runTest() {
     // 3. Simulate Activation Sequence: Tab 1 -> Tab 2 -> Tab 3
     // Tab 1 is already active from creation (implicitly) but let's be explicit
     await chrome.tabs.update(tab1.id, { active: true });
-    await wait(50);
+    await waitForActiveTab(window.id, tab1.id);
 
     await chrome.tabs.update(tab2.id, { active: true });
-    await wait(50);
+    await waitForActiveTab(window.id, tab2.id);
 
     await chrome.tabs.update(tab3.id, { active: true });
-    await wait(50);
+    await waitForActiveTab(window.id, tab3.id);
 
     // Current Active: Tab 3
     // History (expected): [Tab 1, Tab 2, Tab 3]
