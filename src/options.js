@@ -3,23 +3,27 @@
 const confirmDeleteCheckbox = document.getElementById('confirm-delete-checkbox');
 const historySizeInput = document.getElementById('history-size-input');
 const reloadOnRestartCheckbox = document.getElementById('reload-on-restart-checkbox');
+const nameSessionsWithWordsCheckbox = document.getElementById('name-sessions-with-words-checkbox');
 const statusDiv = document.getElementById('status');
 
 // Defaults
 const DEFAULT_CONFIRM_DELETE = true;
 const DEFAULT_HISTORY_SIZE = 50;
 const DEFAULT_RELOAD_ON_RESTART = false;
+const DEFAULT_NAME_SESSIONS_WITH_WORDS = true;
 
 // Restore options
 function restoreOptions() {
   chrome.storage.local.get({
     confirmDeleteLogicalTab: DEFAULT_CONFIRM_DELETE,
     historySize: DEFAULT_HISTORY_SIZE,
-    reloadOnRestart: DEFAULT_RELOAD_ON_RESTART
+    reloadOnRestart: DEFAULT_RELOAD_ON_RESTART,
+    nameSessionsWithWords: DEFAULT_NAME_SESSIONS_WITH_WORDS
   }, (items) => {
     confirmDeleteCheckbox.checked = items.confirmDeleteLogicalTab;
     historySizeInput.value = items.historySize;
     reloadOnRestartCheckbox.checked = items.reloadOnRestart;
+    nameSessionsWithWordsCheckbox.checked = items.nameSessionsWithWords;
   });
 }
 
@@ -28,10 +32,12 @@ function saveOptions() {
   const confirmDelete = confirmDeleteCheckbox.checked;
   const historySize = parseInt(historySizeInput.value, 10) || 50;
   const reloadOnRestart = reloadOnRestartCheckbox.checked;
+  const nameSessionsWithWords = nameSessionsWithWordsCheckbox.checked;
   chrome.storage.local.set({
     confirmDeleteLogicalTab: confirmDelete,
     historySize: historySize,
-    reloadOnRestart: reloadOnRestart
+    reloadOnRestart: reloadOnRestart,
+    nameSessionsWithWords: nameSessionsWithWords
   }, () => {
     // Update status to let user know options were saved.
     statusDiv.style.opacity = '1';
@@ -45,3 +51,4 @@ document.addEventListener('DOMContentLoaded', restoreOptions);
 confirmDeleteCheckbox.addEventListener('change', saveOptions);
 historySizeInput.addEventListener('change', saveOptions);
 reloadOnRestartCheckbox.addEventListener('change', saveOptions);
+nameSessionsWithWordsCheckbox.addEventListener('change', saveOptions);
