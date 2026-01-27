@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+tone_instructions: ''
+enable_free_tier: true
+early_access: true
+reviews:
+  profile: assertive
+  review_details: true
+  fail_commit_status: true
+  auto_apply_labels: true
+  poem: false
+  abort_on_close: false
+  auto_review:
+    enabled: true
+    auto_incremental_review: false
+    drafts: true
+issue_enrichment:
+  auto_enrich:
+    enabled: true
+  labeling:
+    auto_apply_labels: true
