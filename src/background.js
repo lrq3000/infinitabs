@@ -21,6 +21,7 @@ const state = {
     lastKnownWorkspace: null, // WorkspaceSnapshot
     historySize: 50,
     reloadOnRestart: false, // User Preference
+    nameSessionsWithWords: true, // User Preference
     initialized: false
 };
 
@@ -55,6 +56,10 @@ function generateGuid() {
 }
 
 function generateSessionName() {
+    if (!state.nameSessionsWithWords) {
+        return Date.now().toString();
+    }
+
     const count = 6;
     const words = [];
     for (let i = 0; i < count; i++) {
@@ -807,13 +812,14 @@ function init(options = {}) {
             }
 
             // Restore persisted state
-            const storage = await chrome.storage.local.get(['windowToSession', 'workspaceHistory', 'favoriteWorkspaces', 'lastKnownWorkspace', 'historySize', 'reloadOnRestart']);
+            const storage = await chrome.storage.local.get(['windowToSession', 'workspaceHistory', 'favoriteWorkspaces', 'lastKnownWorkspace', 'historySize', 'reloadOnRestart', 'nameSessionsWithWords']);
             if (storage.windowToSession) state.windowToSession = storage.windowToSession;
             if (storage.workspaceHistory) state.workspaceHistory = storage.workspaceHistory;
             if (storage.favoriteWorkspaces) state.favoriteWorkspaces = storage.favoriteWorkspaces;
             if (storage.lastKnownWorkspace) state.lastKnownWorkspace = storage.lastKnownWorkspace;
             if (storage.historySize) state.historySize = storage.historySize;
             if (storage.reloadOnRestart !== undefined) state.reloadOnRestart = storage.reloadOnRestart;
+            if (storage.nameSessionsWithWords !== undefined) state.nameSessionsWithWords = storage.nameSessionsWithWords;
 
             // Only skip binding if we are in a startup context AND auto-reload is enabled
             const shouldSkipBinding = options.isStartup && state.reloadOnRestart && state.lastKnownWorkspace;
@@ -896,8 +902,13 @@ chrome.runtime.onInstalled.addListener(init);
 chrome.runtime.onStartup.addListener(onStartupHandler);
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === 'local' && changes.reloadOnRestart) {
-        state.reloadOnRestart = changes.reloadOnRestart.newValue;
+    if (areaName === 'local') {
+        if (changes.reloadOnRestart) {
+            state.reloadOnRestart = changes.reloadOnRestart.newValue;
+        }
+        if (changes.nameSessionsWithWords) {
+            state.nameSessionsWithWords = changes.nameSessionsWithWords.newValue;
+        }
     }
 });
 
