@@ -163,7 +163,14 @@ body.dark-mode .top-level-tab.active {
   align-items: center;
 }
 
-#theme-toggle-btn {
+.header-left-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+#theme-toggle-btn,
+#settings-btn {
   background: none;
   border: none;
   cursor: pointer;
@@ -172,7 +179,8 @@ body.dark-mode .top-level-tab.active {
   border-radius: 4px;
 }
 
-#theme-toggle-btn:hover {
+#theme-toggle-btn:hover,
+#settings-btn:hover {
   background-color: var(--hover-bg);
 }
 
@@ -241,7 +249,8 @@ body.dark-mode .top-level-tab.active {
 }
 
 #search-prev,
-#search-next {
+#search-next,
+#locate-current {
   cursor: pointer;
   background: none;
   border: 1px solid #ccc;
@@ -252,7 +261,8 @@ body.dark-mode .top-level-tab.active {
 }
 
 #search-prev:hover,
-#search-next:hover {
+#search-next:hover,
+#locate-current:hover {
   background-color: var(--hover-bg);
 }
 
@@ -417,10 +427,49 @@ body.dark-mode .group-header.dragging {
   display: flex;
   align-items: center;
   cursor: default; /* Not selectable */
+  position: relative; /* Required for absolute positioning of delete button */
 }
 
 .group-header:first-child {
   margin-top: 0;
+}
+
+/* Group Delete Button */
+.group-delete-btn {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: none;
+  background-color: var(--group-bg);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  z-index: 10;
+  padding: 2px 6px;
+  color: #888;
+  font-weight: bold;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.group-header:hover .group-delete-btn {
+  display: block;
+}
+
+.group-delete-btn:hover {
+  color: #d00;
+  background-color: #fee;
+}
+
+body.dark-mode .group-delete-btn {
+  background-color: var(--group-bg);
+  color: #aaa;
+}
+
+body.dark-mode .group-delete-btn:hover {
+  color: #ff6b6b;
+  background-color: #4e3535;
 }
 
 /* Toggle Arrow for Groups (Collapsible) */
