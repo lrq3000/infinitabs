@@ -5,6 +5,8 @@ const selectLastActiveCheckbox = document.getElementById('select-last-active-che
 const maxTabHistoryInput = document.getElementById('max-tab-history-input');
 const historySizeInput = document.getElementById('history-size-input');
 const reloadOnRestartCheckbox = document.getElementById('reload-on-restart-checkbox');
+const activeTabColorInput = document.getElementById('active-tab-color-input');
+const selectedTabColorInput = document.getElementById('selected-tab-color-input');
 const statusDiv = document.getElementById('status');
 
 // Defaults
@@ -21,13 +23,17 @@ function restoreOptions() {
     selectLastActiveTab: DEFAULT_SELECT_LAST_ACTIVE,
     maxTabHistory: DEFAULT_MAX_TAB_HISTORY,
     historySize: DEFAULT_HISTORY_SIZE,
-    reloadOnRestart: DEFAULT_RELOAD_ON_RESTART
+    reloadOnRestart: DEFAULT_RELOAD_ON_RESTART,
+    activeTabBg: '',
+    selectedTabBg: ''
   }, (items) => {
     confirmDeleteCheckbox.checked = items.confirmDeleteLogicalTab;
     selectLastActiveCheckbox.checked = items.selectLastActiveTab;
     maxTabHistoryInput.value = items.maxTabHistory;
     historySizeInput.value = items.historySize;
     reloadOnRestartCheckbox.checked = items.reloadOnRestart;
+    activeTabColorInput.value = items.activeTabBg;
+    selectedTabColorInput.value = items.selectedTabBg;
   });
 }
 
@@ -41,12 +47,17 @@ function saveOptions() {
     : DEFAULT_MAX_TAB_HISTORY;
   const historySize = parseInt(historySizeInput.value, 10) || 50;
   const reloadOnRestart = reloadOnRestartCheckbox.checked;
+  const activeTabBg = activeTabColorInput.value.trim();
+  const selectedTabBg = selectedTabColorInput.value.trim();
+
   chrome.storage.local.set({
     confirmDeleteLogicalTab: confirmDelete,
     selectLastActiveTab: selectLastActive,
     maxTabHistory: maxTabHistory,
     historySize: historySize,
-    reloadOnRestart: reloadOnRestart
+    reloadOnRestart: reloadOnRestart,
+    activeTabBg: activeTabBg,
+    selectedTabBg: selectedTabBg
   }, () => {
     // Update status to let user know options were saved.
     statusDiv.style.opacity = '1';
@@ -62,3 +73,5 @@ selectLastActiveCheckbox.addEventListener('change', saveOptions);
 maxTabHistoryInput.addEventListener('change', saveOptions);
 historySizeInput.addEventListener('change', saveOptions);
 reloadOnRestartCheckbox.addEventListener('change', saveOptions);
+activeTabColorInput.addEventListener('change', saveOptions);
+selectedTabColorInput.addEventListener('change', saveOptions);

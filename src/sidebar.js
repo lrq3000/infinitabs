@@ -107,6 +107,15 @@ async function init() {
     await refreshCurrentSession();
     await loadPastWorkspaces();
     await checkCrashStatus();
+    applyUserColors();
+
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local') {
+            if (changes.activeTabBg || changes.selectedTabBg) {
+                applyUserColors();
+            }
+        }
+    });
 
     // Top-level tabs logic
     const topLevelTabs = document.querySelectorAll('.top-level-tab');
@@ -144,6 +153,22 @@ function setTheme(dark) {
 
 function toggleTheme() {
     setTheme(!isDarkMode);
+}
+
+function applyUserColors() {
+    chrome.storage.local.get({ activeTabBg: '', selectedTabBg: '' }, (items) => {
+        if (items.activeTabBg) {
+            document.body.style.setProperty('--active-bg', items.activeTabBg);
+        } else {
+            document.body.style.removeProperty('--active-bg');
+        }
+
+        if (items.selectedTabBg) {
+            document.body.style.setProperty('--selected-bg', items.selectedTabBg);
+        } else {
+            document.body.style.removeProperty('--selected-bg');
+        }
+    });
 }
 
 async function loadSessionsList() {
