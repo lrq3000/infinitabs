@@ -11,7 +11,7 @@
   <div id="app">
     <div class="top-level-tabs">
       <div class="top-level-tab active" data-tab="session">Session</div>
-      <div class="top-level-tab" data-tab="global">Global</div>
+      <div class="top-level-tab" data-tab="global">Workspaces</div>
     </div>
 
     <div id="session-content" class="tab-content active">
@@ -24,7 +24,10 @@
           <button id="refresh-sessions" title="Refresh Sessions">↻</button>
         </div>
         <div class="header-actions">
-          <button id="theme-toggle-btn" title="Toggle Dark Mode">☀</button>
+          <div class="header-left-group">
+            <button id="theme-toggle-btn" title="Toggle Dark Mode">☀</button>
+            <button id="settings-btn" title="Open Settings">⚙️</button>
+          </div>
           <button id="unmount-others-btn" title="Unmount all tabs except current/selected">Unmount Others</button>
         </div>
         <div class="search-container">
@@ -34,6 +37,7 @@
           </div>
           <button id="search-prev" title="Previous Result">▲</button>
           <button id="search-next" title="Next Result">▼</button>
+          <button id="locate-current" title="Locate Current Tab">⦿</button>
         </div>
       </header>
 
@@ -83,11 +87,11 @@
         <button id="crash-popup-restore-btn" class="primary-btn">Yes, Restore</button>
         <button id="crash-popup-no-btn" class="secondary-btn">No</button>
       </div>
-      <p class="crash-popup-hint">You can also close this popup and restore the workspace later by going into the Global
+      <p class="crash-popup-hint">You can also close this popup and restore the workspace later by going into the Workspaces
         tab.</p>
     </div>
   </div>
-  <script src="sidebar.js"></script>
+  <script type="module" src="sidebar.js"></script>
 </body>
 
 </html>
