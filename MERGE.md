@@ -5,7 +5,7 @@ In case a PR is in conflict with the latest `main` branch commits, here is the p
 Conflicting PRs are synced using what we call a "forced main-first" conflicts resolution approach. Essentially, this boils down to putting aside the changes in the current PR, and restarting fresh from the latest `main` branch, and replaying over it the changes. This is kind of like a rebase, but the difference is that we are not trying to replay exactly the changes that were done in the PR, instead we replay the "spirit" or objective of each commit in the PR. This is a strategy that works very well with coding agents, hence why it is advised here.
 
 ### Conflicts resolution policy: forced main-first
-First always try to "Sync with rebase" to the `main` branch from the GitHub UI or in commandline. If this works, great! If not, continue to read.
+First always try to "Sync with rebase" to the `main` branch from the GitHub UI or in commandline. If this works, great! If not, try sync with merge commit. If again this fails, continue to read.
 
 If merging `origin/main` into the PR branch causes conflicts that cannot be automatically solved with a rebase sync to main, treat `origin/main` as canonical and reapply the PR intent on top. This is what we call the `forced main-first` conflicts resolution strategy. This can be done with a coding agent's task using the exact SOP in AGENTS.md.
 
@@ -24,7 +24,11 @@ The forced main-first conflicts resolution works better if PRs are made with the
 - Keep CI green; add/adjust tests when behavior changes.
 
 ### After conflict is resolved
-Merge the synced, conflicts resolved PR branch as a Squash and Merge, always.
+ALWAYS TEST your PR on your machine, live, before merging, to ensure that each PR squashed merge on the `main` branch leaves the project in a working state!
+
+Once the live test is done:
+
+Merge the synced, conflicts resolved PR branch as a Squash and Merge into the `main` branch, always.
 
 Compared to Rebase or Merge commit, this will allow to keep a clean linear history on the `main` branch, which has two main benefits:
 
