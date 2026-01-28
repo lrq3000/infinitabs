@@ -1,0 +1,14 @@
+{
+  "name": "infinitabs",
+  "version": "0.4.2",
+  "description": "Unlimited tabs. Zero clutter. Near-zero RAM.",
+  "scripts": {
+    "build": "crx3 src/ --zip --private-key my-extension.pem"
+  },
+  "dependencies": {
+    "crx3": "1.1.3"
+  },
+  "overrides": {
+    "pbf": "3.2.1"
+  }
+}
