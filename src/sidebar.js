@@ -108,12 +108,17 @@ async function init() {
     await refreshCurrentSession();
     await loadPastWorkspaces();
     await checkCrashStatus();
-    applyUserColors();
+    chrome.storage.local.get({ activeTabBg: '', selectedTabBg: '' }, (items) => {
+        applyUserColors(items.activeTabBg, items.selectedTabBg);
+    });
 
     chrome.storage.onChanged.addListener((changes, area) => {
         if (area === 'local') {
             if (changes.activeTabBg || changes.selectedTabBg) {
-                applyUserColors();
+                applyUserColors(
+                    changes.activeTabBg ? changes.activeTabBg.newValue : undefined,
+                    changes.selectedTabBg ? changes.selectedTabBg.newValue : undefined
+                );
             }
         }
     });
@@ -156,11 +161,9 @@ function toggleTheme() {
     setTheme(!isDarkMode);
 }
 
-function applyUserColors() {
-    chrome.storage.local.get({ activeTabBg: '', selectedTabBg: '' }, (items) => {
-        applyColorVar('--active-bg', items.activeTabBg);
-        applyColorVar('--selected-bg', items.selectedTabBg);
-    });
+function applyUserColors(activeBg, selectedBg) {
+    if (activeBg !== undefined) applyColorVar('--active-bg', activeBg);
+    if (selectedBg !== undefined) applyColorVar('--selected-bg', selectedBg);
 }
 
 function applyColorVar(varName, value) {
