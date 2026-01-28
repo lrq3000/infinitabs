@@ -157,18 +157,18 @@ function toggleTheme() {
 
 function applyUserColors() {
     chrome.storage.local.get({ activeTabBg: '', selectedTabBg: '' }, (items) => {
-        if (items.activeTabBg) {
-            document.body.style.setProperty('--active-bg', items.activeTabBg);
-        } else {
-            document.body.style.removeProperty('--active-bg');
-        }
-
-        if (items.selectedTabBg) {
-            document.body.style.setProperty('--selected-bg', items.selectedTabBg);
-        } else {
-            document.body.style.removeProperty('--selected-bg');
-        }
+        applyColorVar('--active-bg', items.activeTabBg);
+        applyColorVar('--selected-bg', items.selectedTabBg);
     });
+}
+
+function applyColorVar(varName, value) {
+    const v = (value || '').trim();
+    if (v && CSS.supports('color', v)) {
+        document.body.style.setProperty(varName, v);
+    } else {
+        document.body.style.removeProperty(varName);
+    }
 }
 
 async function loadSessionsList() {
