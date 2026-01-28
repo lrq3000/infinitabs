@@ -563,7 +563,7 @@ function navigateSearch(direction) {
 
     const activeEl = currentMatches[currentMatchIndex];
     activeEl.classList.add('active-match');
-    activeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    scrollElementIntoViewWithContext(activeEl);  // prefer this over: `activeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });`
 }
 
 function scrollToActiveTab() {
