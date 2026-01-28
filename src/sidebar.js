@@ -5,7 +5,6 @@ const renameSessionBtn = document.getElementById('rename-session-btn');
 const refreshSessionsBtn = document.getElementById('refresh-sessions');
 const unmountOthersBtn = document.getElementById('unmount-others-btn');
 const themeToggleBtn = document.getElementById('theme-toggle-btn');
-const settingsBtn = document.getElementById('settings-btn');
 const tabsContainer = document.getElementById('tabs-container');
 
 // Search Elements
@@ -13,7 +12,6 @@ const searchInput = document.getElementById('search-input');
 const searchClearBtn = document.getElementById('search-clear');
 const searchPrevBtn = document.getElementById('search-prev');
 const searchNextBtn = document.getElementById('search-next');
-const locateCurrentBtn = document.getElementById('locate-current');
 
 // Workspace Elements
 const pastWorkspacesSelector = document.getElementById('past-workspaces-selector');
@@ -58,7 +56,6 @@ async function init() {
     sessionSelector.addEventListener('change', onSessionSwitch);
     unmountOthersBtn.addEventListener('click', onUnmountOthers);
     themeToggleBtn.addEventListener('click', toggleTheme);
-    settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
     // Search Listeners
     searchInput.addEventListener('input', performSearch);
@@ -72,7 +69,6 @@ async function init() {
     searchClearBtn.addEventListener('click', clearSearch);
     searchPrevBtn.addEventListener('click', () => navigateSearch(-1));
     searchNextBtn.addEventListener('click', () => navigateSearch(1));
-    locateCurrentBtn.addEventListener('click', scrollToActiveTab);
     document.addEventListener('keydown', onKeyDown);
 
     // Workspace Listeners
@@ -147,11 +143,7 @@ function toggleTheme() {
 }
 
 async function loadSessionsList() {
-    const response = await chrome.runtime.sendMessage({
-        type: "GET_SESSION_LIST"
-    }).catch((err) => {
-        console.error("Failed to get session list", err);
-    });
+    const response = await chrome.runtime.sendMessage({ type: "GET_SESSION_LIST" });
     const sessions = response.sessions || [];
 
     sessionSelector.innerHTML = '<option value="" disabled>Select Session...</option>';
@@ -172,8 +164,6 @@ async function refreshCurrentSession() {
     const response = await chrome.runtime.sendMessage({
         type: "GET_CURRENT_SESSION_STATE",
         windowId: currentWindowId
-    }).catch((err) => {
-        console.error("Failed to get current session state", err);
     });
 
     if (response.session) {
@@ -194,9 +184,6 @@ async function onSessionSwitch(e) {
         type: "SWITCH_SESSION",
         windowId: currentWindowId,
         sessionId: newSessionId
-    }).catch((err) => {
-        console.error("Failed to switch session", err);
-        alert("Failed to switch session. Please try again.");
     });
 
     // The background will reply, but we also expect a STATE_UPDATED message
@@ -223,9 +210,9 @@ async function onRenameSession() {
             }
             // The state update message from background will refresh the UI, but we also need to refresh the list of sessions
             await loadSessionsList();
-        } catch (err) {
-            console.error("Failed to rename session", err);
-            alert("Failed to rename session. Please try again.");
+        } catch (e) {
+            console.error("Failed to rename session", e);
+            alert("Failed to rename session.");
         }
     }
 }
@@ -245,8 +232,6 @@ async function onUnmountOthers() {
             type: "UNMOUNT_ALL_EXCEPT",
             windowId: currentWindowId,
             logicalIdsToKeep: toKeep
-        }).catch((err) => {
-            console.error("Failed to unmount all logical tabs except active one", err);
         });
     }
 
@@ -254,11 +239,7 @@ async function onUnmountOthers() {
 }
 
 async function loadPastWorkspaces() {
-    const response = await chrome.runtime.sendMessage({
-        type: "GET_WORKSPACE_HISTORY"
-    }).catch((err) => {
-        console.error("Failed to get workspace history", err);
-    });
+    const response = await chrome.runtime.sendMessage({ type: "GET_WORKSPACE_HISTORY" });
     const history = response.history || [];
     const favorites = response.favorites || [];
 
@@ -305,9 +286,6 @@ async function onReloadWorkspace() {
         type: "RESTORE_WORKSPACE",
         snapshotId: id,
         source: isFav ? 'favorite' : 'history'
-    }).catch((err) => {
-        console.error("Failed to restore workspace", err);
-        alert("Failed to restore workspace. Please try again.");
     });
 }
 
@@ -317,20 +295,13 @@ async function onFavoriteWorkspace() {
         await chrome.runtime.sendMessage({
             type: "SAVE_FAVORITE_WORKSPACE",
             name: name
-        }).catch((err) => {
-            console.error("Failed to save favorite workspace", err);
-            alert("Failed to save favorite workspace. Please try again.");
         });
         await loadPastWorkspaces();
     }
 }
 
 async function checkCrashStatus() {
-    const response = await chrome.runtime.sendMessage({
-        type: "CHECK_CRASH_STATUS"
-    }).catch((err) => {
-        console.error("Failed to check crash status", err);
-    });
+    const response = await chrome.runtime.sendMessage({ type: "CHECK_CRASH_STATUS" });
     if (response.crashed && response.lastWorkspace) {
         crashRecoveryContainer.style.display = 'block';
         crashRecoveryContainer.dataset.workspace = JSON.stringify(response.lastWorkspace);
@@ -348,9 +319,6 @@ async function onCrashRestore() {
         await chrome.runtime.sendMessage({
             type: "RESTORE_WORKSPACE",
             snapshot: ws
-        }).catch((err) => {
-            console.error("Failed to restore workspace", err);
-            alert("Failed to restore workspace. Please try again.");
         });
         crashRecoveryContainer.style.display = 'none';
         crashPopup.style.display = 'none';
@@ -537,27 +505,6 @@ function navigateSearch(direction) {
     activeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-function scrollToActiveTab() {
-    const activeEl = document.querySelector('.tab-item.active-live');
-    if (activeEl) {
-        activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    } else if (currentSession?.lastActiveLogicalTabId) {
-        // Active tab might be in a collapsed group - find and expand it
-        const activeTab = currentSession.logicalTabs.find(
-            t => t.logicalId === currentSession.lastActiveLogicalTabId
-        );
-        if (activeTab?.groupId && collapsedGroups.has(activeTab.groupId)) {
-            collapsedGroups.delete(activeTab.groupId);
-            renderSession(currentSession);
-            // Scroll after re-render
-            requestAnimationFrame(() => {
-                const el = document.querySelector('.tab-item.active-live');
-                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            });
-        }
-    }
-}
-
 function onKeyDown(e) {
     // Ctrl+Shift+F
     if (e.ctrlKey && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
@@ -689,25 +636,6 @@ function createGroupElement(group, displayName, color) {
     titleSpan.className = 'group-title-text';
     el.appendChild(titleSpan);
 
-    const deleteBtn = document.createElement('button');
-    deleteBtn.className = 'group-delete-btn';
-    deleteBtn.textContent = '×';
-    deleteBtn.title = 'Delete logical group and all tabs within';
-    deleteBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (confirm("Are you sure you want to delete this group? This will delete all tabs inside it.")) {
-             chrome.runtime.sendMessage({
-                type: "DELETE_LOGICAL_GROUP",
-                windowId: currentWindowId,
-                groupId: group.groupId
-            }).catch((err) => {
-                console.error("Failed to delete group", err);
-                alert("Failed to delete group. Please try again.");
-            });
-        }
-    });
-    el.appendChild(deleteBtn);
-
     updateGroupElement(el, group, displayName, color);
     return el;
 }
@@ -770,9 +698,6 @@ function createTabElement(tab, session, shouldScroll, groupColor) {
                 type: "UNMOUNT_LOGICAL_TAB",
                 windowId: currentWindowId,
                 logicalId: tab.logicalId
-            }).catch((err) => {
-                console.error("Failed to unmount logical tab", err);
-                alert("Failed to unmount logical tab. Please try again.");
             });
         }
     });
@@ -803,9 +728,6 @@ function createTabElement(tab, session, shouldScroll, groupColor) {
                     type: "DELETE_LOGICAL_TAB",
                     windowId: currentWindowId,
                     logicalId: tab.logicalId
-                }).catch((err) => {
-                    console.error("Failed to delete logical tab", err);
-                    alert("Failed to delete logical tab. Please try again.");
                 });
             }
         });
@@ -860,26 +782,10 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
     const icon = el.querySelector('.tab-icon');
     const title = el.querySelector('.tab-title');
 
-    let defaultFaviconUrl = chrome.runtime.getURL("/_favicon/") + "?pageUrl=" + encodeURIComponent(tab.url) + "&size=16";
-    let faviconUrl = defaultFaviconUrl;
-
+    let faviconUrl = chrome.runtime.getURL("/_favicon/") + "?pageUrl=" + encodeURIComponent(tab.url) + "&size=16";
     if (tab.favIconUrl) {
-        // Validation: If it points to an extension resource, it might be stale.
-        // We can't synchronously check existence, but we can rely on error handling.
         faviconUrl = tab.favIconUrl;
     }
-
-    // Attach error handler to fallback
-    // We re-attach every time to ensure the closure captures the correct defaultFaviconUrl
-    icon.onerror = (e) => {
-         // Fallback to default if custom/stale icon fails
-         if (icon.src !== defaultFaviconUrl) {
-             console.warn(`Failed to load favicon: ${icon.src}. Falling back to default.`, e);
-             icon.onerror = null; // prevent repeat loop if fallback also fails
-             icon.src = defaultFaviconUrl;
-         }
-    };
-
     if (icon.src !== faviconUrl) icon.src = faviconUrl;
 
     if (title.textContent !== tab.title) title.textContent = tab.title;
@@ -962,8 +868,6 @@ function handleTabClick(e, logicalId) {
             type: "FOCUS_OR_MOUNT_TAB",
             windowId: currentWindowId,
             logicalId: logicalId
-        }).catch((err) => {
-            console.error("Failed to focus or mount logical tab", err);
         });
     }
 
@@ -1071,9 +975,6 @@ function onDrop(e) {
         logicalIds: draggedLogicalIds,
         targetLogicalId: targetId,
         position: position
-    }).catch((err) => {
-        console.error("Failed to move logical tab", err);
-        alert("Failed to move logical tab. Please try again.");
     });
 }
 
