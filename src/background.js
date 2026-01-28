@@ -1,5 +1,5 @@
 // background.js
-importScripts('utils.js');
+import { formatGroupTitle, parseGroupTitle } from './utils.js';
 import { WORD_LIST } from './words.js';
 
 // --- Constants ---
@@ -79,44 +79,6 @@ function generateSessionName() {
     // Capitalize each word
     const capitalized = words.map(w => w.charAt(0).toUpperCase() + w.slice(1));
     return capitalized.join(' ');
-}
-
-/**
- * Tries to activate the previous tab from history, excluding specified tabs.
- * @param {number} windowId
- * @param {Array<number>} excludingTabIds
- */
-async function activatePreviousTab(windowId, excludingTabIds = []) {
-    if (!state.selectLastActiveTab) return;
-
-    const history = state.tabHistory[windowId];
-    if (!history || history.length === 0) return;
-
-    const excludingSet = new Set(excludingTabIds);
-
-    // Iterate backwards through the MRU history to find the most recently active tab that is still valid.
-    // We iterate backwards because the end of the array contains the most recent tabs.
-    // We also check against 'excludingSet' to ensure we don't try to activate a tab that is currently being closed.
-    for (let i = history.length - 1; i >= 0; i--) {
-        const tabId = history[i];
-        if (excludingSet.has(tabId)) continue;
-
-        try {
-            const tab = await chrome.tabs.get(tabId);
-            // Verify it is still in the same window (should be)
-            if (tab.windowId === windowId) {
-                await chrome.tabs.update(tabId, { active: true });
-                return; // Done
-            }
-        } catch (e) {
-            // Tab doesn't exist anymore, clean up stale entry
-            // This might happen if onRemoved hasn't fired yet or race condition
-            // state.tabHistory[windowId] refers to the live array
-            const currentHistory = state.tabHistory[windowId];
-            const currentIdx = currentHistory.indexOf(tabId);
-            if (currentIdx !== -1) currentHistory.splice(currentIdx, 1);
-        }
-    }
 }
 
 /**

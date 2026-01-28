@@ -1,4 +1,5 @@
 // sidebar.js
+import { parseGroupTitle } from './utils.js';
 
 const sessionSelector = document.getElementById('session-selector');
 const renameSessionBtn = document.getElementById('rename-session-btn');
