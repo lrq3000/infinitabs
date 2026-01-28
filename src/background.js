@@ -164,10 +164,27 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
             }
 
             const title = formatGroupTitle(groupInfo.title, groupInfo.color);
-            const created = await chrome.bookmarks.create({
-                parentId: currentSessionId,
-                title: title
-            });
+
+            // Check if a folder with this title already exists in the session to prevent duplicates
+            let created;
+            try {
+                const children = await chrome.bookmarks.getChildren(currentSessionId);
+                const existing = children.find(c => !c.url && c.title === title);
+                if (existing) {
+                    created = existing;
+                } else {
+                    created = await chrome.bookmarks.create({
+                        parentId: currentSessionId,
+                        title: title
+                    });
+                }
+            } catch (err) {
+                // Fallback to creation if search fails
+                created = await chrome.bookmarks.create({
+                    parentId: currentSessionId,
+                    title: title
+                });
+            }
 
             // Ensure adequate placement of new logical tab groups in sidebar by:
             // 1. Querying the live tabs in the window.
@@ -1269,19 +1286,13 @@ chrome.tabs.onCreated.addListener(async (tab) => {
             insertParentId = bookmarkId;
         } else {
             // Group exists live but not mapped?
-            // Wait for onCreated logic to create folder?
-            // onCreated fires before onUpdated(tabs) usually?
-            // If tab is created with groupId, maybe we haven't seen the group yet?
-            // We can try to create it here too if missing.
+            // This happens if the group was just created or sync failed.
+            // Use helper to safely get or create the group folder (checking for duplicates).
             try {
-                const groupInfo = await chrome.tabGroups.get(tab.groupId);
-                const groupTitle = formatGroupTitle(groupInfo.title, groupInfo.color);
-                const createdGroup = await chrome.bookmarks.create({
-                    parentId: sessionId,
-                    title: groupTitle
-                });
-                state.liveGroupToBookmark[tab.groupId] = createdGroup.id;
-                insertParentId = createdGroup.id;
+                const groupBookmarkId = await getOrCreateGroupBookmark(tab.groupId, tab.windowId);
+                if (groupBookmarkId) {
+                    insertParentId = groupBookmarkId;
+                }
             } catch (e) {
                  // ignore
             }
