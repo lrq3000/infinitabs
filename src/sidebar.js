@@ -493,9 +493,12 @@ function clearSearch() {
 }
 
 // Added navigate parameter to control auto-focus behavior
+/**
+ * Recomputes search matches.
+ * `@param` {boolean} navigate When true, move to the first match (and scroll); when false, only highlight matches.
+ */
 function performSearch(navigate = true) {
     const query = searchInput.value;
-
     // Toggle clear button visibility
     if (query.length > 0) {
         searchClearBtn.style.display = 'block';
