@@ -7,6 +7,7 @@ const historySizeInput = document.getElementById('history-size-input');
 const reloadOnRestartCheckbox = document.getElementById('reload-on-restart-checkbox');
 const activeTabColorInput = document.getElementById('active-tab-color-input');
 const selectedTabColorInput = document.getElementById('selected-tab-color-input');
+const nameSessionsWithWordsCheckbox = document.getElementById('name-sessions-with-words-checkbox');
 const statusDiv = document.getElementById('status');
 
 // Defaults
@@ -15,6 +16,7 @@ const DEFAULT_SELECT_LAST_ACTIVE = true;
 const DEFAULT_MAX_TAB_HISTORY = 100;
 const DEFAULT_HISTORY_SIZE = 50;
 const DEFAULT_RELOAD_ON_RESTART = false;
+const DEFAULT_NAME_SESSIONS_WITH_WORDS = true;
 
 // Restore options
 function restoreOptions() {
@@ -25,7 +27,8 @@ function restoreOptions() {
     historySize: DEFAULT_HISTORY_SIZE,
     reloadOnRestart: DEFAULT_RELOAD_ON_RESTART,
     activeTabBg: '',
-    selectedTabBg: ''
+    selectedTabBg: '',
+    nameSessionsWithWords: DEFAULT_NAME_SESSIONS_WITH_WORDS
   }, (items) => {
     confirmDeleteCheckbox.checked = items.confirmDeleteLogicalTab;
     selectLastActiveCheckbox.checked = items.selectLastActiveTab;
@@ -34,6 +37,7 @@ function restoreOptions() {
     reloadOnRestartCheckbox.checked = items.reloadOnRestart;
     activeTabColorInput.value = items.activeTabBg;
     selectedTabColorInput.value = items.selectedTabBg;
+    nameSessionsWithWordsCheckbox.checked = items.nameSessionsWithWords;
   });
 }
 
@@ -55,7 +59,7 @@ function saveOptions() {
   const reloadOnRestart = reloadOnRestartCheckbox.checked;
   const activeTabBg = normalizeColor(activeTabColorInput.value);
   const selectedTabBg = normalizeColor(selectedTabColorInput.value);
-
+  const nameSessionsWithWords = nameSessionsWithWordsCheckbox.checked;
   chrome.storage.local.set({
     confirmDeleteLogicalTab: confirmDelete,
     selectLastActiveTab: selectLastActive,
@@ -63,7 +67,8 @@ function saveOptions() {
     historySize: historySize,
     reloadOnRestart: reloadOnRestart,
     activeTabBg: activeTabBg,
-    selectedTabBg: selectedTabBg
+    selectedTabBg: selectedTabBg,
+    nameSessionsWithWords: nameSessionsWithWords
   }, () => {
     // Update status to let user know options were saved.
     statusDiv.style.opacity = '1';
@@ -81,3 +86,4 @@ historySizeInput.addEventListener('change', saveOptions);
 reloadOnRestartCheckbox.addEventListener('change', saveOptions);
 activeTabColorInput.addEventListener('change', saveOptions);
 selectedTabColorInput.addEventListener('change', saveOptions);
+nameSessionsWithWordsCheckbox.addEventListener('change', saveOptions);

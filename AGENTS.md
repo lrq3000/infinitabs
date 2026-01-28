@@ -101,7 +101,7 @@ When orchestrating a new plan of action, first investigate the cause of the stat
   - Prefer updating after each merge to `main` (or at least daily) to avoid large conflicts.
 - Keep CI green; add/adjust tests when behavior changes.
 
-### Conflict policy: forced main-first
+### Conflicts resolution policy: forced main-first strategy
 If merging `origin/main` into the PR branch causes conflicts, treat `origin/main` as canonical and reapply the PR intent on top using the exact SOP below.
 
 #### Conflict SOP (forced main-first + strict hunk checklist)
