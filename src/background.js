@@ -164,6 +164,28 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
             }
 
             const title = formatGroupTitle(groupInfo.title, groupInfo.color);
+
+            // Check if we already have a logical group with this title that is NOT mapped to a live group
+            const session = state.sessionsById[sessionId];
+            let existingUnmappedGroup = null;
+            if (session) {
+                const liveBookmarkIds = Object.values(state.liveGroupToBookmark);
+                for (const grpId of Object.keys(session.groups)) {
+                    const grp = session.groups[grpId];
+                    const grpTitle = formatGroupTitle(parseGroupTitle(grp.title).name, parseGroupTitle(grp.title).color);
+                    if (grpTitle === title && !liveBookmarkIds.includes(grp.groupId)) {
+                        existingUnmappedGroup = grp;
+                        break;
+                    }
+                }
+            }
+
+            if (existingUnmappedGroup) {
+                state.liveGroupToBookmark[groupId] = existingUnmappedGroup.groupId;
+                // No need to create bookmark or reload session, just update mapping
+                return existingUnmappedGroup.groupId;
+            }
+
             const created = await chrome.bookmarks.create({
                 parentId: currentSessionId,
                 title: title
@@ -1264,27 +1286,9 @@ chrome.tabs.onCreated.addListener(async (tab) => {
     // Check if new tab is in a group
     if (tab.groupId !== -1) {
         // If live tab is in a group, we want to put bookmark in the corresponding folder
-        const bookmarkId = state.liveGroupToBookmark[tab.groupId];
+        const bookmarkId = await getOrCreateGroupBookmark(tab.groupId, tab.windowId);
         if (bookmarkId) {
             insertParentId = bookmarkId;
-        } else {
-            // Group exists live but not mapped?
-            // Wait for onCreated logic to create folder?
-            // onCreated fires before onUpdated(tabs) usually?
-            // If tab is created with groupId, maybe we haven't seen the group yet?
-            // We can try to create it here too if missing.
-            try {
-                const groupInfo = await chrome.tabGroups.get(tab.groupId);
-                const groupTitle = formatGroupTitle(groupInfo.title, groupInfo.color);
-                const createdGroup = await chrome.bookmarks.create({
-                    parentId: sessionId,
-                    title: groupTitle
-                });
-                state.liveGroupToBookmark[tab.groupId] = createdGroup.id;
-                insertParentId = createdGroup.id;
-            } catch (e) {
-                 // ignore
-            }
         }
     } else if (tab.index > 0) {
         // Not grouped, try to follow neighbor

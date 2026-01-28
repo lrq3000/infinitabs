@@ -5,6 +5,7 @@ const storage = { local: {} };
 const windows = [];
 const tabs = [];
 const bookmarks = [];
+const tabGroups = {};
 
 global.chrome = {
     runtime: {
@@ -99,11 +100,28 @@ global.chrome = {
         ungroup: async (ids) => {},
     },
     tabGroups: {
-        onCreated: { addListener: (fn) => listeners['tabGroups.onCreated'] = fn, dispatch: (g) => listeners['tabGroups.onCreated'] && listeners['tabGroups.onCreated'](g) },
-        onUpdated: { addListener: (fn) => listeners['tabGroups.onUpdated'] = fn, dispatch: (g) => listeners['tabGroups.onUpdated'] && listeners['tabGroups.onUpdated'](g) },
-        onRemoved: { addListener: (fn) => listeners['tabGroups.onRemoved'] = fn, dispatch: (g) => listeners['tabGroups.onRemoved'] && listeners['tabGroups.onRemoved'](g) },
-        get: async (groupId) => ({ title: "Group", color: "blue", id: groupId }),
-        update: async () => {}
+        onCreated: {
+            addListener: (fn) => listeners['tabGroups.onCreated'] = async (g) => {
+                tabGroups[g.id] = g;
+                await fn(g);
+            },
+            dispatch: (g) => listeners['tabGroups.onCreated'] && listeners['tabGroups.onCreated'](g)
+        },
+        onUpdated: {
+            addListener: (fn) => listeners['tabGroups.onUpdated'] = async (g) => {
+                tabGroups[g.id] = { ...tabGroups[g.id], ...g };
+                await fn(g);
+            },
+            dispatch: (g) => listeners['tabGroups.onUpdated'] && listeners['tabGroups.onUpdated'](g)
+        },
+        onRemoved: {
+            addListener: (fn) => listeners['tabGroups.onRemoved'] = fn,
+            dispatch: (g) => listeners['tabGroups.onRemoved'] && listeners['tabGroups.onRemoved'](g)
+        },
+        get: async (groupId) => tabGroups[groupId] || { title: "Group", color: "blue", id: groupId },
+        update: async (groupId, info) => {
+             tabGroups[groupId] = { ...tabGroups[groupId], ...info };
+        }
     },
     storage: {
         local: {
