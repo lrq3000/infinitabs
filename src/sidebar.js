@@ -62,6 +62,7 @@ async function init() {
     settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
     // Search Listeners
+    // Pass true to enable navigation when user types
     searchInput.addEventListener('input', () => performSearch(true));
     searchInput.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
@@ -460,6 +461,7 @@ function onMessage(message, sender, sendResponse) {
             }
             renderSession(currentSession);
             // Re-apply search if exists
+            // Pass false to update results without jumping to the first match on data refresh
             if (searchInput.value) performSearch(false);
         }
     } else if (message.type === "HISTORY_UPDATED") {
@@ -490,6 +492,7 @@ function clearSearch() {
     performSearch();
 }
 
+// Added navigate parameter to control auto-focus behavior
 function performSearch(navigate = true) {
     const query = searchInput.value;
 
@@ -542,6 +545,7 @@ function performSearch(navigate = true) {
         }
     });
 
+    // Only navigate to the first match if explicitly requested (e.g. user input), avoiding jumps on background updates
     if (currentMatches.length > 0 && navigate) {
         navigateSearch(1); // Go to first match
     }
