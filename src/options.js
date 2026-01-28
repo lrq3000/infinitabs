@@ -37,6 +37,12 @@ function restoreOptions() {
   });
 }
 
+// Normalize color before save, ensures only valid CSS colors are saved
+function normalizeColor(value) {
+  const v = value.trim();
+  return v && CSS.supports('color', v) ? v : '';
+}
+
 // Save options
 function saveOptions() {
   const confirmDelete = confirmDeleteCheckbox.checked;
@@ -47,8 +53,8 @@ function saveOptions() {
     : DEFAULT_MAX_TAB_HISTORY;
   const historySize = parseInt(historySizeInput.value, 10) || 50;
   const reloadOnRestart = reloadOnRestartCheckbox.checked;
-  const activeTabBg = activeTabColorInput.value.trim();
-  const selectedTabBg = selectedTabColorInput.value.trim();
+  const activeTabBg = normalizeColor(activeTabColorInput.value);
+  const selectedTabBg = normalizeColor(selectedTabColorInput.value);
 
   chrome.storage.local.set({
     confirmDeleteLogicalTab: confirmDelete,
