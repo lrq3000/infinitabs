@@ -1,5 +1,6 @@
 // background.js
-importScripts('utils.js');
+import { formatGroupTitle, parseGroupTitle } from './utils.js';
+import { WORD_LIST } from './words.js';
 
 // --- Constants ---
 const ROOT_FOLDER_TITLE = "InfiniTabs Sessions";
@@ -62,6 +63,22 @@ function parseSessionTitle(title) {
 
 function generateGuid() {
     return self.crypto.randomUUID();
+}
+
+function generateSessionName() {
+    if (!state.nameSessionsWithWords) {
+        return Date.now().toString();
+    }
+
+    const count = 6;
+    const words = [];
+    for (let i = 0; i < count; i++) {
+        const randomIndex = Math.floor(Math.random() * WORD_LIST.length);
+        words.push(WORD_LIST[randomIndex]);
+    }
+    // Capitalize each word
+    const capitalized = words.map(w => w.charAt(0).toUpperCase() + w.slice(1));
+    return capitalized.join(' ');
 }
 
 /**
@@ -939,13 +956,14 @@ function init(options = {}) {
             }
 
             // Restore persisted state
-            const storage = await chrome.storage.local.get(['windowToSession', 'workspaceHistory', 'favoriteWorkspaces', 'lastKnownWorkspace', 'historySize', 'reloadOnRestart', 'selectLastActiveTab', 'maxTabHistory']);
+            const storage = await chrome.storage.local.get(['windowToSession', 'workspaceHistory', 'favoriteWorkspaces', 'lastKnownWorkspace', 'historySize', 'reloadOnRestart', 'nameSessionsWithWords', 'selectLastActiveTab', 'maxTabHistory']);
             if (storage.windowToSession) state.windowToSession = storage.windowToSession;
             if (storage.workspaceHistory) state.workspaceHistory = storage.workspaceHistory;
             if (storage.favoriteWorkspaces) state.favoriteWorkspaces = storage.favoriteWorkspaces;
             if (storage.lastKnownWorkspace) state.lastKnownWorkspace = storage.lastKnownWorkspace;
             if (storage.historySize) state.historySize = storage.historySize;
             if (storage.reloadOnRestart !== undefined) state.reloadOnRestart = storage.reloadOnRestart;
+            if (storage.nameSessionsWithWords !== undefined) state.nameSessionsWithWords = storage.nameSessionsWithWords;
             if (storage.selectLastActiveTab !== undefined) state.selectLastActiveTab = storage.selectLastActiveTab;
             if (storage.maxTabHistory !== undefined) state.maxTabHistory = storage.maxTabHistory;
 
@@ -987,7 +1005,8 @@ function init(options = {}) {
                         await bindWindowToSession(win.id, sessionFoldersByWindowId[win.id]);
                     } else {
                         // Create a new session folder
-                        const newSessionTitle = formatSessionTitle(`Session - Window ${win.id}`, win.id);
+                        const baseName = generateSessionName();
+                        const newSessionTitle = formatSessionTitle(baseName, win.id);
                         const created = await chrome.bookmarks.create({
                             parentId: rootId,
                             title: newSessionTitle
@@ -1034,6 +1053,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
         if (changes.reloadOnRestart) {
             state.reloadOnRestart = changes.reloadOnRestart.newValue;
         }
+        if (changes.nameSessionsWithWords) {
+            state.nameSessionsWithWords = changes.nameSessionsWithWords.newValue;
+        }
         if (changes.selectLastActiveTab) {
             state.selectLastActiveTab = changes.selectLastActiveTab.newValue;
         }
@@ -1069,7 +1091,8 @@ chrome.windows.onCreated.addListener(async (window) => {
 
         try {
             const rootId = await ensureRootFolder();
-            const newSessionTitle = formatSessionTitle(`Session - Window ${windowId}`, windowId);
+            const baseName = generateSessionName();
+            const newSessionTitle = formatSessionTitle(baseName, windowId);
             const created = await chrome.bookmarks.create({
                 parentId: rootId,
                 title: newSessionTitle
@@ -1664,7 +1687,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                             }
 
                             const rootId = await ensureRootFolder();
-                            const newSessionTitle = formatSessionTitle(`Session - Window ${windowId}`, windowId);
+                                const baseName = generateSessionName();
+                                const newSessionTitle = formatSessionTitle(baseName, windowId);
                             const created = await chrome.bookmarks.create({
                                 parentId: rootId,
                                 title: newSessionTitle
