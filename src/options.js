@@ -78,12 +78,24 @@ function saveOptions() {
   });
 }
 
+// Helper for debouncing
+function debounce(func, wait) {
+  let timeout;
+  return function(...args) {
+    const context = this;
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func.apply(context, args), wait);
+  };
+}
+
+const debouncedSaveOptions = debounce(saveOptions, 250);
+
 document.addEventListener('DOMContentLoaded', restoreOptions);
 confirmDeleteCheckbox.addEventListener('change', saveOptions);
 selectLastActiveCheckbox.addEventListener('change', saveOptions);
 maxTabHistoryInput.addEventListener('change', saveOptions);
 historySizeInput.addEventListener('change', saveOptions);
 reloadOnRestartCheckbox.addEventListener('change', saveOptions);
-activeTabColorInput.addEventListener('change', saveOptions);
-selectedTabColorInput.addEventListener('change', saveOptions);
+activeTabColorInput.addEventListener('input', debouncedSaveOptions);
+selectedTabColorInput.addEventListener('input', debouncedSaveOptions);
 nameSessionsWithWordsCheckbox.addEventListener('change', saveOptions);
