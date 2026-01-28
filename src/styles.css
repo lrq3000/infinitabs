@@ -290,12 +290,6 @@ body.dark-mode .top-level-tab.active {
   background-color: var(--hover-bg);
 }
 
-.tab-item.active-live {
-  font-weight: bold;
-  background-color: var(--active-bg);
-  border-left-color: var(--active-border);
-}
-
 .tab-item.live {
   /* Indicates it is open but not active */
   color: var(--text-color);
@@ -366,6 +360,12 @@ body.dark-mode .tab-delete-btn:hover {
 .tab-item.selected {
   background-color: var(--selected-bg);
   border-left-color: var(--selected-border);
+}
+
+.tab-item.active-live {
+  font-weight: bold;
+  background-color: var(--active-bg);
+  border-left-color: var(--active-border);
 }
 
 .tab-item.dragging,
