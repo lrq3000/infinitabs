@@ -1,4 +1,5 @@
 // sidebar.js
+import { parseGroupTitle } from './utils.js';
 
 const sessionSelector = document.getElementById('session-selector');
 const renameSessionBtn = document.getElementById('rename-session-btn');
@@ -14,6 +15,7 @@ const searchInput = document.getElementById('search-input');
 const searchClearBtn = document.getElementById('search-clear');
 const searchPrevBtn = document.getElementById('search-prev');
 const searchNextBtn = document.getElementById('search-next');
+const locateCurrentBtn = document.getElementById('locate-current');
 
 // Workspace Elements
 const pastWorkspacesSelector = document.getElementById('past-workspaces-selector');
@@ -73,6 +75,7 @@ async function init() {
     searchClearBtn.addEventListener('click', clearSearch);
     searchPrevBtn.addEventListener('click', () => navigateSearch(-1));
     searchNextBtn.addEventListener('click', () => navigateSearch(1));
+    locateCurrentBtn.addEventListener('click', scrollToActiveTab);
     document.addEventListener('keydown', onKeyDown);
 
     // Workspace Listeners
@@ -107,6 +110,20 @@ async function init() {
     await refreshCurrentSession();
     await loadPastWorkspaces();
     await checkCrashStatus();
+    chrome.storage.local.get({ activeTabBg: '', selectedTabBg: '' }, (items) => {
+        applyUserColors(items.activeTabBg, items.selectedTabBg);
+    });
+
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local') {
+            if (changes.activeTabBg || changes.selectedTabBg) {
+                applyUserColors(
+                    changes.activeTabBg ? changes.activeTabBg.newValue : undefined,
+                    changes.selectedTabBg ? changes.selectedTabBg.newValue : undefined
+                );
+            }
+        }
+    });
 
     // Top-level tabs logic
     const topLevelTabs = document.querySelectorAll('.top-level-tab');
@@ -144,6 +161,20 @@ function setTheme(dark) {
 
 function toggleTheme() {
     setTheme(!isDarkMode);
+}
+
+function applyUserColors(activeBg, selectedBg) {
+    if (activeBg !== undefined) applyColorVar('--active-bg', activeBg);
+    if (selectedBg !== undefined) applyColorVar('--selected-bg', selectedBg);
+}
+
+function applyColorVar(varName, value) {
+    const v = (value || '').trim();
+    if (v && CSS.supports('color', v)) {
+        document.body.style.setProperty(varName, v);
+    } else {
+        document.body.style.removeProperty(varName);
+    }
 }
 
 async function loadSessionsList() {
@@ -549,6 +580,27 @@ function navigateSearch(direction) {
     activeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
+function scrollToActiveTab() {
+    const activeEl = document.querySelector('.tab-item.active-live');
+    if (activeEl) {
+        activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else if (currentSession?.lastActiveLogicalTabId) {
+        // Active tab might be in a collapsed group - find and expand it
+        const activeTab = currentSession.logicalTabs.find(
+            t => t.logicalId === currentSession.lastActiveLogicalTabId
+        );
+        if (activeTab?.groupId && collapsedGroups.has(activeTab.groupId)) {
+            collapsedGroups.delete(activeTab.groupId);
+            renderSession(currentSession);
+            // Scroll after re-render
+            requestAnimationFrame(() => {
+                const el = document.querySelector('.tab-item.active-live');
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            });
+        }
+    }
+}
+
 function onKeyDown(e) {
     // Ctrl+Shift+F
     if (e.ctrlKey && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
@@ -851,10 +903,26 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
     const icon = el.querySelector('.tab-icon');
     const title = el.querySelector('.tab-title');
 
-    let faviconUrl = chrome.runtime.getURL("/_favicon/") + "?pageUrl=" + encodeURIComponent(tab.url) + "&size=16";
+    let defaultFaviconUrl = chrome.runtime.getURL("/_favicon/") + "?pageUrl=" + encodeURIComponent(tab.url) + "&size=16";
+    let faviconUrl = defaultFaviconUrl;
+
     if (tab.favIconUrl) {
+        // Validation: If it points to an extension resource, it might be stale.
+        // We can't synchronously check existence, but we can rely on error handling.
         faviconUrl = tab.favIconUrl;
     }
+
+    // Attach error handler to fallback
+    // We re-attach every time to ensure the closure captures the correct defaultFaviconUrl
+    icon.onerror = (e) => {
+         // Fallback to default if custom/stale icon fails
+         if (icon.src !== defaultFaviconUrl) {
+             console.warn(`Failed to load favicon: ${icon.src}. Falling back to default.`, e);
+             icon.onerror = null; // prevent repeat loop if fallback also fails
+             icon.src = defaultFaviconUrl;
+         }
+    };
+
     if (icon.src !== faviconUrl) icon.src = faviconUrl;
 
     if (title.textContent !== tab.title) title.textContent = tab.title;

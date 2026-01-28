@@ -1,7 +1,10 @@
 // test/test_memory_storage.js
 import { strict as assert } from 'assert';
 
-// Mock chrome.bookmarks
+// Mock chrome API globally BEFORE importing storage.js
+// storage.js relies on 'chrome' being defined if it uses it at top level (it doesn't, only in methods)
+// But to be safe.
+
 global.chrome = {
     storage: {
         session: {
@@ -30,7 +33,8 @@ global.chrome = {
         },
         getSubTree: async (id) => {
              return [{ id, children: [] }];
-        }
+        },
+        search: async () => []
     },
     runtime: {
         id: 'test-id'
@@ -38,33 +42,16 @@ global.chrome = {
 };
 
 // Mock crypto
-// global.crypto is read-only in newer Node, but we can rely on native crypto if available or try to define property
 if (!global.crypto) {
     global.crypto = {
         randomUUID: () => 'uuid-' + Math.random().toString(36).substring(2, 9)
     };
 } else if (!global.crypto.randomUUID) {
-    // If native crypto exists but not randomUUID (older Node?), polyfill it?
-    // Node 22 has it.
-    // The issue is likely I am trying to overwrite the global crypto object entirely.
-    // Let's rely on built-in.
+    global.crypto.randomUUID = () => 'uuid-' + Math.random().toString(36).substring(2, 9);
 }
 
-// Import storage (it adds itself to global scope or we import the class?)
-// storage.js defines `class MemoryStorage`, `class StorageManager` and `const storage = new StorageManager()`.
-// Since it is not a module, we need to eval it or load it similarly.
-// For testing, we can read the file and eval it, or wrap it.
-// Given the environment, let's use a simple evaluation trick.
-
-import fs from 'fs';
-import path from 'path';
-
-const storagePath = path.join(process.cwd(), 'src', 'storage.js');
-const storageCode = fs.readFileSync(storagePath, 'utf8');
-
-// Execute storage code and capture the instance
-eval(storageCode); // This sets global.storage now
-const storage = global.storage;
+// Import storage module
+import { storage } from '../src/storage.js';
 
 async function testStorage() {
     console.log("Starting Memory Storage Tests...");
