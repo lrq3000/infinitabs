@@ -165,10 +165,6 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
             }
 
             const title = formatGroupTitle(groupInfo.title, groupInfo.color);
-            const created = await chrome.bookmarks.create({
-                parentId: currentSessionId,
-                title: title
-            });
 
             // Ensure adequate placement of new logical tab groups in sidebar by:
             // 1. Querying the live tabs in the window.
