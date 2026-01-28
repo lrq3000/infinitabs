@@ -1,5 +1,5 @@
 // background.js
-importScripts('utils.js');
+import { formatGroupTitle, parseGroupTitle } from './utils.js';
 import { WORD_LIST } from './words.js';
 
 // --- Constants ---
