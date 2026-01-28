@@ -43,6 +43,28 @@
   <h1>InfiniTabs Settings</h1>
 
   <div class="option-group">
+    <h2 style="font-size: 16px; margin: 0 0 10px 0;">Appearance</h2>
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <label>
+        Active Tab Background:
+        <input type="text" id="active-tab-color-input" placeholder="e.g. `#e6f7ff`"
+               pattern="^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$"
+               spellcheck="false" autocomplete="off">
+      </label>
+      <label>
+        Selected Tab Background:
+        <input type="text" id="selected-tab-color-input" placeholder="e.g. `#f0f0f0`"
+               pattern="^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$"
+               spellcheck="false" autocomplete="off">
+      </label>
+      <div style="font-size: 12px; color: `#666`;">
+        Leave blank to use theme defaults.
+      </div>
+    </div>
+  </div>
+  <hr style="border: none; border-bottom: 1px solid `#ddd`; margin: 20px 0;">
+
+  <div class="option-group">
     <label>
       <input type="checkbox" id="confirm-delete-checkbox">
       Ask for confirmation before deleting logical tabs
