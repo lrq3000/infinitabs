@@ -144,3 +144,5 @@ Always provide:
 - Commands run.
 - Summary of changes.
 - If conflicts were resolved: the hunk checklist + adaptations + tests run.
+
+

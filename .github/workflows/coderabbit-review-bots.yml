@@ -6,7 +6,7 @@ on:
       - opened
       # - reopened            # to redo on PR close/reopen
       # - synchronize         # to redo on each commit
-      # - ready_for_review    # to redo when draft PR -> ready for review
+      # - ready_for_review    # to redo when draft PR -> ready for rehttps://github.com/lrq3000/infinitabs/pull/18/conflict?name=AGENTS.md&base_oid=093836371283ae5333060c74c8c474827d3a9c9c&head_oid=d6abf5e982659bedf2549bee1eb44e31701aef95view
 
 permissions:
   pull-requests: write
@@ -16,9 +16,11 @@ jobs:
   coderabbit_on_bot_pr:
     # Bots filters
     # Optional safety: ignore PRs from forks (often limited permissions)
+    #if: >
+    #  github.event.pull_request.user.type == 'Bot'
+    #  && (github.event.pull_request.head.repo.full_name == github.repository)
     if: >
-      github.event.pull_request.user.type == 'Bot'
-      && (github.event.pull_request.head.repo.full_name == github.repository)
+      (github.event.pull_request.head.repo.full_name == github.repository)
 
     # (Old behavior) Allow only Jules — kept as a comment
     # if: >
