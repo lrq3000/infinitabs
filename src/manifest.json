@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "InfiniTabs",
-  "version": "0.3.5",
+  "version": "0.4.2",
   "description": "Unlimited tabs. Zero clutter. Near-zero RAM.",
   "permissions": [
     "tabs",
@@ -13,7 +13,8 @@
     "tabGroups"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "side_panel": {
     "default_path": "sidebar.html"

@@ -54,6 +54,27 @@ global.chrome = {
              return tab;
         },
         get: async (id) => tabs.find(t => t.id === id),
+        update: async (tabId, updateProperties) => {
+            const tab = tabs.find(t => t.id === tabId);
+            if (tab) {
+                Object.assign(tab, updateProperties);
+                if (updateProperties.active) {
+                    // Deactivate others in same window
+                    tabs.forEach(t => {
+                        if (t.windowId === tab.windowId && t.id !== tabId) {
+                            t.active = false;
+                        }
+                    });
+                    if (listeners['tabs.onActivated']) {
+                        listeners['tabs.onActivated']({ tabId: tabId, windowId: tab.windowId });
+                    }
+                }
+                if (listeners['tabs.onUpdated']) {
+                    listeners['tabs.onUpdated'](tabId, updateProperties, tab);
+                }
+            }
+            return tab;
+        },
         remove: async (ids) => {
              const idArr = Array.isArray(ids) ? ids : [ids];
              for (const id of idArr) {
@@ -90,17 +111,14 @@ global.chrome = {
             set: async (items) => Object.assign(storage.local, items)
         },
         session: {
-            get: async (keys) => {
-                 // Simple mock: keys string or array or object
-                 // Return the session object
-                 if (typeof keys === 'string') {
-                     return { [keys]: storage.session[keys] };
-                 }
-                 return storage.session || {};
+            data: {},
+            get: async (key) => {
+                if (key) return { [key]: global.chrome.storage.session.data[key] };
+                return global.chrome.storage.session.data;
             },
             set: async (items) => {
-                 if (!storage.session) storage.session = {};
-                 Object.assign(storage.session, items);
+                if (!global.chrome.storage.session.data) global.chrome.storage.session.data = {};
+                Object.assign(global.chrome.storage.session.data, items);
             }
         },
         onChanged: { addListener: (fn) => listeners['storage.onChanged'] = fn }
@@ -234,28 +252,14 @@ global.self = {
 }
 
 // Add importScripts shim
-global.importScripts = (...paths) => {
-    // We need to load storage.js to verify background.js
-    // paths can be multiple arguments
-    const fs = require('fs');
-    const path = require('path');
-
-    for (const p of paths) {
-        if (p === 'utils.js') continue; // Handled by global mocks below
-        if (p === 'storage.js') {
-            const code = fs.readFileSync(path.join(process.cwd(), 'src', 'storage.js'), 'utf8');
-            // Since const/class are block scoped, direct eval might not expose them to global if not var.
-            // We can wrap it or just rely on manual assignment.
-            // Let's replace 'const storage =' with 'global.storage =' in the code string for the test.
-            const modifiedCode = code.replace('const storage = new StorageManager();', 'global.storage = new StorageManager();');
-            eval(modifiedCode);
-        }
-    }
+global.importScripts = (path) => {
+    // In node environment, we can't easily eval another file in global scope synchronously
+    // without reading it. But since we know what utils.js contains (helper functions),
+    // and we can't easily require it (ESM vs CommonJS mess), we can just mock the functions
+    // it provides if they are global.
+    // However, background.js relies on them.
+    // For this test, I'll just define them globally here.
 };
-
-// Polyfill require for importScripts logic above if needed (since we are in ESM module test)
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
 
 global.formatGroupTitle = function(title, color) {
     const safeTitle = title || "Group";

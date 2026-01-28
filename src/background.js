@@ -1,5 +1,8 @@
 // background.js
-importScripts('utils.js', 'storage.js');
+import { formatGroupTitle, parseGroupTitle } from './utils.js';
+import { WORD_LIST } from './words.js';
+import { storage } from './storage.js';
+
 
 // --- Constants ---
 const ROOT_FOLDER_TITLE = "InfiniTabs Sessions";
@@ -19,6 +22,9 @@ const state = {
     lastKnownWorkspace: null, // WorkspaceSnapshot
     historySize: 50,
     reloadOnRestart: false, // User Preference
+    selectLastActiveTab: true, // User Preference
+    maxTabHistory: 100, // User Preference
+    tabHistory: {}, // Record<WindowId, Array<TabId>> - MRU Stack
     initialized: false
 };
 
@@ -28,6 +34,15 @@ const state = {
 let isRestoring = false;
 
 // --- Helper Functions ---
+// Queue for serializing move operations to handle group moves (SHIFT+Drag)
+const moveMutex = new class {
+    constructor() { this.p = Promise.resolve(); }
+    run(fn) {
+        this.p = this.p.then(fn).catch(e => console.error("Mutex error", e));
+        return this.p;
+    }
+}();
+
 function formatSessionTitle(name, windowId) {
     if (windowId) {
         // Remove any existing windowId from the name to avoid duplication
@@ -50,6 +65,60 @@ function parseSessionTitle(title) {
 
 function generateGuid() {
     return self.crypto.randomUUID();
+}
+
+function generateSessionName() {
+    if (!state.nameSessionsWithWords) {
+        return Date.now().toString();
+    }
+
+    const count = 6;
+    const words = [];
+    for (let i = 0; i < count; i++) {
+        const randomIndex = Math.floor(Math.random() * WORD_LIST.length);
+        words.push(WORD_LIST[randomIndex]);
+    }
+    // Capitalize each word
+    const capitalized = words.map(w => w.charAt(0).toUpperCase() + w.slice(1));
+    return capitalized.join(' ');
+}
+
+/**
+ * Tries to activate the previous tab from history, excluding specified tabs.
+ * @param {number} windowId
+ * @param {Array<number>} excludingTabIds
+ */
+async function activatePreviousTab(windowId, excludingTabIds = []) {
+    if (!state.selectLastActiveTab) return;
+
+    const history = state.tabHistory[windowId];
+    if (!history || history.length === 0) return;
+
+    const excludingSet = new Set(excludingTabIds);
+
+    // Iterate backwards through the MRU history to find the most recently active tab that is still valid.
+    // We iterate backwards because the end of the array contains the most recent tabs.
+    // We also check against 'excludingSet' to ensure we don't try to activate a tab that is currently being closed.
+    for (let i = history.length - 1; i >= 0; i--) {
+        const tabId = history[i];
+        if (excludingSet.has(tabId)) continue;
+
+        try {
+            const tab = await chrome.tabs.get(tabId);
+            // Verify it is still in the same window (should be)
+            if (tab.windowId === windowId) {
+                await chrome.tabs.update(tabId, { active: true });
+                return; // Done
+            }
+        } catch (e) {
+            // Tab doesn't exist anymore, clean up stale entry
+            // This might happen if onRemoved hasn't fired yet or race condition
+            // state.tabHistory[windowId] refers to the live array
+            const currentHistory = state.tabHistory[windowId];
+            const currentIdx = currentHistory.indexOf(tabId);
+            if (currentIdx !== -1) currentHistory.splice(currentIdx, 1);
+        }
+    }
 }
 
 /**
@@ -78,6 +147,15 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
     // 3. Start creation process
     const creationPromise = (async () => {
         try {
+            // Debounce: Wait a bit to allow other extensions (e.g. Tabius) to rename the group
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            // Re-check session binding after debounce in case the window was rebound
+            const currentSessionId = state.windowToSession[windowId];
+            if (!currentSessionId || currentSessionId !== sessionId) {
+                return null;
+            }
+
             // Fetch group details
             let groupInfo;
             try {
@@ -89,17 +167,88 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
 
             const title = formatGroupTitle(groupInfo.title, groupInfo.color);
             const created = await storage.create({
-                parentId: sessionId,
+                parentId: currentSessionId,
                 title: title
             });
 
-            state.liveGroupToBookmark[groupId] = created.id;
+            // Ensure adequate placement of new logical tab groups in sidebar by:
+            // 1. Querying the live tabs in the window.
+            // 2. Identifying the tabs belonging to the new group.
+            // 3. Finding the closest preceding "anchor" tab (a live tab with a corresponding logical tab).
+            // 4. Inserting the new group folder bookmark immediately after the anchor tab (or its parent group folder if the anchor is grouped).
+            // This ensures that the sidebar order reflects the visual order of tabs and groups in the native live tabs strip.
+            return moveMutex.run(async () => {
+                let insertIndex = null;
+                try {
+                    const tabs = await chrome.tabs.query({ windowId });
+                    const groupTabs = tabs.filter(t => t.groupId === groupId).sort((a, b) => a.index - b.index);
 
-            // Reload session to reflect new group
-            await reloadSessionAndPreserveState(sessionId, windowId);
-            notifySidebarStateUpdated(windowId, sessionId);
+                    if (groupTabs.length > 0) {
+                        const firstTab = groupTabs[0];
+                        let anchorLogical = null;
 
-            return created.id;
+                    // Build index-to-tab map for O(1) lookups
+                    const tabByIndex = new Map(tabs.map(t => [t.index, t]));
+
+                        // Find closest preceding live tab that is mapped
+                        for (let i = firstTab.index - 1; i >= 0; i--) {
+                        const tab = tabByIndex.get(i);
+                            if (tab) {
+                                const lid = state.tabToLogical[tab.id];
+                                if (lid) {
+                                    // Find the logical tab object to get bookmark ID
+                                    const session = state.sessionsById[sessionId];
+                                    if (session) {
+                                        anchorLogical = session.logicalTabs.find(l => l.logicalId === lid);
+                                        if (anchorLogical) break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (anchorLogical) {
+                            const anchorNodes = await storage.get(anchorLogical.bookmarkId);
+                            if (anchorNodes && anchorNodes.length > 0) {
+                                const anchorNode = anchorNodes[0];
+                                if (anchorNode.parentId !== sessionId) {
+                                    // Anchor is in a subfolder (another group)
+                                    // We place AFTER that group folder
+                                    const folderNodes = await storage.get(anchorNode.parentId);
+                                    if (folderNodes && folderNodes.length > 0) {
+                                        insertIndex = folderNodes[0].index + 1;
+                                    }
+                                } else {
+                                    // Anchor is in root
+                                    insertIndex = anchorNode.index + 1;
+                                }
+                            }
+                        } else {
+                            // No anchor found to the left -> start of list
+                            insertIndex = 0;
+                        }
+                    }
+                } catch (e) {
+                    console.warn("Failed to calculate group insertion index", e);
+                }
+
+                const createData = {
+                    parentId: sessionId,
+                    title: title
+                };
+                if (insertIndex !== null) {
+                    createData.index = insertIndex;
+                }
+
+                const created = await storage.create(createData);
+
+                state.liveGroupToBookmark[groupId] = created.id;
+
+                // Reload session to reflect new group
+                await reloadSessionAndPreserveState(sessionId, windowId);
+                notifySidebarStateUpdated(windowId, sessionId);
+
+                return created.id;
+            });
         } catch (e) {
             console.error("Failed to create bookmark folder for group", e);
             return null;
@@ -217,8 +366,8 @@ async function ensureRootFolder() {
 }
 
 /**
- * Loads a session from a bookmark or memory folder.
- * @param {string} sessionId - The bookmark/memory ID of the session folder.
+ * Loads a session from a bookmark folder.
+ * @param {string} sessionId - The bookmark ID of the session folder.
  * @returns {Promise<Object>} The Session object.
  */
 async function loadSessionFromBookmarks(sessionId) {
@@ -792,13 +941,16 @@ function init(options = {}) {
             }
 
             // Restore persisted state
-            const storage = await chrome.storage.local.get(['windowToSession', 'workspaceHistory', 'favoriteWorkspaces', 'lastKnownWorkspace', 'historySize', 'reloadOnRestart']);
-            if (storage.windowToSession) state.windowToSession = storage.windowToSession;
-            if (storage.workspaceHistory) state.workspaceHistory = storage.workspaceHistory;
-            if (storage.favoriteWorkspaces) state.favoriteWorkspaces = storage.favoriteWorkspaces;
-            if (storage.lastKnownWorkspace) state.lastKnownWorkspace = storage.lastKnownWorkspace;
-            if (storage.historySize) state.historySize = storage.historySize;
-            if (storage.reloadOnRestart !== undefined) state.reloadOnRestart = storage.reloadOnRestart;
+            const storedState = await chrome.storage.local.get(['windowToSession', 'workspaceHistory', 'favoriteWorkspaces', 'lastKnownWorkspace', 'historySize', 'reloadOnRestart', 'nameSessionsWithWords', 'selectLastActiveTab', 'maxTabHistory']);
+            if (storedState.windowToSession) state.windowToSession = storedState.windowToSession;
+            if (storedState.workspaceHistory) state.workspaceHistory = storedState.workspaceHistory;
+            if (storedState.favoriteWorkspaces) state.favoriteWorkspaces = storedState.favoriteWorkspaces;
+            if (storedState.lastKnownWorkspace) state.lastKnownWorkspace = storedState.lastKnownWorkspace;
+            if (storedState.historySize) state.historySize = storedState.historySize;
+            if (storedState.reloadOnRestart !== undefined) state.reloadOnRestart = storedState.reloadOnRestart;
+            if (storedState.nameSessionsWithWords !== undefined) state.nameSessionsWithWords = storedState.nameSessionsWithWords;
+            if (storedState.selectLastActiveTab !== undefined) state.selectLastActiveTab = storedState.selectLastActiveTab;
+            if (storedState.maxTabHistory !== undefined) state.maxTabHistory = storedState.maxTabHistory;
 
             // Only skip binding if we are in a startup context AND auto-reload is enabled
             const shouldSkipBinding = options.isStartup && state.reloadOnRestart && state.lastKnownWorkspace;
@@ -838,10 +990,8 @@ function init(options = {}) {
                         await bindWindowToSession(win.id, sessionFoldersByWindowId[win.id]);
                     } else {
                         // Create a new session folder
-                        // Note: Default to bookmark storage on startup unless window is incognito?
-                        // But onStartup windows are usually not incognito unless restored specifically.
-                        // We will use rootId which is bookmark root, so it creates bookmarks.
-                        const newSessionTitle = formatSessionTitle(`Session - Window ${win.id}`, win.id);
+                        const baseName = generateSessionName();
+                        const newSessionTitle = formatSessionTitle(baseName, win.id);
                         const created = await storage.create({
                             parentId: rootId,
                             title: newSessionTitle
@@ -882,9 +1032,28 @@ async function onStartupHandler() {
 chrome.runtime.onInstalled.addListener(init);
 chrome.runtime.onStartup.addListener(onStartupHandler);
 
+// Listen for changes in local storage to update runtime configuration
 chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === 'local' && changes.reloadOnRestart) {
-        state.reloadOnRestart = changes.reloadOnRestart.newValue;
+    if (areaName === 'local') {
+        if (changes.reloadOnRestart) {
+            state.reloadOnRestart = changes.reloadOnRestart.newValue;
+        }
+        if (changes.nameSessionsWithWords) {
+            state.nameSessionsWithWords = changes.nameSessionsWithWords.newValue;
+        }
+        if (changes.selectLastActiveTab) {
+            state.selectLastActiveTab = changes.selectLastActiveTab.newValue;
+        }
+        if (changes.maxTabHistory) {
+            const parsed = parseInt(changes.maxTabHistory.newValue, 10);
+            const nextMax = Number.isFinite(parsed) && parsed > 0 ? parsed : state.maxTabHistory;
+            state.maxTabHistory = nextMax;
+            Object.values(state.tabHistory).forEach(history => {
+                if (history.length > nextMax) {
+                    history.splice(0, history.length - nextMax);
+                }
+            });
+        }
     }
 });
 
@@ -913,7 +1082,8 @@ chrome.windows.onCreated.addListener(async (window) => {
                 console.log(`onCreated: Window is incognito, using memory storage.`);
             }
 
-            const newSessionTitle = formatSessionTitle(`Session - Window ${windowId}`, windowId);
+            const baseName = generateSessionName();
+            const newSessionTitle = formatSessionTitle(baseName, windowId);
             const created = await storage.create({
                 parentId: targetParentId,
                 title: newSessionTitle
@@ -1375,15 +1545,6 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
     }, 100);
 });
 
-// Queue for serializing move operations to handle group moves (SHIFT+Drag)
-const moveMutex = new class {
-    constructor() { this.p = Promise.resolve(); }
-    run(fn) {
-        this.p = this.p.then(fn).catch(e => console.error("Mutex error", e));
-        return this.p;
-    }
-}();
-
 chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
     moveMutex.run(async () => {
         if (!state.initialized) await init();
@@ -1472,6 +1633,21 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     const windowId = activeInfo.windowId;
     const tabId = activeInfo.tabId;
 
+    // Update History
+    if (!state.tabHistory[windowId]) state.tabHistory[windowId] = [];
+    const history = state.tabHistory[windowId];
+
+    // Remove existing occurrence to move to end (MRU)
+    const idx = history.indexOf(tabId);
+    if (idx !== -1) history.splice(idx, 1);
+
+    history.push(tabId);
+
+    // Trim
+    if (history.length > state.maxTabHistory) {
+        history.shift();
+    }
+
     const sessionId = state.windowToSession[windowId];
     if (!sessionId) return;
 
@@ -1508,7 +1684,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                             }
 
                             const rootId = await ensureRootFolder();
-                            const newSessionTitle = formatSessionTitle(`Session - Window ${windowId}`, windowId);
+                                const baseName = generateSessionName();
+                                const newSessionTitle = formatSessionTitle(baseName, windowId);
                             const created = await storage.create({
                                 parentId: rootId,
                                 title: newSessionTitle
@@ -1874,6 +2051,12 @@ async function handleDeleteLogicalTab(windowId, logicalId) {
 
     // Cleanup live tab mappings and close live tabs
     if (logical.liveTabIds && logical.liveTabIds.length > 0) {
+        // Switch tab if active tab is being closed
+        const activeTab = await chrome.tabs.query({ active: true, windowId }).then(tabs => tabs[0]);
+        if (activeTab && logical.liveTabIds.includes(activeTab.id)) {
+            await activatePreviousTab(windowId, logical.liveTabIds);
+        }
+
         // Close live tabs as requested
         try {
             await chrome.tabs.remove(logical.liveTabIds);
@@ -1917,6 +2100,12 @@ async function handleDeleteLogicalGroup(windowId, groupId) {
 
     // 3. Close live tabs
     if (liveTabsToClose.length > 0) {
+        // Switch tab if active tab is being closed
+        const activeTab = await chrome.tabs.query({ active: true, windowId }).then(tabs => tabs[0]);
+        if (activeTab && liveTabsToClose.includes(activeTab.id)) {
+            await activatePreviousTab(windowId, liveTabsToClose);
+        }
+
         try {
             await chrome.tabs.remove(liveTabsToClose);
         } catch (e) {
@@ -1950,6 +2139,12 @@ async function handleUnmountLogicalTab(windowId, logicalId) {
     if (logical.liveTabIds.length > 0) {
         const toClose = [...logical.liveTabIds];
         logical.liveTabIds = [];
+
+        // Switch tab if active tab is being closed
+        const activeTab = await chrome.tabs.query({ active: true, windowId }).then(tabs => tabs[0]);
+        if (activeTab && toClose.includes(activeTab.id)) {
+            await activatePreviousTab(windowId, toClose);
+        }
 
         try {
             await chrome.tabs.remove(toClose);

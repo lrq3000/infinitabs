@@ -60,13 +60,6 @@ class MemoryStorage {
                 results.push(JSON.parse(JSON.stringify(node)));
             }
         }
-        if (results.length !== ids.length) {
-             // chrome.bookmarks.get throws if any ID is missing, but for our usage
-             // we can be slightly more lenient or mimic exact behavior.
-             // For now, returning found ones is safer for hybrid usage.
-             // But strictly speaking, we should probably throw or return empty.
-             // Let's return what we found.
-        }
         return results;
     }
 
@@ -353,12 +346,4 @@ class StorageManager {
     }
 }
 
-// Expose as global for compatibility with importScripts in background.js and eval in tests
-if (typeof self !== 'undefined') {
-    self.storage = new StorageManager();
-} else if (typeof global !== 'undefined') {
-    global.storage = new StorageManager();
-} else {
-    // Fallback or window
-    this.storage = new StorageManager();
-}
+export const storage = new StorageManager();
