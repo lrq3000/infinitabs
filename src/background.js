@@ -1784,6 +1784,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     }
                     break;
                 }
+                case "SEARCH_ALL_SESSIONS": {
+                    const results = await searchAllSessions(message.query);
+                    sendResponse({ results });
+                    break;
+                }
                 case "CHECK_CRASH_STATUS": {
                     // Heuristic:
                     // 1. We have a lastKnownWorkspace
@@ -2337,4 +2342,71 @@ async function handleUnmountAllExcept(windowId, logicalIdsToKeep) {
     }
 
     notifySidebarStateUpdated(windowId, sessionId);
+}
+
+async function searchAllSessions(query) {
+    if (!query || !query.trim()) return [];
+    const rootId = await ensureRootFolder();
+    const sessions = await chrome.bookmarks.getSubTree(rootId);
+    if (!sessions || !sessions.length) return [];
+
+    const root = sessions[0];
+    const matches = [];
+    const terms = query.toLowerCase().split(/\s+/).filter(t => t);
+
+    // Helper to check match
+    const isMatch = (title, url) => {
+        const text = (title + " " + (url || "")).toLowerCase();
+        return terms.every(term => text.includes(term));
+    };
+
+    // Traverse
+    // Root children are Sessions.
+    for (const sessionFolder of root.children || []) {
+        if (sessionFolder.url) continue; // Should be folder
+        const { name } = parseSessionTitle(sessionFolder.title);
+
+        // Check session children (Tabs or Groups)
+        const traverse = (nodes) => {
+            for (let i = 0; i < nodes.length; i++) {
+                const node = nodes[i];
+                if (node.url) {
+                    // It's a tab
+                    if (isMatch(node.title, node.url)) {
+                        // Extract Context
+                        let prev = null;
+                        let next = null;
+
+                        // Look back
+                        if (i > 0) {
+                             const p = nodes[i - 1];
+                             prev = p.url ? p.title : `Group: ${p.title}`;
+                        }
+
+                        // Look forward
+                        if (i < nodes.length - 1) {
+                             const n = nodes[i + 1];
+                             next = n.url ? n.title : `Group: ${n.title}`;
+                        }
+
+                        matches.push({
+                            sessionId: sessionFolder.id,
+                            sessionName: name,
+                            tab: {
+                                title: node.title,
+                                url: node.url,
+                                id: node.id // bookmark id
+                            },
+                            context: { prev, next }
+                        });
+                    }
+                } else {
+                    // It's a group
+                    traverse(node.children || []);
+                }
+            }
+        }
+        traverse(sessionFolder.children || []);
+    }
+    return matches;
 }
