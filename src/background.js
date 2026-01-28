@@ -1,6 +1,5 @@
 // background.js
 importScripts('utils.js');
-
 import { WORD_LIST } from './words.js';
 
 // --- Constants ---
@@ -22,6 +21,9 @@ const state = {
     historySize: 50,
     reloadOnRestart: false, // User Preference
     nameSessionsWithWords: true, // User Preference
+    selectLastActiveTab: true, // User Preference
+    maxTabHistory: 100, // User Preference
+    tabHistory: {}, // Record<WindowId, Array<TabId>> - MRU Stack
     initialized: false
 };
 
@@ -31,6 +33,15 @@ const state = {
 let isRestoring = false;
 
 // --- Helper Functions ---
+// Queue for serializing move operations to handle group moves (SHIFT+Drag)
+const moveMutex = new class {
+    constructor() { this.p = Promise.resolve(); }
+    run(fn) {
+        this.p = this.p.then(fn).catch(e => console.error("Mutex error", e));
+        return this.p;
+    }
+}();
+
 function formatSessionTitle(name, windowId) {
     if (windowId) {
         // Remove any existing windowId from the name to avoid duplication
@@ -72,6 +83,44 @@ function generateSessionName() {
 }
 
 /**
+ * Tries to activate the previous tab from history, excluding specified tabs.
+ * @param {number} windowId
+ * @param {Array<number>} excludingTabIds
+ */
+async function activatePreviousTab(windowId, excludingTabIds = []) {
+    if (!state.selectLastActiveTab) return;
+
+    const history = state.tabHistory[windowId];
+    if (!history || history.length === 0) return;
+
+    const excludingSet = new Set(excludingTabIds);
+
+    // Iterate backwards through the MRU history to find the most recently active tab that is still valid.
+    // We iterate backwards because the end of the array contains the most recent tabs.
+    // We also check against 'excludingSet' to ensure we don't try to activate a tab that is currently being closed.
+    for (let i = history.length - 1; i >= 0; i--) {
+        const tabId = history[i];
+        if (excludingSet.has(tabId)) continue;
+
+        try {
+            const tab = await chrome.tabs.get(tabId);
+            // Verify it is still in the same window (should be)
+            if (tab.windowId === windowId) {
+                await chrome.tabs.update(tabId, { active: true });
+                return; // Done
+            }
+        } catch (e) {
+            // Tab doesn't exist anymore, clean up stale entry
+            // This might happen if onRemoved hasn't fired yet or race condition
+            // state.tabHistory[windowId] refers to the live array
+            const currentHistory = state.tabHistory[windowId];
+            const currentIdx = currentHistory.indexOf(tabId);
+            if (currentIdx !== -1) currentHistory.splice(currentIdx, 1);
+        }
+    }
+}
+
+/**
  * Gets or creates a bookmark folder for a given live group ID.
  * Uses a lock mechanism to prevent duplicate folders from race conditions.
  * @param {number} groupId - The live group ID.
@@ -97,6 +146,15 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
     // 3. Start creation process
     const creationPromise = (async () => {
         try {
+            // Debounce: Wait a bit to allow other extensions (e.g. Tabius) to rename the group
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            // Re-check session binding after debounce in case the window was rebound
+            const currentSessionId = state.windowToSession[windowId];
+            if (!currentSessionId || currentSessionId !== sessionId) {
+                return null;
+            }
+
             // Fetch group details
             let groupInfo;
             try {
@@ -107,18 +165,85 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
             }
 
             const title = formatGroupTitle(groupInfo.title, groupInfo.color);
-            const created = await chrome.bookmarks.create({
-                parentId: sessionId,
-                title: title
+
+            // Ensure adequate placement of new logical tab groups in sidebar by:
+            // 1. Querying the live tabs in the window.
+            // 2. Identifying the tabs belonging to the new group.
+            // 3. Finding the closest preceding "anchor" tab (a live tab with a corresponding logical tab).
+            // 4. Inserting the new group folder bookmark immediately after the anchor tab (or its parent group folder if the anchor is grouped).
+            // This ensures that the sidebar order reflects the visual order of tabs and groups in the native live tabs strip.
+            return moveMutex.run(async () => {
+                let insertIndex = null;
+                try {
+                    const tabs = await chrome.tabs.query({ windowId });
+                    const groupTabs = tabs.filter(t => t.groupId === groupId).sort((a, b) => a.index - b.index);
+
+                    if (groupTabs.length > 0) {
+                        const firstTab = groupTabs[0];
+                        let anchorLogical = null;
+
+                    // Build index-to-tab map for O(1) lookups
+                    const tabByIndex = new Map(tabs.map(t => [t.index, t]));
+
+                        // Find closest preceding live tab that is mapped
+                        for (let i = firstTab.index - 1; i >= 0; i--) {
+                        const tab = tabByIndex.get(i);
+                            if (tab) {
+                                const lid = state.tabToLogical[tab.id];
+                                if (lid) {
+                                    // Find the logical tab object to get bookmark ID
+                                    const session = state.sessionsById[sessionId];
+                                    if (session) {
+                                        anchorLogical = session.logicalTabs.find(l => l.logicalId === lid);
+                                        if (anchorLogical) break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (anchorLogical) {
+                            const anchorNodes = await chrome.bookmarks.get(anchorLogical.bookmarkId);
+                            if (anchorNodes && anchorNodes.length > 0) {
+                                const anchorNode = anchorNodes[0];
+                                if (anchorNode.parentId !== sessionId) {
+                                    // Anchor is in a subfolder (another group)
+                                    // We place AFTER that group folder
+                                    const folderNodes = await chrome.bookmarks.get(anchorNode.parentId);
+                                    if (folderNodes && folderNodes.length > 0) {
+                                        insertIndex = folderNodes[0].index + 1;
+                                    }
+                                } else {
+                                    // Anchor is in root
+                                    insertIndex = anchorNode.index + 1;
+                                }
+                            }
+                        } else {
+                            // No anchor found to the left -> start of list
+                            insertIndex = 0;
+                        }
+                    }
+                } catch (e) {
+                    console.warn("Failed to calculate group insertion index", e);
+                }
+
+                const createData = {
+                    parentId: sessionId,
+                    title: title
+                };
+                if (insertIndex !== null) {
+                    createData.index = insertIndex;
+                }
+
+                const created = await chrome.bookmarks.create(createData);
+
+                state.liveGroupToBookmark[groupId] = created.id;
+
+                // Reload session to reflect new group
+                await reloadSessionAndPreserveState(sessionId, windowId);
+                notifySidebarStateUpdated(windowId, sessionId);
+
+                return created.id;
             });
-
-            state.liveGroupToBookmark[groupId] = created.id;
-
-            // Reload session to reflect new group
-            await reloadSessionAndPreserveState(sessionId, windowId);
-            notifySidebarStateUpdated(windowId, sessionId);
-
-            return created.id;
         } catch (e) {
             console.error("Failed to create bookmark folder for group", e);
             return null;
@@ -763,8 +888,7 @@ async function restoreWorkspace(snapshot) {
                 // Fallback: Create a new session for this window so it's not orphaned
                 try {
                     const rootId = await ensureRootFolder();
-                    const baseName = generateSessionName();
-                    const newSessionTitle = formatSessionTitle(baseName, win.id);
+                    const newSessionTitle = formatSessionTitle(`Session - Window ${win.id}`, win.id);
                     const created = await chrome.bookmarks.create({
                         parentId: rootId,
                         title: newSessionTitle
@@ -812,7 +936,7 @@ function init(options = {}) {
             }
 
             // Restore persisted state
-            const storage = await chrome.storage.local.get(['windowToSession', 'workspaceHistory', 'favoriteWorkspaces', 'lastKnownWorkspace', 'historySize', 'reloadOnRestart', 'nameSessionsWithWords']);
+            const storage = await chrome.storage.local.get(['windowToSession', 'workspaceHistory', 'favoriteWorkspaces', 'lastKnownWorkspace', 'historySize', 'reloadOnRestart', 'nameSessionsWithWords', 'selectLastActiveTab', 'maxTabHistory']);
             if (storage.windowToSession) state.windowToSession = storage.windowToSession;
             if (storage.workspaceHistory) state.workspaceHistory = storage.workspaceHistory;
             if (storage.favoriteWorkspaces) state.favoriteWorkspaces = storage.favoriteWorkspaces;
@@ -820,6 +944,8 @@ function init(options = {}) {
             if (storage.historySize) state.historySize = storage.historySize;
             if (storage.reloadOnRestart !== undefined) state.reloadOnRestart = storage.reloadOnRestart;
             if (storage.nameSessionsWithWords !== undefined) state.nameSessionsWithWords = storage.nameSessionsWithWords;
+            if (storage.selectLastActiveTab !== undefined) state.selectLastActiveTab = storage.selectLastActiveTab;
+            if (storage.maxTabHistory !== undefined) state.maxTabHistory = storage.maxTabHistory;
 
             // Only skip binding if we are in a startup context AND auto-reload is enabled
             const shouldSkipBinding = options.isStartup && state.reloadOnRestart && state.lastKnownWorkspace;
@@ -901,6 +1027,7 @@ async function onStartupHandler() {
 chrome.runtime.onInstalled.addListener(init);
 chrome.runtime.onStartup.addListener(onStartupHandler);
 
+// Listen for changes in local storage to update runtime configuration
 chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === 'local') {
         if (changes.reloadOnRestart) {
@@ -908,6 +1035,19 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
         }
         if (changes.nameSessionsWithWords) {
             state.nameSessionsWithWords = changes.nameSessionsWithWords.newValue;
+        }
+        if (changes.selectLastActiveTab) {
+            state.selectLastActiveTab = changes.selectLastActiveTab.newValue;
+        }
+        if (changes.maxTabHistory) {
+            const parsed = parseInt(changes.maxTabHistory.newValue, 10);
+            const nextMax = Number.isFinite(parsed) && parsed > 0 ? parsed : state.maxTabHistory;
+            state.maxTabHistory = nextMax;
+            Object.values(state.tabHistory).forEach(history => {
+                if (history.length > nextMax) {
+                    history.splice(0, history.length - nextMax);
+                }
+            });
         }
     }
 });
@@ -1016,40 +1156,54 @@ chrome.tabGroups.onRemoved.addListener(async (group) => {
 
     delete state.liveGroupToBookmark[group.id];
 
-    // NOTE: In native Chrome, removing a group ungroups the tabs; it does NOT close them.
-    // In bookmarks, removing a folder removes children.
-    // So we must MOVE children out before deleting the folder.
+    const sessionId = state.windowToSession[group.windowId];
+    if (!sessionId) {
+        // Fallback: If session not found, just ensure we don't leave empty folders?
+        // But safer to do nothing if we can't determine context.
+        return;
+    }
 
     try {
+        const session = state.sessionsById[sessionId];
+        if (!session) return; // Should be loaded if sessionId exists
+
+        // Distinguish between "Group Closed" (tabs closed) and "Group Ungrouped" (tabs moved out/ungrouped).
+        // - "Closed": Tabs are dead. We want to PERSIST the logical group (folder).
+        // - "Ungrouped": Tabs are alive. We want to DISSOLVE the logical group (flatten tabs).
+
         const children = await chrome.bookmarks.getChildren(bookmarkId);
-        if (children.length > 0) {
-            // Move them to parent (session root)
-            // Where? At the end? Or near where the group was?
-            // "logical tabs groups... can be collapsed... can be moved around like tabs".
-            // If we dissolve the group, tabs should probably stay where the group was.
 
-            const groupNode = await chrome.bookmarks.get(bookmarkId);
-            const parentId = groupNode[0].parentId;
-            const index = groupNode[0].index;
+        // 1. If folder is empty, delete it regardless.
+        if (children.length === 0) {
+            await chrome.bookmarks.remove(bookmarkId);
+        } else {
+            // 2. Check if this is an "Ungroup" operation.
+            // If any logical tab *currently in this group* has live tabs, it means the user likely ungrouped them
+            // (or dragged them out, triggering this removal).
+            // Note: If tabs were closed, onRemoved(tab) would have fired and cleared liveTabIds.
 
-            // Move children to parentId starting at index
-            // We loop backwards or adjust index?
-            // chrome.bookmarks.move is atomic for the item.
-            // If we move item 1 to index, item 2 to index+1...
-            for (let i = 0; i < children.length; i++) {
-                await chrome.bookmarks.move(children[i].id, { parentId: parentId, index: index + i });
+            const tabsInGroup = session.logicalTabs.filter(t => t.groupId === bookmarkId);
+            const hasLiveTabs = tabsInGroup.some(t => t.liveTabIds.length > 0);
+
+            if (hasLiveTabs) {
+                // Ungroup detected: Move children out and delete folder.
+                const groupNode = await chrome.bookmarks.get(bookmarkId);
+                const parentId = groupNode[0].parentId;
+                const index = groupNode[0].index;
+
+                // Move children to parent (flatten)
+                for (let i = 0; i < children.length; i++) {
+                    await chrome.bookmarks.move(children[i].id, { parentId: parentId, index: index + i });
+                }
+                await chrome.bookmarks.remove(bookmarkId);
             }
+            // Else: Closed detected: Preserve folder.
         }
 
-        await chrome.bookmarks.remove(bookmarkId);
-
-        const sessionId = state.windowToSession[group.windowId];
-        if (sessionId) {
-            await reloadSessionAndPreserveState(sessionId, group.windowId);
-            notifySidebarStateUpdated(group.windowId, sessionId);
-        }
+        await reloadSessionAndPreserveState(sessionId, group.windowId);
+        notifySidebarStateUpdated(group.windowId, sessionId);
     } catch (e) {
-        console.error("Failed to remove bookmark folder for group", e);
+        console.error("Failed to handle group removal", e);
     }
 });
 
@@ -1380,15 +1534,6 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
     }, 100);
 });
 
-// Queue for serializing move operations to handle group moves (SHIFT+Drag)
-const moveMutex = new class {
-    constructor() { this.p = Promise.resolve(); }
-    run(fn) {
-        this.p = this.p.then(fn).catch(e => console.error("Mutex error", e));
-        return this.p;
-    }
-}();
-
 chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
     moveMutex.run(async () => {
         if (!state.initialized) await init();
@@ -1477,6 +1622,21 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     const windowId = activeInfo.windowId;
     const tabId = activeInfo.tabId;
 
+    // Update History
+    if (!state.tabHistory[windowId]) state.tabHistory[windowId] = [];
+    const history = state.tabHistory[windowId];
+
+    // Remove existing occurrence to move to end (MRU)
+    const idx = history.indexOf(tabId);
+    if (idx !== -1) history.splice(idx, 1);
+
+    history.push(tabId);
+
+    // Trim
+    if (history.length > state.maxTabHistory) {
+        history.shift();
+    }
+
     const sessionId = state.windowToSession[windowId];
     if (!sessionId) return;
 
@@ -1513,8 +1673,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                             }
 
                             const rootId = await ensureRootFolder();
-                            const baseName = generateSessionName();
-                            const newSessionTitle = formatSessionTitle(baseName, windowId);
+                                const baseName = generateSessionName();
+                                const newSessionTitle = formatSessionTitle(baseName, windowId);
                             const created = await chrome.bookmarks.create({
                                 parentId: rootId,
                                 title: newSessionTitle
@@ -1534,6 +1694,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
                 case "SWITCH_SESSION": {
                     await handleSwitchSession(message.windowId, message.sessionId);
+                    sendResponse({ success: true });
+                    break;
+                }
+                case "DELETE_LOGICAL_GROUP": {
+                    await handleDeleteLogicalGroup(message.windowId, message.groupId);
                     sendResponse({ success: true });
                     break;
                 }
@@ -1812,6 +1977,12 @@ async function handleDeleteLogicalTab(windowId, logicalId) {
 
     // Cleanup live tab mappings and close live tabs
     if (logical.liveTabIds && logical.liveTabIds.length > 0) {
+        // Switch tab if active tab is being closed
+        const activeTab = await chrome.tabs.query({ active: true, windowId }).then(tabs => tabs[0]);
+        if (activeTab && logical.liveTabIds.includes(activeTab.id)) {
+            await activatePreviousTab(windowId, logical.liveTabIds);
+        }
+
         // Close live tabs as requested
         try {
             await chrome.tabs.remove(logical.liveTabIds);
@@ -1827,6 +1998,62 @@ async function handleDeleteLogicalTab(windowId, logicalId) {
     notifySidebarStateUpdated(windowId, sessionId);
 }
 
+async function handleDeleteLogicalGroup(windowId, groupId) {
+    const sessionId = state.windowToSession[windowId];
+    if (!sessionId) return;
+    const session = state.sessionsById[sessionId];
+    if (!session) return;
+
+    const group = session.groups[groupId];
+    if (!group) return;
+
+    // 1. Remove bookmark folder and children
+    try {
+        await chrome.bookmarks.removeTree(groupId);
+    } catch (e) {
+        console.error("Failed to delete bookmark group", e);
+    }
+
+    // 2. Identify logical tabs in this group to close their live counterparts
+    const tabsInGroup = session.logicalTabs.filter(t => t.groupId === groupId);
+    const liveTabsToClose = [];
+
+    tabsInGroup.forEach(t => {
+        if (t.liveTabIds && t.liveTabIds.length > 0) {
+            liveTabsToClose.push(...t.liveTabIds);
+        }
+    });
+
+    // 3. Close live tabs
+    if (liveTabsToClose.length > 0) {
+        // Switch tab if active tab is being closed
+        const activeTab = await chrome.tabs.query({ active: true, windowId }).then(tabs => tabs[0]);
+        if (activeTab && liveTabsToClose.includes(activeTab.id)) {
+            await activatePreviousTab(windowId, liveTabsToClose);
+        }
+
+        try {
+            await chrome.tabs.remove(liveTabsToClose);
+        } catch (e) {
+            console.warn("Failed to close live tabs for deleted group", e);
+        }
+
+        // Clean up tabToLogical mappings
+        liveTabsToClose.forEach(tid => {
+            delete state.tabToLogical[tid];
+        });
+    }
+
+    // 4. Clean up state
+    const liveGroupId = Object.keys(state.liveGroupToBookmark).find(k => state.liveGroupToBookmark[k] === groupId);
+    if (liveGroupId) {
+        delete state.liveGroupToBookmark[liveGroupId];
+    }
+
+    await reloadSessionAndPreserveState(sessionId, windowId);
+    notifySidebarStateUpdated(windowId, sessionId);
+}
+
 async function handleUnmountLogicalTab(windowId, logicalId) {
     const sessionId = state.windowToSession[windowId];
     if (!sessionId) return;
@@ -1838,6 +2065,12 @@ async function handleUnmountLogicalTab(windowId, logicalId) {
     if (logical.liveTabIds.length > 0) {
         const toClose = [...logical.liveTabIds];
         logical.liveTabIds = [];
+
+        // Switch tab if active tab is being closed
+        const activeTab = await chrome.tabs.query({ active: true, windowId }).then(tabs => tabs[0]);
+        if (activeTab && toClose.includes(activeTab.id)) {
+            await activatePreviousTab(windowId, toClose);
+        }
 
         try {
             await chrome.tabs.remove(toClose);
