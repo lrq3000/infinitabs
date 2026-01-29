@@ -442,6 +442,13 @@ function onMessage(message, sender, sendResponse) {
                 return;
             }
 
+            // Capture active search match before rendering updates the DOM
+            let activeSearchId = null;
+            if (searchInput.value) {
+                const activeEl = document.querySelector('.tab-item.active-match');
+                if (activeEl) activeSearchId = activeEl.dataset.id;
+            }
+
             currentSession = newSession;
 
             // Update selector if needed (e.g. if name changed or just bound)
@@ -461,8 +468,19 @@ function onMessage(message, sender, sendResponse) {
             }
             renderSession(currentSession);
             // Re-apply search if exists
-            // Pass false to update results without jumping to the first match on data refresh
-            if (searchInput.value) performSearch(false);
+            if (searchInput.value) {
+                // Pass false to update results without jumping to the first match on data refresh
+                performSearch(false);
+
+                // Restore active match if it still exists in results
+                if (activeSearchId && currentMatches.length > 0) {
+                    const newIndex = currentMatches.findIndex(el => el.dataset.id === activeSearchId);
+                    if (newIndex !== -1) {
+                        currentMatchIndex = newIndex;
+                        currentMatches[currentMatchIndex].classList.add('active-match');
+                    }
+                }
+            }
         }
     } else if (message.type === "HISTORY_UPDATED") {
         loadPastWorkspaces();
