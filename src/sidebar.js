@@ -48,6 +48,8 @@ class SearchController {
     constructor() {
         this.currentMatches = [];
         this.currentMatchIndex = -1;
+        this.searchIndex = new Map(); // token -> Set<HTMLElement>
+        this.cachedTokens = new WeakMap(); // HTMLElement -> Set<string>
 
         // Cache elements
         this.searchInput = document.getElementById('search-input');
@@ -86,6 +88,59 @@ class SearchController {
         }
     }
 
+    tokenize(text) {
+        // Match parseSearchQuery regex \S+ for single words
+        return (text || '').toLowerCase().match(/\S+/g) || [];
+    }
+
+    updateSearchIndex(el, action) {
+        if (!el) return;
+
+        // Groups don't participate in text search
+        if (el.dataset.type === 'group') return;
+
+        if (action === 'remove' || action === 'update') {
+            const oldTokens = this.cachedTokens.get(el);
+            if (oldTokens) {
+                for (const token of oldTokens) {
+                    const set = this.searchIndex.get(token);
+                    if (set) {
+                        set.delete(el);
+                        if (set.size === 0) {
+                            this.searchIndex.delete(token);
+                        }
+                    }
+                }
+                this.cachedTokens.delete(el);
+            }
+        }
+
+        if (action === 'add' || action === 'update') {
+            const tokens = new Set([
+                ...this.tokenize(el.dataset.searchTitle),
+                ...this.tokenize(el.dataset.searchUrl)
+            ]);
+
+            if (tokens.size > 0) {
+                this.cachedTokens.set(el, tokens);
+                for (const token of tokens) {
+                    if (!this.searchIndex.has(token)) {
+                        this.searchIndex.set(token, new Set());
+                    }
+                    this.searchIndex.get(token).add(el);
+                }
+            }
+        }
+    }
+
+    buildSearchIndex() {
+        this.searchIndex.clear();
+        this.cachedTokens = new WeakMap();
+        document.querySelectorAll('.tab-item').forEach(el => {
+            this.updateSearchIndex(el, 'add');
+        });
+    }
+
     parseSearchQuery(query) {
         const terms = [];
         const regex = /"([^"]+)"|(\S+)/g;
@@ -116,20 +171,58 @@ class SearchController {
             this.searchClearBtn.style.display = 'none';
         }
 
+        // Clean up previous matches efficiently
+        if (this.currentMatches) {
+            this.currentMatches.forEach(el => {
+                el.classList.remove('search-match', 'active-match');
+            });
+        }
+
         this.currentMatches = [];
         this.currentMatchIndex = -1;
-
-        const tabItems = document.querySelectorAll('.tab-item');
-        tabItems.forEach(el => {
-            el.classList.remove('search-match', 'active-match');
-        });
 
         if (!query) return;
 
         const terms = this.parseSearchQuery(query);
         if (terms.length === 0) return;
 
-        tabItems.forEach(el => {
+        let candidateElements = new Set();
+        let firstTerm = true;
+
+        // Collect candidates via index
+        // We use Union logic for candidates because the final check is an OR (match ANY term).
+        // (Wait, logic inside loop below says: match ANY term = matches)
+        // So candidates = Union(IndexLookup(Term1), IndexLookup(Term2)...)
+
+        const allQueryTokens = new Set();
+        terms.forEach(({ term }) => {
+            // Split phrase into tokens to lookup in index
+            const subTokens = this.tokenize(term);
+            subTokens.forEach(t => allQueryTokens.add(t));
+        });
+
+        // For each unique token in query, find matching index entries (substring match)
+        // Note: iterating keys is better than iterating elements if vocabulary < elements.
+        // Assuming vocabulary is reasonable.
+        for (const indexToken of this.searchIndex.keys()) {
+            for (const queryToken of allQueryTokens) {
+                if (indexToken.includes(queryToken)) {
+                    const elements = this.searchIndex.get(indexToken);
+                    if (elements) {
+                        for (const el of elements) {
+                            candidateElements.add(el);
+                        }
+                    }
+                    // Optimization: if indexToken matches one query token, we've added its elements.
+                    // No need to check other query tokens for this indexToken?
+                    // Yes, because it's a Union.
+                    break;
+                }
+            }
+        }
+
+        // Filter candidates
+        for (const el of candidateElements) {
             // Optimization: Use cached normalized text
             const title = el.dataset.searchTitle || '';
             const url = el.dataset.searchUrl || '';
@@ -157,7 +250,7 @@ class SearchController {
                 el.classList.add('search-match');
                 this.currentMatches.push(el);
             }
-        });
+        }
 
         // Only navigate to the first match if explicitly requested (e.g. user input), avoiding jumps on background updates
         if (this.currentMatches.length > 0 && navigate) {
@@ -677,6 +770,7 @@ function renderSession(session) {
 
     // Remove excess children
     while (currentChildren.length > itemsToRender.length) {
+        if (searchController) searchController.updateSearchIndex(tabsContainer.lastChild, 'remove');
         tabsContainer.removeChild(tabsContainer.lastChild);
         currentChildren.pop();
     }
@@ -702,6 +796,7 @@ function renderSession(session) {
             }
 
             if (el) {
+                if (searchController) searchController.updateSearchIndex(el, 'remove');
                 tabsContainer.replaceChild(newEl, el);
                 currentChildren[i] = newEl; // Update reference if needed
             } else {
@@ -869,6 +964,7 @@ function createTabElement(tab, session, shouldScroll, groupColor) {
     });
 
     updateTabElement(el, tab, session, shouldScroll, groupColor);
+    if (searchController) searchController.updateSearchIndex(el, 'add');
     return el;
 }
 
@@ -946,6 +1042,8 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
     if (isActive && shouldScroll) {
         scrollElementIntoViewWithContext(el);
     }
+
+    if (searchController) searchController.updateSearchIndex(el, 'update');
 }
 
 /**
