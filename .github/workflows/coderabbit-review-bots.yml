@@ -16,9 +16,11 @@ jobs:
   coderabbit_on_bot_pr:
     # Bots filters
     # Optional safety: ignore PRs from forks (often limited permissions)
+    #if: >
+    #  github.event.pull_request.user.type == 'Bot'
+    #  && (github.event.pull_request.head.repo.full_name == github.repository)
     if: >
-      github.event.pull_request.user.type == 'Bot'
-      && (github.event.pull_request.head.repo.full_name == github.repository)
+      (github.event.pull_request.head.repo.full_name == github.repository)
 
     # (Old behavior) Allow only Jules — kept as a comment
     # if: >

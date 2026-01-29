@@ -8,6 +8,8 @@
   --hover-bg: #eef3f8;
   --active-bg: #e6f7ff;
   --active-border: #1890ff;
+  --selected-bg: #f0f0f0;
+  --selected-border: #ccc;
   --group-bg: #fafafa;
   --group-text: #888;
   --btn-bg: #fff0f0;
@@ -37,8 +39,10 @@ body.dark-mode {
   --header-bg: #252526;
   --border-color: #3e3e42;
   --hover-bg: #2a2d2e;
-  --active-bg: #37373d;
-  --active-border: #0078d4;
+  --active-bg: #1e3a8a;
+  --active-border: #60a5fa;
+  --selected-bg: #37373d;
+  --selected-border: #555;
   --group-bg: #252526;
   --group-text: #aaa;
   --btn-bg: #3e2a2a;
@@ -286,12 +290,6 @@ body.dark-mode .top-level-tab.active {
   background-color: var(--hover-bg);
 }
 
-.tab-item.active-live {
-  font-weight: bold;
-  background-color: var(--active-bg);
-  border-left-color: var(--active-border);
-}
-
 .tab-item.live {
   /* Indicates it is open but not active */
   color: var(--text-color);
@@ -360,15 +358,14 @@ body.dark-mode .tab-delete-btn:hover {
 
 /* Drag and Drop & Selection Styles */
 .tab-item.selected {
-  background-color: #dbeafe;
-  /* Light blue */
-  border-left-color: #3b82f6;
+  background-color: var(--selected-bg);
+  border-left-color: var(--selected-border);
 }
 
-body.dark-mode .tab-item.selected {
-  background-color: #1e3a8a;
-  /* Dark blue */
-  border-left-color: #60a5fa;
+.tab-item.active-live {
+  font-weight: bold;
+  background-color: var(--active-bg);
+  border-left-color: var(--active-border);
 }
 
 .tab-item.dragging,
