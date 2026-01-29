@@ -342,3 +342,4 @@ Here is a non-exhaustive list of complementary **opensource** 3rd-party extensio
 * [TidyMark](https://github.com/PanHywel/TidyMark): Reorganize/group bookmarks (supports cloud or offline ollama).
 * [Bookmarks Summarizer](https://github.com/lrq3000/BookmarkSummarizer): Python app for full text search on content and AI-generated summaries (using cloud or offline ollama). (Untested alternatives: ArchiveBox, LinkWarden, other self-hosted bookmarks managers...).
 * [Wherewasi](https://github.com/Jay-Karia/wherewasi): Temporal and semantic tabs clustering into sessions using cloud Gemini AI.
+* [QuickTabs](https://github.com/babyman/quick-tabs-chrome-extension), to quickly switch to the most recently used (MRU) tabs (includes recently closed ones and bookmarks). Has lots of options, including 2 different fuzzy search implementations, or can choose regex. Can also enable auto switching to last tab on tab close (although infinitabs also does that).
