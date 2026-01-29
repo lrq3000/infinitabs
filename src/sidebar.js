@@ -33,8 +33,6 @@ const crashPopupNoBtn = document.getElementById('crash-popup-no-btn');
 let currentSession = null;
 let currentWindowId = null;
 let isDarkMode = false;
-let currentMatches = [];
-let currentMatchIndex = -1;
 let lastScrolledActiveId = null;
 
 // Selection & Drag State
@@ -45,6 +43,149 @@ let ignoreNextAutoScroll = false;
 
 // Group Collapse State (persisted per group ID or just transient? Task says "can be collapsed". Transient is fine for now.)
 let collapsedGroups = new Set();
+
+class SearchController {
+    constructor() {
+        this.currentMatches = [];
+        this.currentMatchIndex = -1;
+
+        // Cache elements
+        this.searchInput = document.getElementById('search-input');
+        this.searchClearBtn = document.getElementById('search-clear');
+        this.searchPrevBtn = document.getElementById('search-prev');
+        this.searchNextBtn = document.getElementById('search-next');
+        this.locateCurrentBtn = document.getElementById('locate-current');
+
+        this.bindEvents();
+    }
+
+    bindEvents() {
+        // Pass true to enable navigation when user types
+        this.searchInput.addEventListener('input', () => this.performSearch(true));
+        this.searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                this.clearSearch();
+            }
+        });
+        this.searchClearBtn.addEventListener('click', () => this.clearSearch());
+        this.searchPrevBtn.addEventListener('click', () => this.navigateSearch(-1));
+        this.searchNextBtn.addEventListener('click', () => this.navigateSearch(1));
+
+        this.locateCurrentBtn.addEventListener('click', scrollToActiveTab);
+
+        document.addEventListener('keydown', (e) => this.handleKeyDown(e));
+    }
+
+    handleKeyDown(e) {
+        // Ctrl+Shift+F
+        if (e.ctrlKey && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
+            e.preventDefault();
+            this.searchInput.focus();
+        }
+    }
+
+    parseSearchQuery(query) {
+        const terms = [];
+        const regex = /"([^"]+)"|(\S+)/g;
+        let match;
+        while ((match = regex.exec(query)) !== null) {
+            if (match[1]) {
+                // Quoted term
+                terms.push({ term: match[1].toLowerCase(), exact: true });
+            } else {
+                // Regular term
+                terms.push({ term: match[2].toLowerCase(), exact: false });
+            }
+        }
+        return terms;
+    }
+
+    clearSearch() {
+        this.searchInput.value = '';
+        this.performSearch();
+    }
+
+    performSearch(navigate = true) {
+        const query = this.searchInput.value;
+        // Toggle clear button visibility
+        if (query.length > 0) {
+            this.searchClearBtn.style.display = 'block';
+        } else {
+            this.searchClearBtn.style.display = 'none';
+        }
+
+        this.currentMatches = [];
+        this.currentMatchIndex = -1;
+
+        const tabItems = document.querySelectorAll('.tab-item');
+        tabItems.forEach(el => {
+            el.classList.remove('search-match', 'active-match');
+        });
+
+        if (!query) return;
+
+        const terms = this.parseSearchQuery(query);
+        if (terms.length === 0) return;
+
+        tabItems.forEach(el => {
+            // Optimization: Use cached normalized text
+            const title = el.dataset.searchTitle || '';
+            const url = el.dataset.searchUrl || '';
+
+            let matches = false;
+
+            // OR Logic: Match any term
+            for (const { term, exact } of terms) {
+                if (exact) {
+                    // Exact match (must contain the full phrase)
+                    if (title.includes(term) || url.includes(term)) {
+                        matches = true;
+                        break;
+                    }
+                } else {
+                    // Regular match
+                    if (title.includes(term) || url.includes(term)) {
+                        matches = true;
+                        break;
+                    }
+                }
+            }
+
+            if (matches) {
+                el.classList.add('search-match');
+                this.currentMatches.push(el);
+            }
+        });
+
+        // Only navigate to the first match if explicitly requested (e.g. user input), avoiding jumps on background updates
+        if (this.currentMatches.length > 0 && navigate) {
+            this.navigateSearch(1); // Go to first match
+        }
+    }
+
+    navigateSearch(direction) {
+        if (this.currentMatches.length === 0) return;
+
+        // Clear active style on current
+        if (this.currentMatchIndex !== -1 && this.currentMatches[this.currentMatchIndex]) {
+            this.currentMatches[this.currentMatchIndex].classList.remove('active-match');
+        }
+
+        this.currentMatchIndex += direction;
+
+        // Cycle
+        if (this.currentMatchIndex >= this.currentMatches.length) this.currentMatchIndex = 0;
+        if (this.currentMatchIndex < 0) this.currentMatchIndex = this.currentMatches.length - 1;
+
+        const activeEl = this.currentMatches[this.currentMatchIndex];
+        activeEl.classList.add('active-match');
+        scrollElementIntoViewWithContext(activeEl);
+    }
+}
+
+let searchController;
 
 // --- Initialization ---
 
@@ -62,20 +203,7 @@ async function init() {
     settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
     // Search Listeners
-    // Pass true to enable navigation when user types
-    searchInput.addEventListener('input', () => performSearch(true));
-    searchInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-            e.preventDefault();
-            e.stopPropagation();
-            clearSearch();
-        }
-    });
-    searchClearBtn.addEventListener('click', clearSearch);
-    searchPrevBtn.addEventListener('click', () => navigateSearch(-1));
-    searchNextBtn.addEventListener('click', () => navigateSearch(1));
-    locateCurrentBtn.addEventListener('click', scrollToActiveTab);
-    document.addEventListener('keydown', onKeyDown);
+    searchController = new SearchController();
 
     // Workspace Listeners
     reloadWorkspaceBtn.addEventListener('click', onReloadWorkspace);
@@ -462,115 +590,11 @@ function onMessage(message, sender, sendResponse) {
             renderSession(currentSession);
             // Re-apply search if exists
             // Pass false to update results without jumping to the first match on data refresh
-            if (searchInput.value) performSearch(false);
+            if (searchController && searchInput.value) searchController.performSearch(false);
         }
     } else if (message.type === "HISTORY_UPDATED") {
         loadPastWorkspaces();
     }
-}
-
-// --- Search Logic ---
-
-function parseSearchQuery(query) {
-    const terms = [];
-    const regex = /"([^"]+)"|(\S+)/g;
-    let match;
-    while ((match = regex.exec(query)) !== null) {
-        if (match[1]) {
-            // Quoted term
-            terms.push({ term: match[1].toLowerCase(), exact: true });
-        } else {
-            // Regular term
-            terms.push({ term: match[2].toLowerCase(), exact: false });
-        }
-    }
-    return terms;
-}
-
-function clearSearch() {
-    searchInput.value = '';
-    performSearch();
-}
-
-// Added navigate parameter to control auto-focus behavior
-/**
- * Recomputes search matches.
- * `@param` {boolean} navigate When true, move to the first match (and scroll); when false, only highlight matches.
- */
-function performSearch(navigate = true) {
-    const query = searchInput.value;
-    // Toggle clear button visibility
-    if (query.length > 0) {
-        searchClearBtn.style.display = 'block';
-    } else {
-        searchClearBtn.style.display = 'none';
-    }
-
-    currentMatches = [];
-    currentMatchIndex = -1;
-
-    const tabItems = document.querySelectorAll('.tab-item');
-    tabItems.forEach(el => {
-        el.classList.remove('search-match', 'active-match');
-    });
-
-    if (!query) return;
-
-    const terms = parseSearchQuery(query);
-    if (terms.length === 0) return;
-
-    tabItems.forEach(el => {
-        const title = el.querySelector('.tab-title').textContent.toLowerCase();
-        const url = el.title.toLowerCase(); // Render sets title attribute to URL
-
-        let matches = false;
-
-        // OR Logic: Match any term
-        for (const { term, exact } of terms) {
-            if (exact) {
-                // Exact match (must contain the full phrase)
-                if (title.includes(term) || url.includes(term)) {
-                    matches = true;
-                    break;
-                }
-            } else {
-                // Regular match
-                if (title.includes(term) || url.includes(term)) {
-                    matches = true;
-                    break;
-                }
-            }
-        }
-
-        if (matches) {
-            el.classList.add('search-match');
-            currentMatches.push(el);
-        }
-    });
-
-    // Only navigate to the first match if explicitly requested (e.g. user input), avoiding jumps on background updates
-    if (currentMatches.length > 0 && navigate) {
-        navigateSearch(1); // Go to first match
-    }
-}
-
-function navigateSearch(direction) {
-    if (currentMatches.length === 0) return;
-
-    // Clear active style on current
-    if (currentMatchIndex !== -1 && currentMatches[currentMatchIndex]) {
-        currentMatches[currentMatchIndex].classList.remove('active-match');
-    }
-
-    currentMatchIndex += direction;
-
-    // Cycle
-    if (currentMatchIndex >= currentMatches.length) currentMatchIndex = 0;
-    if (currentMatchIndex < 0) currentMatchIndex = currentMatches.length - 1;
-
-    const activeEl = currentMatches[currentMatchIndex];
-    activeEl.classList.add('active-match');
-    scrollElementIntoViewWithContext(activeEl);  // prefer this over: `activeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });`
 }
 
 function scrollToActiveTab() {
@@ -591,14 +615,6 @@ function scrollToActiveTab() {
                 if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
             });
         }
-    }
-}
-
-function onKeyDown(e) {
-    // Ctrl+Shift+F
-    if (e.ctrlKey && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
-        e.preventDefault();
-        searchInput.focus();
     }
 }
 
@@ -919,6 +935,12 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
     if (icon.src !== faviconUrl) icon.src = faviconUrl;
 
     if (title.textContent !== tab.title) title.textContent = tab.title;
+
+    // Cache normalized search text
+    const normalizedTitle = (tab.title || '').toLowerCase();
+    const normalizedUrl = (tab.url || '').toLowerCase();
+    if (el.dataset.searchTitle !== normalizedTitle) el.dataset.searchTitle = normalizedTitle;
+    if (el.dataset.searchUrl !== normalizedUrl) el.dataset.searchUrl = normalizedUrl;
 
     // Scroll
     if (isActive && shouldScroll) {
