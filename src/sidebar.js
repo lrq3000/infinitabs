@@ -62,7 +62,8 @@ async function init() {
     settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
     // Search Listeners
-    searchInput.addEventListener('input', performSearch);
+    // Pass true to enable navigation when user types
+    searchInput.addEventListener('input', () => performSearch(true));
     searchInput.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
             e.preventDefault();
@@ -460,7 +461,8 @@ function onMessage(message, sender, sendResponse) {
             }
             renderSession(currentSession);
             // Re-apply search if exists
-            if (searchInput.value) performSearch();
+            // Pass false to update results without jumping to the first match on data refresh
+            if (searchInput.value) performSearch(false);
         }
     } else if (message.type === "HISTORY_UPDATED") {
         loadPastWorkspaces();
@@ -490,9 +492,13 @@ function clearSearch() {
     performSearch();
 }
 
-function performSearch() {
+// Added navigate parameter to control auto-focus behavior
+/**
+ * Recomputes search matches.
+ * `@param` {boolean} navigate When true, move to the first match (and scroll); when false, only highlight matches.
+ */
+function performSearch(navigate = true) {
     const query = searchInput.value;
-
     // Toggle clear button visibility
     if (query.length > 0) {
         searchClearBtn.style.display = 'block';
@@ -542,7 +548,8 @@ function performSearch() {
         }
     });
 
-    if (currentMatches.length > 0) {
+    // Only navigate to the first match if explicitly requested (e.g. user input), avoiding jumps on background updates
+    if (currentMatches.length > 0 && navigate) {
         navigateSearch(1); // Go to first match
     }
 }
