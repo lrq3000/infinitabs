@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 language: en-US
 tone_instructions: ''
-enable_free_tier: true
+enable_free_tier: false  # free tier != open-source tier, even if free, the open-source tier offers "free reviews forever for public repositories. No additional setup is required"
 early_access: true
 reviews:
   profile: assertive
