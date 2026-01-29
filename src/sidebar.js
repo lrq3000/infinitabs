@@ -1,10 +1,12 @@
 // sidebar.js
+import { parseGroupTitle } from './utils.js';
 
 const sessionSelector = document.getElementById('session-selector');
 const renameSessionBtn = document.getElementById('rename-session-btn');
 const refreshSessionsBtn = document.getElementById('refresh-sessions');
 const unmountOthersBtn = document.getElementById('unmount-others-btn');
 const themeToggleBtn = document.getElementById('theme-toggle-btn');
+const settingsBtn = document.getElementById('settings-btn');
 const tabsContainer = document.getElementById('tabs-container');
 
 // Search Elements
@@ -12,8 +14,9 @@ const searchInput = document.getElementById('search-input');
 const searchClearBtn = document.getElementById('search-clear');
 const searchPrevBtn = document.getElementById('search-prev');
 const searchNextBtn = document.getElementById('search-next');
+const locateCurrentBtn = document.getElementById('locate-current');
 
-// Global/Workspace Elements
+// Workspace Elements
 const pastWorkspacesSelector = document.getElementById('past-workspaces-selector');
 const reloadWorkspaceBtn = document.getElementById('reload-workspace-btn');
 const favoriteWorkspaceBtn = document.getElementById('favorite-workspace-btn');
@@ -40,6 +43,9 @@ let lastSelectedLogicalId = null; // For shift-click range
 let draggedLogicalIds = [];
 let ignoreNextAutoScroll = false;
 
+// Group Collapse State (persisted per group ID or just transient? Task says "can be collapsed". Transient is fine for now.)
+let collapsedGroups = new Set();
+
 // --- Initialization ---
 
 async function init() {
@@ -53,6 +59,7 @@ async function init() {
     sessionSelector.addEventListener('change', onSessionSwitch);
     unmountOthersBtn.addEventListener('click', onUnmountOthers);
     themeToggleBtn.addEventListener('click', toggleTheme);
+    settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
     // Search Listeners
     searchInput.addEventListener('input', performSearch);
@@ -66,6 +73,7 @@ async function init() {
     searchClearBtn.addEventListener('click', clearSearch);
     searchPrevBtn.addEventListener('click', () => navigateSearch(-1));
     searchNextBtn.addEventListener('click', () => navigateSearch(1));
+    locateCurrentBtn.addEventListener('click', scrollToActiveTab);
     document.addEventListener('keydown', onKeyDown);
 
     // Workspace Listeners
@@ -100,6 +108,20 @@ async function init() {
     await refreshCurrentSession();
     await loadPastWorkspaces();
     await checkCrashStatus();
+    chrome.storage.local.get({ activeTabBg: '', selectedTabBg: '' }, (items) => {
+        applyUserColors(items.activeTabBg, items.selectedTabBg);
+    });
+
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local') {
+            if (changes.activeTabBg || changes.selectedTabBg) {
+                applyUserColors(
+                    changes.activeTabBg ? changes.activeTabBg.newValue : undefined,
+                    changes.selectedTabBg ? changes.selectedTabBg.newValue : undefined
+                );
+            }
+        }
+    });
 
     // Top-level tabs logic
     const topLevelTabs = document.querySelectorAll('.top-level-tab');
@@ -139,8 +161,26 @@ function toggleTheme() {
     setTheme(!isDarkMode);
 }
 
+function applyUserColors(activeBg, selectedBg) {
+    if (activeBg !== undefined) applyColorVar('--active-bg', activeBg);
+    if (selectedBg !== undefined) applyColorVar('--selected-bg', selectedBg);
+}
+
+function applyColorVar(varName, value) {
+    const v = (value || '').trim();
+    if (v && CSS.supports('color', v)) {
+        document.body.style.setProperty(varName, v);
+    } else {
+        document.body.style.removeProperty(varName);
+    }
+}
+
 async function loadSessionsList() {
-    const response = await chrome.runtime.sendMessage({ type: "GET_SESSION_LIST" });
+    const response = await chrome.runtime.sendMessage({
+        type: "GET_SESSION_LIST"
+    }).catch((err) => {
+        console.error("Failed to get session list", err);
+    });
     const sessions = response.sessions || [];
 
     sessionSelector.innerHTML = '<option value="" disabled>Select Session...</option>';
@@ -161,6 +201,8 @@ async function refreshCurrentSession() {
     const response = await chrome.runtime.sendMessage({
         type: "GET_CURRENT_SESSION_STATE",
         windowId: currentWindowId
+    }).catch((err) => {
+        console.error("Failed to get current session state", err);
     });
 
     if (response.session) {
@@ -181,6 +223,9 @@ async function onSessionSwitch(e) {
         type: "SWITCH_SESSION",
         windowId: currentWindowId,
         sessionId: newSessionId
+    }).catch((err) => {
+        console.error("Failed to switch session", err);
+        alert("Failed to switch session. Please try again.");
     });
 
     // The background will reply, but we also expect a STATE_UPDATED message
@@ -207,9 +252,9 @@ async function onRenameSession() {
             }
             // The state update message from background will refresh the UI, but we also need to refresh the list of sessions
             await loadSessionsList();
-        } catch (e) {
-            console.error("Failed to rename session", e);
-            alert("Failed to rename session.");
+        } catch (err) {
+            console.error("Failed to rename session", err);
+            alert("Failed to rename session. Please try again.");
         }
     }
 }
@@ -229,6 +274,8 @@ async function onUnmountOthers() {
             type: "UNMOUNT_ALL_EXCEPT",
             windowId: currentWindowId,
             logicalIdsToKeep: toKeep
+        }).catch((err) => {
+            console.error("Failed to unmount all logical tabs except active one", err);
         });
     }
 
@@ -236,7 +283,11 @@ async function onUnmountOthers() {
 }
 
 async function loadPastWorkspaces() {
-    const response = await chrome.runtime.sendMessage({ type: "GET_WORKSPACE_HISTORY" });
+    const response = await chrome.runtime.sendMessage({
+        type: "GET_WORKSPACE_HISTORY"
+    }).catch((err) => {
+        console.error("Failed to get workspace history", err);
+    });
     const history = response.history || [];
     const favorites = response.favorites || [];
 
@@ -283,6 +334,9 @@ async function onReloadWorkspace() {
         type: "RESTORE_WORKSPACE",
         snapshotId: id,
         source: isFav ? 'favorite' : 'history'
+    }).catch((err) => {
+        console.error("Failed to restore workspace", err);
+        alert("Failed to restore workspace. Please try again.");
     });
 }
 
@@ -292,13 +346,20 @@ async function onFavoriteWorkspace() {
         await chrome.runtime.sendMessage({
             type: "SAVE_FAVORITE_WORKSPACE",
             name: name
+        }).catch((err) => {
+            console.error("Failed to save favorite workspace", err);
+            alert("Failed to save favorite workspace. Please try again.");
         });
         await loadPastWorkspaces();
     }
 }
 
 async function checkCrashStatus() {
-    const response = await chrome.runtime.sendMessage({ type: "CHECK_CRASH_STATUS" });
+    const response = await chrome.runtime.sendMessage({
+        type: "CHECK_CRASH_STATUS"
+    }).catch((err) => {
+        console.error("Failed to check crash status", err);
+    });
     if (response.crashed && response.lastWorkspace) {
         crashRecoveryContainer.style.display = 'block';
         crashRecoveryContainer.dataset.workspace = JSON.stringify(response.lastWorkspace);
@@ -316,6 +377,9 @@ async function onCrashRestore() {
         await chrome.runtime.sendMessage({
             type: "RESTORE_WORKSPACE",
             snapshot: ws
+        }).catch((err) => {
+            console.error("Failed to restore workspace", err);
+            alert("Failed to restore workspace. Please try again.");
         });
         crashRecoveryContainer.style.display = 'none';
         crashPopup.style.display = 'none';
@@ -502,6 +566,27 @@ function navigateSearch(direction) {
     activeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
+function scrollToActiveTab() {
+    const activeEl = document.querySelector('.tab-item.active-live');
+    if (activeEl) {
+        activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else if (currentSession?.lastActiveLogicalTabId) {
+        // Active tab might be in a collapsed group - find and expand it
+        const activeTab = currentSession.logicalTabs.find(
+            t => t.logicalId === currentSession.lastActiveLogicalTabId
+        );
+        if (activeTab?.groupId && collapsedGroups.has(activeTab.groupId)) {
+            collapsedGroups.delete(activeTab.groupId);
+            renderSession(currentSession);
+            // Scroll after re-render
+            requestAnimationFrame(() => {
+                const el = document.querySelector('.tab-item.active-live');
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            });
+        }
+    }
+}
+
 function onKeyDown(e) {
     // Ctrl+Shift+F
     if (e.ctrlKey && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
@@ -532,22 +617,40 @@ function renderSession(session) {
     }
 
     const itemsToRender = [];
-
-    session.logicalTabs.forEach(tab => {
-        itemsToRender.push({ type: 'tab', id: tab.logicalId, data: tab, index: tab.indexInSession });
-    });
+    const groupColors = {};
 
     Object.values(session.groups).forEach(group => {
-        itemsToRender.push({ type: 'group', id: group.groupId, data: group, index: group.indexInSession });
+        const { name, color } = parseGroupTitle(group.title);
+        itemsToRender.push({
+            type: 'group',
+            id: group.groupId,
+            data: group,
+            index: group.indexInSession,
+            color: color,
+            displayName: name
+        });
+        groupColors[group.groupId] = color;
+    });
+
+    session.logicalTabs.forEach(tab => {
+        // Skip rendering if group is collapsed
+        if (tab.groupId && collapsedGroups.has(tab.groupId)) {
+            return;
+        }
+
+        itemsToRender.push({
+            type: 'tab',
+            id: tab.logicalId,
+            data: tab,
+            index: tab.indexInSession,
+            groupColor: tab.groupId ? (groupColors[tab.groupId] || 'grey') : null
+        });
     });
 
     itemsToRender.sort((a, b) => a.index - b.index);
 
     // Diff and patch DOM
     const currentChildren = Array.from(tabsContainer.children);
-
-    // If length mismatch or major structural change, simpler to clear if the list size changed significantly?
-    // For robustness, let's iterate and match.
 
     // Remove excess children
     while (currentChildren.length > itemsToRender.length) {
@@ -562,17 +665,17 @@ function renderSession(session) {
         if (el && el.dataset.id === item.id && el.dataset.type === item.type) {
             // Update existing
             if (item.type === 'group') {
-                updateGroupElement(el, item.data);
+                updateGroupElement(el, item.data, item.displayName, item.color);
             } else {
-                updateTabElement(el, item.data, session, shouldScroll);
+                updateTabElement(el, item.data, session, shouldScroll, item.groupColor);
             }
         } else {
             // Create new
             let newEl;
             if (item.type === 'group') {
-                newEl = createGroupElement(item.data);
+                newEl = createGroupElement(item.data, item.displayName, item.color);
             } else {
-                newEl = createTabElement(item.data, session, shouldScroll);
+                newEl = createTabElement(item.data, session, shouldScroll, item.groupColor);
             }
 
             if (el) {
@@ -585,24 +688,79 @@ function renderSession(session) {
     });
 }
 
-function createGroupElement(group) {
+function createGroupElement(group, displayName, color) {
     const el = document.createElement('div');
     el.className = 'group-header';
     el.dataset.id = group.groupId;
     el.dataset.type = 'group';
     el.draggable = true;
     setupDragHandlers(el);
-    updateGroupElement(el, group);
+
+    // Header Structure: [Arrow] [Title]
+    const toggle = document.createElement('span');
+    toggle.className = 'group-toggle';
+    toggle.textContent = '▼';
+    toggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (collapsedGroups.has(group.groupId)) {
+            collapsedGroups.delete(group.groupId);
+            el.classList.remove('collapsed');
+        } else {
+            collapsedGroups.add(group.groupId);
+            el.classList.add('collapsed');
+        }
+        // Re-render to show/hide tabs
+        if (currentSession) renderSession(currentSession);
+    });
+    el.appendChild(toggle);
+
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'group-title-text';
+    el.appendChild(titleSpan);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'group-delete-btn';
+    deleteBtn.textContent = '×';
+    deleteBtn.title = 'Delete logical group and all tabs within';
+    deleteBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (confirm("Are you sure you want to delete this group? This will delete all tabs inside it.")) {
+             chrome.runtime.sendMessage({
+                type: "DELETE_LOGICAL_GROUP",
+                windowId: currentWindowId,
+                groupId: group.groupId
+            }).catch((err) => {
+                console.error("Failed to delete group", err);
+                alert("Failed to delete group. Please try again.");
+            });
+        }
+    });
+    el.appendChild(deleteBtn);
+
+    updateGroupElement(el, group, displayName, color);
     return el;
 }
 
-function updateGroupElement(el, group) {
-    if (el.textContent !== group.title) {
-        el.textContent = group.title;
+function updateGroupElement(el, group, displayName, color) {
+    const titleSpan = el.querySelector('.group-title-text');
+    if (titleSpan.textContent !== displayName) {
+        titleSpan.textContent = displayName;
+    }
+
+    // Update color styles
+    // Remove old color classes
+    el.className = el.className.split(' ').filter(c => !c.startsWith('group-bg-')).join(' ');
+    el.classList.add(`group-bg-${color}`);
+
+    // Update collapsed state
+    if (collapsedGroups.has(group.groupId)) {
+        if (!el.classList.contains('collapsed')) el.classList.add('collapsed');
+    } else {
+        if (el.classList.contains('collapsed')) el.classList.remove('collapsed');
     }
 }
 
-function createTabElement(tab, session, shouldScroll) {
+function createTabElement(tab, session, shouldScroll, groupColor) {
     const el = document.createElement('div');
     el.dataset.id = tab.logicalId;
     el.dataset.type = 'tab';
@@ -610,21 +768,40 @@ function createTabElement(tab, session, shouldScroll) {
     setupDragHandlers(el);
 
     // Structure
+    // [GroupLine] (if grouped)
     // <span class="live-indicator"></span>
     // <img class="tab-icon" src="...">
     // <span class="tab-title">...</span>
     // <button class="tab-delete-btn">x</button>
+
+    if (groupColor) {
+        const line = document.createElement('div');
+        line.className = 'group-color-line';
+        el.appendChild(line);
+    }
 
     const indicatorWrapper = document.createElement('div');
     indicatorWrapper.className = 'live-indicator-wrapper';
     indicatorWrapper.title = 'Close live tab (keep bookmark)';
     indicatorWrapper.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (tab.liveTabIds.length > 0) {
+
+        // Look up latest tab status from currentSession
+        let currentTab;
+        if (currentSession && currentSession.logicalTabs) {
+            const found = currentSession.logicalTabs.find(t => t.logicalId === tab.logicalId);
+            currentTab = found;
+        }
+
+        // skip the unmount if the tab is no longer in the current session, rather than relying on potentially stale data
+        if (currentTab && currentTab.liveTabIds.length > 0) {
             chrome.runtime.sendMessage({
                 type: "UNMOUNT_LOGICAL_TAB",
                 windowId: currentWindowId,
                 logicalId: tab.logicalId
+            }).catch((err) => {
+                console.error("Failed to unmount logical tab", err);
+                alert("Failed to unmount logical tab. Please try again.");
             });
         }
     });
@@ -655,6 +832,9 @@ function createTabElement(tab, session, shouldScroll) {
                     type: "DELETE_LOGICAL_TAB",
                     windowId: currentWindowId,
                     logicalId: tab.logicalId
+                }).catch((err) => {
+                    console.error("Failed to delete logical tab", err);
+                    alert("Failed to delete logical tab. Please try again.");
                 });
             }
         });
@@ -665,11 +845,11 @@ function createTabElement(tab, session, shouldScroll) {
         handleTabClick(e, tab.logicalId);
     });
 
-    updateTabElement(el, tab, session, shouldScroll);
+    updateTabElement(el, tab, session, shouldScroll, groupColor);
     return el;
 }
 
-function updateTabElement(el, tab, session, shouldScroll) {
+function updateTabElement(el, tab, session, shouldScroll, groupColor) {
     const isLive = tab.liveTabIds.length > 0;
     const isActive = session.lastActiveLogicalTabId === tab.logicalId;
     const isSelected = selectedLogicalIds.has(tab.logicalId);
@@ -683,17 +863,23 @@ function updateTabElement(el, tab, session, shouldScroll) {
 
     if (isSelected) className += ' selected';
 
-    // Preserve search match if present (handled by performSearch, but we might be overwriting classes)
-    // Ideally search should re-run or we preserve the class.
-    // Since performSearch runs after render if input exists, it will fix it.
-
     if (el.className !== className) {
-        // We might lose 'search-match' here.
-        // Let's verify if we need to re-add search classes.
-        // Actually `renderSession` is called on update. 
-        // If we overwrite className, we lose search highlights until `performSearch` runs again.
-        // `onMessage` calls `renderSession` then `performSearch`. So it's fine.
         el.className = className;
+    }
+
+    // Group line color
+    const line = el.querySelector('.group-color-line');
+    if (groupColor) {
+        if (!line) {
+            const newLine = document.createElement('div');
+            newLine.className = 'group-color-line';
+            el.insertBefore(newLine, el.firstChild);
+        } else {
+            // Update color class
+            line.className = `group-color-line group-line-${groupColor}`;
+        }
+    } else if (line) {
+        line.remove();
     }
 
     // Tooltip
@@ -703,7 +889,26 @@ function updateTabElement(el, tab, session, shouldScroll) {
     const icon = el.querySelector('.tab-icon');
     const title = el.querySelector('.tab-title');
 
-    const faviconUrl = chrome.runtime.getURL("/_favicon/") + "?pageUrl=" + encodeURIComponent(tab.url) + "&size=16";
+    let defaultFaviconUrl = chrome.runtime.getURL("/_favicon/") + "?pageUrl=" + encodeURIComponent(tab.url) + "&size=16";
+    let faviconUrl = defaultFaviconUrl;
+
+    if (tab.favIconUrl) {
+        // Validation: If it points to an extension resource, it might be stale.
+        // We can't synchronously check existence, but we can rely on error handling.
+        faviconUrl = tab.favIconUrl;
+    }
+
+    // Attach error handler to fallback
+    // We re-attach every time to ensure the closure captures the correct defaultFaviconUrl
+    icon.onerror = (e) => {
+         // Fallback to default if custom/stale icon fails
+         if (icon.src !== defaultFaviconUrl) {
+             console.warn(`Failed to load favicon: ${icon.src}. Falling back to default.`, e);
+             icon.onerror = null; // prevent repeat loop if fallback also fails
+             icon.src = defaultFaviconUrl;
+         }
+    };
+
     if (icon.src !== faviconUrl) icon.src = faviconUrl;
 
     if (title.textContent !== tab.title) title.textContent = tab.title;
@@ -786,6 +991,8 @@ function handleTabClick(e, logicalId) {
             type: "FOCUS_OR_MOUNT_TAB",
             windowId: currentWindowId,
             logicalId: logicalId
+        }).catch((err) => {
+            console.error("Failed to focus or mount logical tab", err);
         });
     }
 
@@ -893,6 +1100,9 @@ function onDrop(e) {
         logicalIds: draggedLogicalIds,
         targetLogicalId: targetId,
         position: position
+    }).catch((err) => {
+        console.error("Failed to move logical tab", err);
+        alert("Failed to move logical tab. Please try again.");
     });
 }
 

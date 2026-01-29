@@ -1,0 +1,49 @@
+name: Trigger CodeRabbitAI reviews automatically on bot PRs (once, incl. drafts)
+
+on:
+  pull_request:
+    types:
+      - opened
+      # - reopened            # to redo on PR close/reopen
+      # - synchronize         # to redo on each commit
+      # - ready_for_review    # to redo when draft PR -> ready for review
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  coderabbit_on_bot_pr:
+    # Bots filters
+    # Optional safety: ignore PRs from forks (often limited permissions)
+    #if: >
+    #  github.event.pull_request.user.type == 'Bot'
+    #  && (github.event.pull_request.head.repo.full_name == github.repository)
+    if: >
+      (github.event.pull_request.head.repo.full_name == github.repository)
+
+    # (Old behavior) Allow only Jules — kept as a comment
+    # if: >
+    #   (endsWith(github.actor, '[bot]') || github.actor == 'jules' || github.actor == 'jules-ai[bot]')
+    #   && (github.event.pull_request.head.repo.full_name == github.repository)
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Add @coderabbitai review comment (once)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.pull_request.number;
+
+            // Déclenche CodeRabbit même si PR draft
+            await github.rest.issues.createComment({
+              owner, repo, issue_number,
+              body: '@coderabbitai review'
+            });
+
+            // Post @coderabbitai review as a comment
+            // Can also do @coderabbitai full review to avoid doing an incremental review, see https://docs.coderabbit.ai/reference/review-commands
+            core.info('Posted @coderabbitai review');

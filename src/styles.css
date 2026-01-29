@@ -8,6 +8,8 @@
   --hover-bg: #eef3f8;
   --active-bg: #e6f7ff;
   --active-border: #1890ff;
+  --selected-bg: #f0f0f0;
+  --selected-border: #ccc;
   --group-bg: #fafafa;
   --group-text: #888;
   --btn-bg: #fff0f0;
@@ -18,6 +20,17 @@
   --search-match-bg: #fff7b3;
   /* Light yellow */
   --search-match-active-outline: #1890ff;
+
+  /* Tab Group Colors */
+  --group-grey: #dadce0;
+  --group-blue: #8ab4f8;
+  --group-red: #f28b82;
+  --group-yellow: #fdd663;
+  --group-green: #81c995;
+  --group-pink: #ff8bcb;
+  --group-purple: #c58af9;
+  --group-cyan: #78d9ec;
+  --group-orange: #fcad70;
 }
 
 body.dark-mode {
@@ -26,8 +39,10 @@ body.dark-mode {
   --header-bg: #252526;
   --border-color: #3e3e42;
   --hover-bg: #2a2d2e;
-  --active-bg: #37373d;
-  --active-border: #0078d4;
+  --active-bg: #1e3a8a;
+  --active-border: #60a5fa;
+  --selected-bg: #37373d;
+  --selected-border: #555;
   --group-bg: #252526;
   --group-text: #aaa;
   --btn-bg: #3e2a2a;
@@ -38,6 +53,17 @@ body.dark-mode {
   --search-match-bg: #5a5a2a;
   /* Darker yellow/olive */
   --search-match-active-outline: #0078d4;
+
+  /* Tab Group Colors (Dark Mode) */
+  --group-grey: #5f6368;
+  --group-blue: #394457; /* Adjusted for readability */
+  --group-red: #5c2b29;
+  --group-yellow: #63521d;
+  --group-green: #2c5237;
+  --group-pink: #632d48;
+  --group-purple: #4a2c66;
+  --group-cyan: #264e56;
+  --group-orange: #663d21;
 }
 
 body {
@@ -141,7 +167,14 @@ body.dark-mode .top-level-tab.active {
   align-items: center;
 }
 
-#theme-toggle-btn {
+.header-left-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+#theme-toggle-btn,
+#settings-btn {
   background: none;
   border: none;
   cursor: pointer;
@@ -150,7 +183,8 @@ body.dark-mode .top-level-tab.active {
   border-radius: 4px;
 }
 
-#theme-toggle-btn:hover {
+#theme-toggle-btn:hover,
+#settings-btn:hover {
   background-color: var(--hover-bg);
 }
 
@@ -219,7 +253,8 @@ body.dark-mode .top-level-tab.active {
 }
 
 #search-prev,
-#search-next {
+#search-next,
+#locate-current {
   cursor: pointer;
   background: none;
   border: 1px solid #ccc;
@@ -230,7 +265,8 @@ body.dark-mode .top-level-tab.active {
 }
 
 #search-prev:hover,
-#search-next:hover {
+#search-next:hover,
+#locate-current:hover {
   background-color: var(--hover-bg);
 }
 
@@ -252,12 +288,6 @@ body.dark-mode .top-level-tab.active {
 
 .tab-item:hover {
   background-color: var(--hover-bg);
-}
-
-.tab-item.active-live {
-  font-weight: bold;
-  background-color: var(--active-bg);
-  border-left-color: var(--active-border);
 }
 
 .tab-item.live {
@@ -328,15 +358,14 @@ body.dark-mode .tab-delete-btn:hover {
 
 /* Drag and Drop & Selection Styles */
 .tab-item.selected {
-  background-color: #dbeafe;
-  /* Light blue */
-  border-left-color: #3b82f6;
+  background-color: var(--selected-bg);
+  border-left-color: var(--selected-border);
 }
 
-body.dark-mode .tab-item.selected {
-  background-color: #1e3a8a;
-  /* Dark blue */
-  border-left-color: #60a5fa;
+.tab-item.active-live {
+  font-weight: bold;
+  background-color: var(--active-bg);
+  border-left-color: var(--active-border);
 }
 
 .tab-item.dragging,
@@ -387,19 +416,85 @@ body.dark-mode .group-header.dragging {
   font-weight: bold;
   font-size: 11px;
   text-transform: uppercase;
-  color: var(--group-text);
+  color: var(--text-color);
   background-color: var(--group-bg);
   border-top: 1px solid var(--border-color);
   border-bottom: 1px solid var(--border-color);
   margin-top: 5px;
+  display: flex;
+  align-items: center;
+  cursor: default; /* Not selectable */
+  position: relative; /* Required for absolute positioning of delete button */
 }
 
 .group-header:first-child {
   margin-top: 0;
 }
 
+/* Group Delete Button */
+.group-delete-btn {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: none;
+  background-color: var(--group-bg);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  z-index: 10;
+  padding: 2px 6px;
+  color: #888;
+  font-weight: bold;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.group-header:hover .group-delete-btn {
+  display: block;
+}
+
+.group-delete-btn:hover {
+  color: #d00;
+  background-color: #fee;
+}
+
+body.dark-mode .group-delete-btn {
+  background-color: var(--group-bg);
+  color: #aaa;
+}
+
+body.dark-mode .group-delete-btn:hover {
+  color: #ff6b6b;
+  background-color: #4e3535;
+}
+
+/* Toggle Arrow for Groups (Collapsible) */
+.group-toggle {
+    margin-right: 5px;
+    cursor: pointer;
+    font-size: 10px;
+    width: 12px;
+    display: inline-block;
+    text-align: center;
+    transition: transform 0.2s;
+}
+.group-header.collapsed .group-toggle {
+    transform: rotate(-90deg);
+}
+
+
 .tab-item.indented {
-  padding-left: 20px;
+  padding-left: 10px; /* Base padding */
+  display: flex;
+  align-items: stretch; /* Stretch to fill height */
+}
+
+.group-color-line {
+    width: 3px;
+    margin-right: 7px; /* 10px + 3px + 7px = 20px total indent visually roughly */
+    flex-shrink: 0;
+    border-radius: 1px;
 }
 
 /* Indicators */
@@ -537,3 +632,24 @@ body.dark-mode .live-indicator-wrapper:hover {
 .crash-popup .secondary-btn:hover {
   background-color: rgba(255, 255, 255, 0.1);
 }
+
+/* Group Colors Utility Classes (dynamically applied) */
+.group-bg-grey { background-color: var(--group-grey); }
+.group-bg-blue { background-color: var(--group-blue); }
+.group-bg-red { background-color: var(--group-red); }
+.group-bg-yellow { background-color: var(--group-yellow); }
+.group-bg-green { background-color: var(--group-green); }
+.group-bg-pink { background-color: var(--group-pink); }
+.group-bg-purple { background-color: var(--group-purple); }
+.group-bg-cyan { background-color: var(--group-cyan); }
+.group-bg-orange { background-color: var(--group-orange); }
+
+.group-line-grey { background-color: var(--group-grey); }
+.group-line-blue { background-color: var(--group-blue); }
+.group-line-red { background-color: var(--group-red); }
+.group-line-yellow { background-color: var(--group-yellow); }
+.group-line-green { background-color: var(--group-green); }
+.group-line-pink { background-color: var(--group-pink); }
+.group-line-purple { background-color: var(--group-purple); }
+.group-line-cyan { background-color: var(--group-cyan); }
+.group-line-orange { background-color: var(--group-orange); }
