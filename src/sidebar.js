@@ -1,4 +1,5 @@
 // sidebar.js
+import { parseGroupTitle } from './utils.js';
 
 const sessionSelector = document.getElementById('session-selector');
 const renameSessionBtn = document.getElementById('rename-session-btn');
@@ -107,6 +108,20 @@ async function init() {
     await refreshCurrentSession();
     await loadPastWorkspaces();
     await checkCrashStatus();
+    chrome.storage.local.get({ activeTabBg: '', selectedTabBg: '' }, (items) => {
+        applyUserColors(items.activeTabBg, items.selectedTabBg);
+    });
+
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local') {
+            if (changes.activeTabBg || changes.selectedTabBg) {
+                applyUserColors(
+                    changes.activeTabBg ? changes.activeTabBg.newValue : undefined,
+                    changes.selectedTabBg ? changes.selectedTabBg.newValue : undefined
+                );
+            }
+        }
+    });
 
     // Top-level tabs logic
     const topLevelTabs = document.querySelectorAll('.top-level-tab');
@@ -144,6 +159,20 @@ function setTheme(dark) {
 
 function toggleTheme() {
     setTheme(!isDarkMode);
+}
+
+function applyUserColors(activeBg, selectedBg) {
+    if (activeBg !== undefined) applyColorVar('--active-bg', activeBg);
+    if (selectedBg !== undefined) applyColorVar('--selected-bg', selectedBg);
+}
+
+function applyColorVar(varName, value) {
+    const v = (value || '').trim();
+    if (v && CSS.supports('color', v)) {
+        document.body.style.setProperty(varName, v);
+    } else {
+        document.body.style.removeProperty(varName);
+    }
 }
 
 async function loadSessionsList() {

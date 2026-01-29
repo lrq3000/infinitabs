@@ -147,7 +147,13 @@ function runInSandbox(storageData, extraSetup) {
 
     if (extraSetup) extraSetup(sandbox);
 
-    const scriptContent = fs.readFileSync('src/background.js', 'utf8');
+    // Mock WORD_LIST
+    sandbox.WORD_LIST = ['apple', 'banana', 'cherry'];
+
+    let scriptContent = fs.readFileSync('src/background.js', 'utf8');
+    // Strip imports for VM execution (since we mock them in sandbox)
+    scriptContent = scriptContent.replace(/import .* from .*/g, '');
+
     vm.createContext(sandbox);
     vm.runInContext(scriptContent, sandbox);
 

@@ -1,13 +1,13 @@
 // utils.js
 
-function formatGroupTitle(title, color) {
+export function formatGroupTitle(title, color) {
     // If title is empty, Chrome uses "Group".
     const safeTitle = title || "Group";
     const safeColor = color || "grey";
     return `${safeTitle} [${safeColor}]`;
 }
 
-function parseGroupTitle(fullTitle) {
+export function parseGroupTitle(fullTitle) {
     // Format: "Name [color]"
     const match = fullTitle.match(/^(.*?) \[([a-z]+)\]$/);
     if (match) {
