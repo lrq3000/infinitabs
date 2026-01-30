@@ -590,7 +590,9 @@ function onMessage(message, sender, sendResponse) {
             renderSession(currentSession);
             // Re-apply search if exists
             // Pass false to update results without jumping to the first match on data refresh
-            if (searchController && searchInput.value) searchController.performSearch(false);
+            if (searchController && searchController.searchInput?.value) {
+                searchController.performSearch(false);
+            }
         }
     } else if (message.type === "HISTORY_UPDATED") {
         loadPastWorkspaces();
