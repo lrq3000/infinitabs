@@ -3,6 +3,7 @@
   "name": "InfiniTabs",
   "version": "0.4.4",
   "description": "Unlimited tabs. Zero clutter. Near-zero RAM.",
+  "homepage_url": "https://github.com/lrq3000/infinitabs,",
   "permissions": [
     "tabs",
     "bookmarks",
