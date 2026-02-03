@@ -120,6 +120,21 @@ async function activatePreviousTab(windowId, excludingTabIds = []) {
 }
 
 /**
+ * Creates a new session folder in bookmarks.
+ * @param {number|null} windowId - The window ID to associate with the session title.
+ * @returns {Promise<chrome.bookmarks.BookmarkTreeNode>} The created bookmark folder.
+ */
+async function createNewSessionFolder(windowId) {
+    const rootId = await ensureRootFolder();
+    const baseName = generateSessionName();
+    const newSessionTitle = formatSessionTitle(baseName, windowId);
+    return await chrome.bookmarks.create({
+        parentId: rootId,
+        title: newSessionTitle
+    });
+}
+
+/**
  * Gets or creates a bookmark folder for a given live group ID.
  * Uses a lock mechanism to prevent duplicate folders from race conditions.
  * @param {number} groupId - The live group ID.
@@ -984,12 +999,7 @@ function init(options = {}) {
                         await bindWindowToSession(win.id, sessionFoldersByWindowId[win.id]);
                     } else {
                         // Create a new session folder
-                        const baseName = generateSessionName();
-                        const newSessionTitle = formatSessionTitle(baseName, win.id);
-                        const created = await chrome.bookmarks.create({
-                            parentId: rootId,
-                            title: newSessionTitle
-                        });
+                        const created = await createNewSessionFolder(win.id);
                         await bindWindowToSession(win.id, created.id);
                     }
                 }
@@ -1069,13 +1079,7 @@ chrome.windows.onCreated.addListener(async (window) => {
         console.log(`onCreated: Binding new session for window ${windowId} immediately.`);
 
         try {
-            const rootId = await ensureRootFolder();
-            const baseName = generateSessionName();
-            const newSessionTitle = formatSessionTitle(baseName, windowId);
-            const created = await chrome.bookmarks.create({
-                parentId: rootId,
-                title: newSessionTitle
-            });
+            const created = await createNewSessionFolder(windowId);
             await bindWindowToSession(windowId, created.id);
         } catch (e) {
             console.error("onCreated: Failed to bind session", e);
@@ -1671,13 +1675,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                                 return;
                             }
 
-                            const rootId = await ensureRootFolder();
-                                const baseName = generateSessionName();
-                                const newSessionTitle = formatSessionTitle(baseName, windowId);
-                            const created = await chrome.bookmarks.create({
-                                parentId: rootId,
-                                title: newSessionTitle
-                            });
+                            const created = await createNewSessionFolder(windowId);
                             await bindWindowToSession(windowId, created.id);
                             sendResponse({ session: state.sessionsById[created.id] });
                         } else {
@@ -1689,6 +1687,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 case "GET_SESSION_LIST": {
                     const list = await getSessionList();
                     sendResponse({ sessions: list });
+                    break;
+                }
+                case "CREATE_NEW_SESSION": {
+                    const created = await createNewSessionFolder(message.windowId);
+                    await handleSwitchSession(message.windowId, created.id);
+                    sendResponse({ success: true });
                     break;
                 }
                 case "SWITCH_SESSION": {
