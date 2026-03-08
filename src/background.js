@@ -680,6 +680,66 @@ async function syncExistingTabsInWindowToSession(windowId, sessionId) {
 }
 
 /**
+ * Tries to match a list of live tabs to a session ID from a given pool based on persisted mounted tabs.
+ * Useful to detect if the browser restored windows/tabs from a previous session.
+ * @param {Array<chrome.tabs.Tab>} tabs
+ * @param {Array<string>} sessionIds
+ * @returns {Promise<string|null>} The best matching sessionId or null.
+ */
+async function matchWindowToSession(tabs, sessionIds) {
+    if (tabs.length === 0) return null;
+
+    let bestMatchSessionId = null;
+    let maxMatchedUrls = 0;
+
+    // Filter out trivial tabs that don't uniquely identify a session
+    const tabUrls = tabs.map(t => t.url).filter(url =>
+        url && url !== "chrome://newtab/" && url !== "edge://newtab/" && url !== "about:blank"
+    );
+
+    if (tabUrls.length === 0) return null;
+
+    for (const sessionId of sessionIds) {
+        const mountedLogicalIds = state.sessionMountedTabs[sessionId];
+        if (!mountedLogicalIds || mountedLogicalIds.length === 0) continue;
+
+        // Ensure session is loaded to check URLs
+        let session = state.sessionsById[sessionId];
+        if (!session) {
+            try {
+                session = await loadSessionFromBookmarks(sessionId);
+            } catch(e) {
+                continue;
+            }
+        }
+
+        let matchCount = 0;
+        // Check how many of the restored tab URLs match the expected mounted URLs for this session
+        for (let i = 0; i < mountedLogicalIds.length; i++) {
+             const logicalId = mountedLogicalIds[i];
+             const logicalTab = session.logicalTabs.find(lt => lt.logicalId === logicalId);
+             if (logicalTab) {
+                 // Check if the sequence of restored URLs roughly aligns with the persisted sequence
+                 if (i < tabUrls.length && tabUrls[i] === logicalTab.url) {
+                     matchCount++;
+                 } else if (tabUrls.includes(logicalTab.url)) {
+                     // At least the URL is present in the restored window
+                     matchCount += 0.5;
+                 }
+             }
+        }
+
+        // We require a relatively strong match (e.g. at least one exact matching URL)
+        if (matchCount > maxMatchedUrls && matchCount >= 1) {
+            maxMatchedUrls = matchCount;
+            bestMatchSessionId = sessionId;
+        }
+    }
+
+    return bestMatchSessionId;
+}
+
+/**
  * Workspace Tracking Logic
  */
 
@@ -850,9 +910,41 @@ async function restoreWorkspace(snapshot) {
 
     try {
         const currentWindows = await chrome.windows.getAll();
+        const matchedWindowIds = new Set();
+
+        // Optimize: Match existing windows if the browser restored them
+        const sessionIdsToRestore = snapshot.sessions.map(s => s.sessionId);
+
+        for (const win of currentWindows) {
+             if (win.type !== 'normal' && win.type !== 'popup') continue;
+             const tabs = await chrome.tabs.query({ windowId: win.id });
+             const matchedSessionId = await matchWindowToSession(tabs, sessionIdsToRestore);
+             if (matchedSessionId) {
+                 // Prevent double matching
+                 const idx = sessionIdsToRestore.indexOf(matchedSessionId);
+                 if (idx !== -1) {
+                     sessionIdsToRestore.splice(idx, 1); // remove from pool
+                     matchedWindowIds.add(win.id);
+                     console.log(`restoreWorkspace: Matched existing window ${win.id} to session ${matchedSessionId}`);
+
+                     // Bind existing window to session instead of creating a new one
+                     try {
+                         await bindWindowToSession(win.id, matchedSessionId);
+                     } catch (err) {
+                         console.error(`restoreWorkspace: Failed to bind matched session ${matchedSessionId}`, err);
+                     }
+                 }
+             }
+        }
+
         const newWindowIds = [];
 
         for (const sessionInfo of snapshot.sessions) {
+            // Skip if this session was already matched to an existing window
+            if (!sessionIdsToRestore.includes(sessionInfo.sessionId)) {
+                continue;
+            }
+
             const createData = {
                 url: "about:blank", // Will be populated by session bind
                 state: sessionInfo.state || 'normal'
@@ -899,13 +991,15 @@ async function restoreWorkspace(snapshot) {
             }
         }
 
-        // Close old windows
+        // Close old windows ONLY if they were not matched to a session
         for (const win of currentWindows) {
             if (win.type === 'normal' || win.type === 'popup') {
-                try {
-                    await chrome.windows.remove(win.id);
-                } catch (e) {
-                    console.warn("Failed to close window", win.id, e);
+                if (!matchedWindowIds.has(win.id)) {
+                    try {
+                        await chrome.windows.remove(win.id);
+                    } catch (e) {
+                        console.warn("Failed to close window", win.id, e);
+                    }
                 }
             }
         }
@@ -969,11 +1063,15 @@ function init(options = {}) {
                     }
                 }
 
+                const allSessionIds = sessionFolders.map(f => f.id);
+
                 for (const win of windows) {
                     const storedSessionId = state.windowToSession[win.id];
                     if (storedSessionId) {
                         try {
                             await bindWindowToSession(win.id, storedSessionId);
+                            const idx = allSessionIds.indexOf(storedSessionId);
+                            if (idx !== -1) allSessionIds.splice(idx, 1);
                         } catch (e) {
                             console.warn(`Could not restore session ${storedSessionId} for window ${win.id}`, e);
                             delete state.windowToSession[win.id];
@@ -982,15 +1080,34 @@ function init(options = {}) {
                     } else if (sessionFoldersByWindowId[win.id]) {
                         // Found an existing session folder for this window
                         await bindWindowToSession(win.id, sessionFoldersByWindowId[win.id]);
+                        const idx = allSessionIds.indexOf(sessionFoldersByWindowId[win.id]);
+                        if (idx !== -1) allSessionIds.splice(idx, 1);
                     } else {
-                        // Create a new session folder
-                        const baseName = generateSessionName();
-                        const newSessionTitle = formatSessionTitle(baseName, win.id);
-                        const created = await chrome.bookmarks.create({
-                            parentId: rootId,
-                            title: newSessionTitle
-                        });
-                        await bindWindowToSession(win.id, created.id);
+                        // Try to match the window to a previous session (in case the browser restored tabs but changed window ID)
+                        let matchedSessionId = null;
+                        try {
+                            const tabs = await chrome.tabs.query({ windowId: win.id });
+                            // Check if these tabs match a known session from our persisted sessionMountedTabs
+                            matchedSessionId = await matchWindowToSession(tabs, allSessionIds);
+                        } catch (e) {
+                            console.warn("Could not query tabs for window", win.id, e);
+                        }
+
+                        if (matchedSessionId) {
+                            console.log(`init: Matched restored window ${win.id} to past session ${matchedSessionId}`);
+                            await bindWindowToSession(win.id, matchedSessionId);
+                            const idx = allSessionIds.indexOf(matchedSessionId);
+                            if (idx !== -1) allSessionIds.splice(idx, 1);
+                        } else {
+                            // Create a new session folder
+                            const baseName = generateSessionName();
+                            const newSessionTitle = formatSessionTitle(baseName, win.id);
+                            const created = await chrome.bookmarks.create({
+                                parentId: rootId,
+                                title: newSessionTitle
+                            });
+                            await bindWindowToSession(win.id, created.id);
+                        }
                     }
                 }
 
