@@ -31,12 +31,12 @@ This file provides instructions for automated coding agents working in this repo
 - PRs are merged into `main` via **Squash and merge** (1 PR → 1 commit on `main`) by a human operator once the PR is ready.
 
 ## Technical style
-*   Simple, maintainable solutions over clever ones
-*   Comprehensive test coverage with edge cases
-*   Local-first and privacy-preserving
-*   Modular, composable, Unix philosophy
-*   The Bitter Lesson: prefer general methods that scale with compute
+*   Simple, maintainable solutions over clever ones.
+*   The Bitter Lesson: Prefer general methods that scale with computation over domain-specific optimizations.
+*   When unit tests need to be made: Comprehensive test coverage with edge cases.
+*   Modular, composable, Unix philosophy.
 *   YAGNI: build for today, design for adaptability
+*   Local-first and privacy-preserving.
 
 ---
 
