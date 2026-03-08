@@ -4,6 +4,7 @@ import { parseGroupTitle } from './utils.js';
 const sessionSelector = document.getElementById('session-selector');
 const renameSessionBtn = document.getElementById('rename-session-btn');
 const refreshSessionsBtn = document.getElementById('refresh-sessions');
+const newSessionBtn = document.getElementById('new-session-btn');
 const unmountOthersBtn = document.getElementById('unmount-others-btn');
 const themeToggleBtn = document.getElementById('theme-toggle-btn');
 const settingsBtn = document.getElementById('settings-btn');
@@ -56,6 +57,7 @@ async function init() {
     // Setup Listeners
     renameSessionBtn.addEventListener('click', onRenameSession);
     refreshSessionsBtn.addEventListener('click', loadSessionsList);
+    newSessionBtn.addEventListener('click', onNewSession);
     sessionSelector.addEventListener('change', onSessionSwitch);
     unmountOthersBtn.addEventListener('click', onUnmountOthers);
     themeToggleBtn.addEventListener('click', toggleTheme);
@@ -230,6 +232,16 @@ async function onSessionSwitch(e) {
 
     // The background will reply, but we also expect a STATE_UPDATED message
     // which will trigger re-render.
+}
+
+async function onNewSession() {
+    await chrome.runtime.sendMessage({
+        type: "CREATE_NEW_SESSION",
+        windowId: currentWindowId
+    }).catch((err) => {
+        console.error("Failed to create new session", err);
+        alert("Failed to create new session. Please try again.");
+    });
 }
 
 async function onRenameSession() {

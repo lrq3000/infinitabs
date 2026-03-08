@@ -152,7 +152,8 @@ body.dark-mode .top-level-tab.active {
 }
 
 #rename-session-btn,
-#refresh-sessions {
+#refresh-sessions,
+#new-session-btn {
   padding: 2px 6px;
   cursor: pointer;
   background: none;
