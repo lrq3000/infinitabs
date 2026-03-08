@@ -30,6 +30,14 @@ This file provides instructions for automated coding agents working in this repo
 - `main` must remain **linear** (no merge commits on `main`).
 - PRs are merged into `main` via **Squash and merge** (1 PR → 1 commit on `main`) by a human operator once the PR is ready.
 
+## Technical style
+*   Simple, maintainable solutions over clever ones
+*   Comprehensive test coverage with edge cases
+*   Local-first and privacy-preserving
+*   Modular, composable, Unix philosophy
+*   The Bitter Lesson: prefer general methods that scale with compute
+*   YAGNI: build for today, design for adaptability
+
 ---
 
 ## Agent conversation behavior
