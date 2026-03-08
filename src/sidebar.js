@@ -883,7 +883,8 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
     }
 
     // Tooltip
-    if (el.title !== tab.url) el.title = tab.url;
+    const tooltip = `${tab.title}\n${tab.url}`;
+    if (el.title !== tooltip) el.title = tooltip;
 
     // Content
     const icon = el.querySelector('.tab-icon');
