@@ -1210,10 +1210,7 @@ chrome.tabGroups.onRemoved.addListener(async (group) => {
 
 const pendingMounts = []; // Queue of { logicalId, windowId }
 
-chrome.tabs.onCreated.addListener(async (tab) => {
-    // Ensure init if SW woke up just for this event
-    if (!state.initialized) await init();
-
+async function handleNewTab(tab) {
     const windowId = tab.windowId;
 
     const pendingIndex = pendingMounts.findIndex(p => p.windowId === windowId);
@@ -1230,9 +1227,6 @@ chrome.tabs.onCreated.addListener(async (tab) => {
                     attachLiveTabToLogical(tab, logical);
 
                     // Sync Group Mapping if logical has group and live doesn't (or mismatch)
-                    // If logical is in a group, we should try to put live tab in that group?
-                    // This is handled in syncExistingTabsInWindowToSession usually, but here it's dynamic.
-                    // If we open a logical tab that is in a group, the live tab should be grouped.
                     if (logical.groupId) {
                         await ensureLiveGroupForLogicalTab(tab.id, logical.groupId, session);
                     }
@@ -1249,26 +1243,17 @@ chrome.tabs.onCreated.addListener(async (tab) => {
     const sessionId = state.windowToSession[windowId];
     if (!sessionId) return;
 
-    // Note: We use current state snapshot to calculate insertion, 
-    // but we must re-fetch state later to merge correctly.
     const currentSessionSnapshot = state.sessionsById[sessionId];
     if (!currentSessionSnapshot) return;
 
     let insertParentId = sessionId;
     let insertIndex = null;
 
-    // Check if new tab is in a group
     if (tab.groupId !== -1) {
-        // If live tab is in a group, we want to put bookmark in the corresponding folder
         const bookmarkId = state.liveGroupToBookmark[tab.groupId];
         if (bookmarkId) {
             insertParentId = bookmarkId;
         } else {
-            // Group exists live but not mapped?
-            // Wait for onCreated logic to create folder?
-            // onCreated fires before onUpdated(tabs) usually?
-            // If tab is created with groupId, maybe we haven't seen the group yet?
-            // We can try to create it here too if missing.
             try {
                 const groupInfo = await chrome.tabGroups.get(tab.groupId);
                 const groupTitle = formatGroupTitle(groupInfo.title, groupInfo.color);
@@ -1283,7 +1268,6 @@ chrome.tabs.onCreated.addListener(async (tab) => {
             }
         }
     } else if (tab.index > 0) {
-        // Not grouped, try to follow neighbor
         const tabs = await chrome.tabs.query({ windowId, index: tab.index - 1 });
         if (tabs.length > 0) {
             const prevTab = tabs[0];
@@ -1295,23 +1279,13 @@ chrome.tabs.onCreated.addListener(async (tab) => {
                         const nodes = await chrome.bookmarks.get(prevLogical.bookmarkId);
                         if (nodes && nodes.length > 0) {
                             const prevNode = nodes[0];
-                            // If prev bookmark is in a folder (group) but new tab is NOT in a group,
-                            // we must put the new bookmark after the group folder, in the session root.
-                            // Unless the parent is the session root itself.
-
                             if (prevNode.parentId !== sessionId) {
-                                // Previous bookmark is inside a subfolder (group)
-                                // New tab is not in a group (checked earlier)
-                                // So we place it in session root, after the group folder.
-
-                                // Find the group folder node to determine where to insert
                                 const groupFolderNodes = await chrome.bookmarks.get(prevNode.parentId);
                                 if (groupFolderNodes && groupFolderNodes.length > 0) {
                                     insertParentId = sessionId;
                                     insertIndex = groupFolderNodes[0].index + 1;
                                 }
                             } else {
-                                // Previous bookmark is at root level
                                 insertParentId = prevNode.parentId;
                                 insertIndex = prevNode.index + 1;
                             }
@@ -1334,15 +1308,11 @@ chrome.tabs.onCreated.addListener(async (tab) => {
     }
 
     const createdBookmark = await chrome.bookmarks.create(bookmarkData);
-
-    // Reload session structure using helper
     const reloadedSession = await reloadSessionAndPreserveState(sessionId, windowId);
 
     const newLogical = reloadedSession.logicalTabs.find(l => l.bookmarkId === createdBookmark.id);
     if (newLogical) {
         attachLiveTabToLogical(tab, newLogical);
-
-        // Fix for race condition: If the new tab is active, update the selection immediately
         if (tab.active) {
              const session = state.sessionsById[sessionId];
              if (session) {
@@ -1352,6 +1322,124 @@ chrome.tabs.onCreated.addListener(async (tab) => {
     }
 
     notifySidebarStateUpdated(windowId, sessionId);
+}
+
+chrome.tabs.onCreated.addListener(async (tab) => {
+    if (!state.initialized) await init();
+    await handleNewTab(tab);
+});
+
+chrome.tabs.onAttached.addListener((tabId, attachInfo) => {
+    moveMutex.run(async () => {
+        if (!state.initialized) await init();
+
+        const logicalId = state.tabToLogical[tabId];
+        const newWindowId = attachInfo.newWindowId;
+        const newSessionId = state.windowToSession[newWindowId];
+
+        if (!newSessionId) return;
+
+        if (logicalId) {
+            let oldSessionId = null;
+            let logicalTab = null;
+            for (const sid in state.sessionsById) {
+                const s = state.sessionsById[sid];
+                const l = s.logicalTabs.find(t => t.logicalId === logicalId);
+                if (l) {
+                    oldSessionId = sid;
+                    logicalTab = l;
+                    break;
+                }
+            }
+
+            if (oldSessionId && oldSessionId !== newSessionId) {
+                let insertParentId = newSessionId;
+                let insertIndex = 0;
+                const tabs = await chrome.tabs.query({ windowId: newWindowId });
+                const currentTab = tabs[attachInfo.newPosition];
+
+                if (currentTab) {
+                    if (currentTab.groupId !== -1) {
+                        const bookmarkId = await getOrCreateGroupBookmark(currentTab.groupId, newWindowId);
+                        if (bookmarkId) {
+                            insertParentId = bookmarkId;
+                        }
+                    } else if (attachInfo.newPosition > 0) {
+                        let anchorLogical = null;
+                        for (let i = attachInfo.newPosition - 1; i >= 0; i--) {
+                            const t = tabs[i];
+                            const lid = state.tabToLogical[t.id];
+                            if (lid) {
+                                const s = state.sessionsById[newSessionId];
+                                if (s) {
+                                    const l = s.logicalTabs.find(x => x.logicalId === lid);
+                                    if (l) {
+                                        anchorLogical = l;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (anchorLogical) {
+                            try {
+                                const nodes = await chrome.bookmarks.get(anchorLogical.bookmarkId);
+                                if (nodes && nodes.length > 0) {
+                                    const anchorNode = nodes[0];
+                                    if (anchorNode.parentId !== newSessionId) {
+                                        const groupFolderNodes = await chrome.bookmarks.get(anchorNode.parentId);
+                                        if (groupFolderNodes && groupFolderNodes.length > 0) {
+                                            insertParentId = newSessionId;
+                                            insertIndex = groupFolderNodes[0].index + 1;
+                                        }
+                                    } else {
+                                        insertParentId = anchorNode.parentId;
+                                        insertIndex = anchorNode.index + 1;
+                                    }
+                                }
+                            } catch (e) {}
+                        }
+                    }
+                }
+
+                try {
+                    const moveProps = { parentId: insertParentId };
+                    if (insertIndex !== null) moveProps.index = insertIndex;
+                    await chrome.bookmarks.move(logicalTab.bookmarkId, moveProps);
+                } catch (e) {
+                    console.error("Failed to move bookmark on attach", e);
+                }
+
+                // Reload Old Session
+                const oldWindowId = Object.keys(state.windowToSession).find(w => state.windowToSession[w] === oldSessionId);
+                if (oldWindowId) {
+                    await reloadSessionAndPreserveState(oldSessionId, parseInt(oldWindowId));
+                    notifySidebarStateUpdated(parseInt(oldWindowId), oldSessionId);
+                } else {
+                     const s = await loadSessionFromBookmarks(oldSessionId);
+                     state.sessionsById[oldSessionId] = s;
+                }
+
+                // Reload New Session
+                const reloadedNewSession = await reloadSessionAndPreserveState(newSessionId, newWindowId);
+                notifySidebarStateUpdated(newWindowId, newSessionId);
+
+                // Update mapping
+                const newLogical = reloadedNewSession.logicalTabs.find(l => l.bookmarkId === logicalTab.bookmarkId);
+                if (newLogical) {
+                    attachLiveTabToLogical({ id: tabId, favIconUrl: logicalTab.favIconUrl }, newLogical);
+                }
+            }
+        } else {
+            // Not mapped, treat as new
+            try {
+                const tab = await chrome.tabs.get(tabId);
+                await handleNewTab(tab);
+            } catch (e) {
+                console.warn("Attached tab not found", e);
+            }
+        }
+    });
 });
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
@@ -2089,15 +2177,11 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
     if (!session) return;
 
     // Validate target
-    // targetLogicalId might be a logicalTabId OR a groupId (string)
-    // We need to resolve to a bookmark node.
     let targetBookmarkId = null;
-    let targetIsGroup = false;
 
     // Check if target is a group in the session
     if (session.groups[targetLogicalId]) {
         targetBookmarkId = targetLogicalId; // GroupId is the bookmark ID for the folder
-        targetIsGroup = true;
     } else {
         const targetLogical = session.logicalTabs.find(l => l.logicalId === targetLogicalId);
         if (targetLogical) {
@@ -2106,25 +2190,57 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
             // Maybe target is the session itself?
             if (targetLogicalId === sessionId) {
                 targetBookmarkId = sessionId;
-                targetIsGroup = true;
             }
         }
     }
 
     if (!targetBookmarkId) return;
 
-    // Collect bookmark IDs to move
+    // Collect bookmark IDs to move and identify source sessions
     const bookmarksToMove = [];
+    const sourceSessionsToReload = new Set();
+    const liveTabsToMoveCrossWindow = []; // { logical: oldLogical, oldSession: session }
+
     for (const lid of logicalIds) {
-        const l = session.logicalTabs.find(t => t.logicalId === lid);
-        if (l) {
+        // 1. Try to find in current session (common case)
+        let l = session.logicalTabs.find(t => t.logicalId === lid);
+        let s = session;
+        let g = session.groups[lid];
+
+        // 2. If not found, search other sessions
+        if (!l && !g) {
+            for (const sid in state.sessionsById) {
+                if (sid === sessionId) continue;
+                const candidate = state.sessionsById[sid];
+                l = candidate.logicalTabs.find(t => t.logicalId === lid);
+                g = candidate.groups[lid];
+                if (l || g) {
+                    s = candidate;
+                    sourceSessionsToReload.add(sid);
+                    break;
+                }
+            }
+        }
+
+        if (g) {
+            // It's a group
+            bookmarksToMove.push(g.groupId);
+            if (s.sessionId !== sessionId) {
+                // Moving a group cross-window: move all live tabs inside it
+                const tabsInGroup = s.logicalTabs.filter(t => t.groupId === g.groupId);
+                tabsInGroup.forEach(t => {
+                    if (t.liveTabIds.length > 0) {
+                        liveTabsToMoveCrossWindow.push({ logical: t, oldSession: s });
+                    }
+                });
+            }
+        } else if (l) {
+            // It's a tab
             bookmarksToMove.push(l.bookmarkId);
-        } else {
-            // Could be a group move? Not implemented in UI yet but good to be safe
-            // For now assume only tabs.
-            const g = session.groups[lid];
-            if (g) {
-                bookmarksToMove.push(g.groupId); // Move the folder
+            if (s.sessionId !== sessionId) {
+                if (l.liveTabIds.length > 0) {
+                    liveTabsToMoveCrossWindow.push({ logical: l, oldSession: s });
+                }
             }
         }
     }
@@ -2135,14 +2251,10 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
     let parentId, index;
 
     if (position === 'inside') {
-        // Must be a folder/group
         parentId = targetBookmarkId;
-        // Append to end
-        // Getting children count is async
         const children = await chrome.bookmarks.getChildren(parentId);
         index = children.length;
     } else {
-        // 'before' or 'after' relative to target
         const targetNodes = await chrome.bookmarks.get(targetBookmarkId);
         if (!targetNodes || targetNodes.length === 0) return;
         const targetNode = targetNodes[0];
@@ -2160,28 +2272,99 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
         await chrome.bookmarks.move(bid, { parentId: parentId, index: index + i });
     }
 
-    // Update state using helper
+    // Reload target session
     const reloadedSession = await reloadSessionAndPreserveState(sessionId, windowId);
 
-    // Sync Live Groups: If we moved logical tabs INTO a group, we should group the live tabs.
-    // If we moved OUT of a group, ungroup.
-    // This is handled via 'onMoved' listener? No, we just did a bookmark move.
-    // We need to explicitly update live state.
+    // Reload source sessions
+    for (const sid of sourceSessionsToReload) {
+        // Find window ID for this session
+        const wid = Object.keys(state.windowToSession).find(w => state.windowToSession[w] === sid);
+        if (wid) {
+            await reloadSessionAndPreserveState(sid, parseInt(wid));
+            notifySidebarStateUpdated(parseInt(wid), sid);
+        } else {
+            // Just reload memory
+            state.sessionsById[sid] = await loadSessionFromBookmarks(sid);
+        }
+    }
 
-    // For each moved logical tab, check its new group status in reloadedSession
-    for (const lid of logicalIds) {
-        const logical = reloadedSession.logicalTabs.find(l => l.logicalId === lid);
-        if (logical && logical.liveTabIds.length > 0) {
+    // Handle Cross-Window Live Tabs
+    if (liveTabsToMoveCrossWindow.length > 0) {
+        // We moved the bookmarks, now we need to move the live tabs.
+        // For each old logical tab, we need to find the corresponding NEW logical tab in the target session.
+        // We match by bookmarkId (which stays constant).
+
+        for (const item of liveTabsToMoveCrossWindow) {
+            const oldLogical = item.logical;
+            const newLogical = reloadedSession.logicalTabs.find(t => t.bookmarkId === oldLogical.bookmarkId);
+
+            if (newLogical) {
+                const oldTabIds = [...oldLogical.liveTabIds];
+                const validOldTabs = [];
+                for (const tid of oldTabIds) {
+                    try {
+                        const t = await chrome.tabs.get(tid);
+                        if (t && t.windowId !== windowId) validOldTabs.push(t);
+                    } catch(e) {}
+                }
+
+                if (validOldTabs.length > 0) {
+                    // Update mappings BEFORE move to prevent onAttached from interfering
+                    for (const t of validOldTabs) {
+                        delete state.tabToLogical[t.id];
+                        attachLiveTabToLogical(t, newLogical);
+                    }
+
+                    try {
+                        const moveIds = validOldTabs.map(t => t.id);
+                        await chrome.tabs.move(moveIds, { windowId: windowId, index: -1 });
+
+                        // Handle grouping in new window if needed
+                        if (newLogical.groupId) {
+                            for (const t of validOldTabs) {
+                                await ensureLiveGroupForLogicalTab(t.id, newLogical.groupId, reloadedSession);
+                            }
+                        }
+                    } catch(e) {
+                        console.warn("Failed to move live tabs cross-window", e);
+                    }
+                }
+            }
+        }
+    }
+
+    // Sync Live Groups and Order (Same-window or Cross-window post-move)
+    // For moved logical tabs that are now in target session:
+    // We already moved bookmarks. We handled cross-window live tab creation above.
+    // We still need to ensure:
+    // 1. Grouping is correct (handled above for cross-window, but what about same-window moved into/out of group?)
+    // 2. Order is correct (for same-window moves mostly).
+
+    // Logic for same-window moves (or cross-window results) to ensure order/grouping matches logical state.
+    // ... (Use previous logic but adapted to scan reloadedSession)
+
+    // For each logical ID that is NOW in the target session:
+    // (Note: logical IDs from cross-window move CHANGED because GUIDs are regenerated on reload unless preserved.
+    // Wait. reloadSessionAndPreserveState preserves GUIDs if it finds match by bookmarkID in previous state.
+    // But previous state of target session did NOT have these tabs.
+    // So they have NEW GUIDs.
+    // So `logicalIds` argument (containing OLD GUIDs) is useless for finding them in reloadedSession if they came from another window.
+
+    // We need a way to track them. Bookmark IDs.
+
+    const relevantBookmarkIds = bookmarksToMove;
+
+    // Find these in reloadedSession
+    const movedLogicals = reloadedSession.logicalTabs.filter(l => relevantBookmarkIds.includes(l.bookmarkId) || (l.groupId && relevantBookmarkIds.includes(l.groupId)));
+
+    // Ensure grouping
+    for (const logical of movedLogicals) {
+        if (logical.liveTabIds.length > 0) {
             if (logical.groupId) {
-                // Should be in a group.
-                // We assume user wants live tabs grouped if moving bookmark into a group
-                // Use the new helper
-                // Note: we iterate liveTabIds, which is array
                 for (const tid of logical.liveTabIds) {
                     await ensureLiveGroupForLogicalTab(tid, logical.groupId, session);
                 }
             } else {
-                // Should be ungrouped
                 try {
                     await chrome.tabs.ungroup(logical.liveTabIds);
                 } catch(e) {}
@@ -2189,118 +2372,53 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
         }
     }
 
-    // Sync Live Tabs Order
-    // Move corresponding live tabs to match new logical position
+    // Ensure Order
+    // ... Previous logic relied on `logicalIds`. Now we use `movedLogicals`.
 
-    // We moved bookmark(s). Now we need to reorder live tabs to match the new logical order.
-    // Strategy:
-    // 1. Identify where we moved the logical tabs in the new session.
-    // 2. Find the closest preceding logical tab that has a live tab (anchor).
-    // 3. Move the live tabs of the moved logical tabs to after the anchor.
+    if (movedLogicals.length > 0) {
+        const firstMoved = movedLogicals[0]; // Assuming array order matches
+        const firstMovedIndex = reloadedSession.logicalTabs.indexOf(firstMoved);
 
-    // We can assume that dragging a set of tabs keeps them contiguous in the destination.
-    // logicalIds contains the IDs of the moved tabs.
-    // reloadedSession has the new order.
+        if (firstMovedIndex !== -1) {
+            // Find Anchor
+            let liveAnchorIndex = -1;
+            for (let i = firstMovedIndex - 1; i >= 0; i--) {
+                const prevLogical = reloadedSession.logicalTabs[i];
+                if (prevLogical.liveTabIds.length > 0) {
+                    try {
+                        const lastLiveTabId = prevLogical.liveTabIds[prevLogical.liveTabIds.length - 1];
+                        const anchorTab = await chrome.tabs.get(lastLiveTabId);
+                        liveAnchorIndex = anchorTab.index;
+                        break;
+                    } catch (e) { }
+                }
+            }
 
-    // Find the first moved tab in the new order
-    let firstMovedIndex = -1;
-    for (let i = 0; i < reloadedSession.logicalTabs.length; i++) {
-        if (logicalIds.includes(reloadedSession.logicalTabs[i].logicalId)) {
-            firstMovedIndex = i;
-            break;
-        }
-    }
+            const liveTabsToMove = [];
+            movedLogicals.forEach(l => liveTabsToMove.push(...l.liveTabIds));
 
-    if (firstMovedIndex !== -1) {
-        // Find Anchor (live tab before)
-        let liveAnchorIndex = -1;
-        for (let i = firstMovedIndex - 1; i >= 0; i--) {
-            const prevLogical = reloadedSession.logicalTabs[i];
-            if (prevLogical.liveTabIds.length > 0) {
+            if (liveTabsToMove.length > 0) {
+                 let targetIndex = 0;
+                if (liveAnchorIndex !== -1) {
+                    targetIndex = liveAnchorIndex + 1;
+                }
+
+                const currentLiveTabs = await Promise.all(
+                    liveTabsToMove.map(tid => chrome.tabs.get(tid).catch(() => null))
+                );
+                const validTabs = currentLiveTabs.filter(t => t !== null && t.windowId === windowId); // Ensure in target window
+
+                validTabs.forEach(t => state.ignoreMoveEventsForTabIds.add(t.id));
+                setTimeout(() => {
+                    validTabs.forEach(t => state.ignoreMoveEventsForTabIds.delete(t.id));
+                }, 2000);
+
                 try {
-                    // Use the last live tab of the logical tab (if multiple, rare but possible)
-                    const lastLiveTabId = prevLogical.liveTabIds[prevLogical.liveTabIds.length - 1];
-                    const anchorTab = await chrome.tabs.get(lastLiveTabId);
-                    liveAnchorIndex = anchorTab.index;
-                    break;
-                } catch (e) { }
-            }
-        }
-
-        // Collect all live tab IDs for the moved logical tabs (in order)
-        const liveTabsToMove = [];
-        for (let i = firstMovedIndex; i < reloadedSession.logicalTabs.length; i++) {
-            const l = reloadedSession.logicalTabs[i];
-            if (logicalIds.includes(l.logicalId)) {
-                liveTabsToMove.push(...l.liveTabIds);
-            }
-        }
-
-        if (liveTabsToMove.length > 0) {
-            // Calculate target index
-            let targetIndex = 0;
-            if (liveAnchorIndex !== -1) {
-                targetIndex = liveAnchorIndex + 1;
-            }
-
-            // Adjust target index because chrome.tabs.move counts relative to current state.
-            // If we move tabs from left to right, index is straightforward.
-            // If we move right to left, index is also straightforward if using 'index' property.
-            // However, chrome.tabs.move behaves slightly differently depending on direction and selection.
-            // But generally, providing the target index works.
-            // One caveat: if we move multiple tabs, 'index' is the index of the first tab.
-
-            // Also need to account for the fact that moving tabs effectively removes them from old position.
-            // If we move from index 5 to index 2. Target 2.
-            // If we move from index 2 to index 5. Target 5 (or 4?).
-            // Chrome API handles this if we give the destination index.
-
-            // Refinement: If moving AFTER an anchor, we might need to adjust if the moved tabs were previously BEFORE the anchor.
-            // Current indices:
-            const currentLiveTabs = await Promise.all(
-                liveTabsToMove.map(tid => chrome.tabs.get(tid).catch(() => null))
-            );
-            const validTabs = currentLiveTabs.filter(t => t !== null);
-
-            // If we are moving past an anchor, we just need to know the anchor's index.
-            // But if the tabs to move are currently *before* the anchor, their removal shifts the anchor index down.
-            // chrome.tabs.move index is "the index the first tab should end up at".
-
-            // Let's count how many of the tabs-to-move are currently before the calculated targetIndex (which is based on current state).
-            // Actually, liveAnchorIndex is based on current state.
-            // If we move tabs that are currently at index 0, 1 to after tab at index 5.
-            // Anchor is 5. Target is 6.
-            // Tabs 0, 1 are moved to 6. Correct.
-
-            // If we move tabs that are currently at index 5, 6 to after tab at index 1.
-            // Anchor is 1. Target is 2.
-            // Tabs 5, 6 moved to 2. Correct.
-
-            // The only issue is if liveAnchorIndex itself shifts? No, we just fetched it.
-            // Wait, if we use `index` in move, it puts them there.
-            // If we move [A] to after [B].
-            // If A is before B (0, 1). Target 2? No, B becomes 0. A becomes 1.
-            // If we say move A to 2. A goes to 2. B stays 1? No B shifts to 0.
-
-            // Safe bet: Just try to move to targetIndex.
-            // But if we move multiple tabs, we pass -1? No, we can pass index.
-
-            // Important: Add to ignore set
-            validTabs.forEach(t => state.ignoreMoveEventsForTabIds.add(t.id));
-            setTimeout(() => {
-                validTabs.forEach(t => state.ignoreMoveEventsForTabIds.delete(t.id));
-            }, 2000);
-
-            try {
-                const ids = validTabs.map(t => t.id);
-                // We prefer moving one by one to ensure order if they are not contiguous?
-                // Or allow block move.
-                // chrome.tabs.move supports array of IDs and a single index.
-                // It places them starting at index.
-                await chrome.tabs.move(ids, { index: targetIndex });
-            } catch (e) {
-                console.warn("Failed to sync live tabs order", e);
-                validTabs.forEach(t => state.ignoreMoveEventsForTabIds.delete(t.id));
+                    const ids = validTabs.map(t => t.id);
+                    await chrome.tabs.move(ids, { index: targetIndex });
+                } catch (e) {
+                    validTabs.forEach(t => state.ignoreMoveEventsForTabIds.delete(t.id));
+                }
             }
         }
     }

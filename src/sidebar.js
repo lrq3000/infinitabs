@@ -1097,10 +1097,22 @@ function onDrop(e) {
         else position = 'after';
     }
 
-    if (draggedLogicalIds.length === 0) return;
+    let idsToMove = draggedLogicalIds;
+    if (idsToMove.length === 0) {
+        try {
+            const data = e.dataTransfer.getData('text/plain');
+            if (data) {
+                idsToMove = JSON.parse(data);
+            }
+        } catch (err) {
+            console.error("Failed to parse drag data", err);
+        }
+    }
+
+    if (!idsToMove || idsToMove.length === 0) return;
 
     // Avoid dropping onto self
-    if (draggedLogicalIds.includes(targetId) && position !== 'inside') return;
+    if (idsToMove.includes(targetId) && position !== 'inside') return;
 
     // Suppress next auto-scroll since this is a user action
     ignoreNextAutoScroll = true;
@@ -1108,7 +1120,7 @@ function onDrop(e) {
     chrome.runtime.sendMessage({
         type: "MOVE_LOGICAL_TABS",
         windowId: currentWindowId,
-        logicalIds: draggedLogicalIds,
+        logicalIds: idsToMove,
         targetLogicalId: targetId,
         position: position
     }).catch((err) => {
