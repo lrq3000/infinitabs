@@ -2163,15 +2163,29 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
     // Update state using helper
     const reloadedSession = await reloadSessionAndPreserveState(sessionId, windowId);
 
+    // Resolve new logical tabs in the reloaded session (IDs change after reload)
+    const newLogicalTabs = [];
+    const newLogicalIds = [];
+
+    for (const oldLid of logicalIds) {
+        const oldLogical = session.logicalTabs.find(l => l.logicalId === oldLid);
+        if (oldLogical) {
+            const newLogical = reloadedSession.logicalTabs.find(l => l.bookmarkId === oldLogical.bookmarkId);
+            if (newLogical) {
+                newLogicalTabs.push(newLogical);
+                newLogicalIds.push(newLogical.logicalId);
+            }
+        }
+    }
+
     // Sync Live Groups: If we moved logical tabs INTO a group, we should group the live tabs.
     // If we moved OUT of a group, ungroup.
     // This is handled via 'onMoved' listener? No, we just did a bookmark move.
     // We need to explicitly update live state.
 
     // For each moved logical tab, check its new group status in reloadedSession
-    for (const lid of logicalIds) {
-        const logical = reloadedSession.logicalTabs.find(l => l.logicalId === lid);
-        if (logical && logical.liveTabIds.length > 0) {
+    for (const logical of newLogicalTabs) {
+        if (logical.liveTabIds.length > 0) {
             if (logical.groupId) {
                 // Should be in a group.
                 // We assume user wants live tabs grouped if moving bookmark into a group
@@ -2205,7 +2219,7 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
     // Find the first moved tab in the new order
     let firstMovedIndex = -1;
     for (let i = 0; i < reloadedSession.logicalTabs.length; i++) {
-        if (logicalIds.includes(reloadedSession.logicalTabs[i].logicalId)) {
+        if (newLogicalIds.includes(reloadedSession.logicalTabs[i].logicalId)) {
             firstMovedIndex = i;
             break;
         }
@@ -2231,7 +2245,7 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
         const liveTabsToMove = [];
         for (let i = firstMovedIndex; i < reloadedSession.logicalTabs.length; i++) {
             const l = reloadedSession.logicalTabs[i];
-            if (logicalIds.includes(l.logicalId)) {
+            if (newLogicalIds.includes(l.logicalId)) {
                 liveTabsToMove.push(...l.liveTabIds);
             }
         }
