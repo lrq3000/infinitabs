@@ -1,89 +1,108 @@
 
 import { listeners } from './mock_chrome.js';
-import '../src/background.js'; // This will execute global code in background.js
+import * as assert from 'assert';
 
-// Wait for initialization
-await new Promise(r => setTimeout(r, 100));
+// Mock specific parts for this test
+global.importScripts = () => {}; // No-op
 
-// Setup environment
-const windowId = 1;
+async function runTest() {
+    console.log("Starting test...");
 
-// Create window in mock
-await chrome.windows.create({ id: windowId, type: 'normal' });
+    // 1. Initialize background.js
+    await import('../src/background.js');
 
-// Mock existing session bookmark
-const rootId = await chrome.bookmarks.create({ title: "InfiniTabs Sessions" });
-// Note: Window 1 session
-const sessionFolder = await chrome.bookmarks.create({
-    parentId: rootId.id,
-    title: "Session - Window 1 [windowId:1]"
-});
+    // 2. Setup initial state
+    if (listeners['onStartup']) await listeners['onStartup']();
 
-console.log('Created Session Bookmark:', sessionFolder.id);
+    // Create a window
+    const windowId = 1;
+    await global.chrome.windows.create({ id: windowId });
 
-// Mock state initialization
-// background.js calls init on startup.
-const onStartup = listeners['onStartup'];
-if (onStartup) await onStartup();
+    // Wait for async init
+    await new Promise(r => setTimeout(r, 100));
 
-console.log('Background initialized');
-
-// Simulate New Tab creation (Ctrl+T)
-// 1. Browser creates tab
-// 2. Browser activates tab
-
-const newTabId = 101;
-const newTab = {
-    id: newTabId,
-    windowId: windowId,
-    active: true, // It is created active
-    index: 0,
-    url: "about:blank",
-    title: "New Tab"
-};
-
-// Add tab to mock
-chrome.tabs.create(newTab);
-
-console.log('Simulating Tab Creation...');
-
-// Step 1: onCreated
-const onCreated = listeners['tabs.onCreated'];
-const onCreatedPromise = onCreated(newTab);
-
-// Step 2: onActivated (happens immediately after, often before onCreated async work finishes)
-console.log('Simulating Tab Activation...');
-const onActivated = listeners['tabs.onActivated'];
-await onActivated({ tabId: newTabId, windowId: windowId });
-
-// Wait for onCreated to finish
-await onCreatedPromise;
-
-// Verify state
-const onMessage = listeners['onMessage'];
-const sendMessage = (msg) => {
-    return new Promise(resolve => {
-        onMessage(msg, {}, resolve);
+    // Get the session ID
+    let sessionId;
+    listeners['onMessage']({ type: "GET_CURRENT_SESSION_STATE", windowId: windowId }, {}, (response) => {
+        if (response.session) sessionId = response.session.sessionId;
     });
-};
 
-const response = await sendMessage({ type: "GET_CURRENT_SESSION_STATE", windowId: windowId });
-const session = response.session;
+    if (!sessionId) {
+        await new Promise(r => setTimeout(r, 100));
+        listeners['onMessage']({ type: "GET_CURRENT_SESSION_STATE", windowId: windowId }, {}, (response) => {
+            if (response.session) sessionId = response.session.sessionId;
+        });
+    }
 
-// console.log('Session State:', JSON.stringify(session, null, 2));
+    assert.ok(sessionId, "Session should be created");
+    console.log("Session ID:", sessionId);
 
-const logicalTab = session.logicalTabs.find(l => l.liveTabIds.includes(newTabId));
-if (!logicalTab) {
-    console.error('FAIL: Logical tab not found for new tab');
-    // Debug info
-    console.log('Logical Tabs:', session.logicalTabs.map(l => ({ id: l.logicalId, live: l.liveTabIds })));
-} else {
-    console.log('Logical ID for new tab:', logicalTab.logicalId);
-    console.log('Last Active Logical ID:', session.lastActiveLogicalTabId);
+    // 3. Create a group in bookmarks (Simulating existing state)
+    const groupNode = await global.chrome.bookmarks.create({
+        parentId: sessionId,
+        title: "Test Group [blue]"
+    });
+    console.log("Created group bookmark:", groupNode.id);
 
-    if (session.lastActiveLogicalTabId === logicalTab.logicalId) {
-        console.log('SUCCESS: Selection is correct.');
+    // Create a tab bookmark inside the group
+    const tabNode = await global.chrome.bookmarks.create({
+        parentId: groupNode.id,
+        title: "Tab Inside Group",
+        url: "https://example.com"
+    });
+    console.log("Created tab bookmark:", tabNode.id);
+
+    // 4. Reload session state via SWITCH_SESSION
+    console.log("Reloading session via SWITCH_SESSION...");
+    await new Promise(resolve => {
+        listeners['onMessage']({
+            type: "SWITCH_SESSION",
+            windowId: windowId,
+            sessionId: sessionId
+        }, {}, () => resolve());
+    });
+
+    // Get session state again to find logical IDs
+    let session;
+    listeners['onMessage']({ type: "GET_CURRENT_SESSION_STATE", windowId: windowId }, {}, (response) => {
+        session = response.session;
+    });
+
+    assert.ok(session, "Session should be reloaded");
+
+    // Find the tab in the group
+    const logicalTab = session.logicalTabs.find(t => t.groupId === groupNode.id);
+    assert.ok(logicalTab, "Should find logical tab in group");
+    const logicalId = logicalTab.logicalId;
+
+    console.log("Moving tab out of group...");
+
+    // 5. Move the tab out of the group (to root)
+    await new Promise((resolve, reject) => {
+        listeners['onMessage']({
+            type: "MOVE_LOGICAL_TABS",
+            windowId: windowId,
+            logicalIds: [logicalId],
+            targetLogicalId: sessionId,
+            position: 'inside'
+        }, {}, (response) => {
+            if (response && response.success) resolve();
+            else reject(new Error("Move failed"));
+        });
+    });
+
+    // 6. Verify results
+    const nodes = await global.chrome.bookmarks.get(groupNode.id);
+
+    if (nodes.length === 0) {
+        console.log("SUCCESS: Group bookmark was deleted.");
     } else {
-        console.error('FAIL: Selection is incorrect. Expected ' + logicalTab.logicalId + ', got ' + session.lastActiveLogicalTabId);
+        console.log("FAILURE: Group bookmark still exists.");
+        process.exit(1);
     }
 }
+
+runTest().catch(e => {
+    console.error(e);
+    process.exit(1);
+});
