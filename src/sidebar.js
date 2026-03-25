@@ -187,7 +187,7 @@ async function loadSessionsList() {
     sessions.forEach(s => {
         const opt = document.createElement('option');
         opt.value = s.sessionId;
-        opt.textContent = s.name;
+        opt.textContent = `${s.name} (${s.tabCount || 0})`;
         sessionSelector.appendChild(opt);
     });
 
@@ -444,11 +444,15 @@ function onMessage(message, sender, sendResponse) {
             currentSession = newSession;
 
             // Update selector if needed (e.g. if name changed or just bound)
+            const opt = sessionSelector.querySelector(`option[value="${currentSession.sessionId}"]`);
+            if (opt) {
+                opt.textContent = `${currentSession.name} (${currentSession.logicalTabs.length})`;
+            }
+
             if (sessionSelector.value !== currentSession.sessionId) {
                 // It might be a new session not in our list yet?
                 // Let's reload list just in case, but lazily? 
                 // Check if option exists
-                const opt = sessionSelector.querySelector(`option[value="${currentSession.sessionId}"]`);
                 if (opt) {
                     sessionSelector.value = currentSession.sessionId;
                 } else {
