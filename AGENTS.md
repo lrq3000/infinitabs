@@ -1,4 +1,5 @@
 # AGENTS.MD
+(last change: 2026-05-08)
 
 This file provides instructions for automated coding agents working in this repository.
 
@@ -8,8 +9,10 @@ This file provides instructions for automated coding agents working in this repo
 - Do not apply PR-branch-only rules when operating on `main` (except where explicitly stated).
 
 ## Global rules (all branches)
-- **`main` branch is the source of truth.**
-- Never make direct changes to `main` unless explicitly instructed by a human maintainer.
+- The main branch is the repository's default branch, usually `main` or `master`.
+- **The main branch is the source of truth.**
+- Never make direct changes to the main branch unless explicitly instructed by a human maintainer. If git is currently set on the main branch, make a new branch.
+- If working locally, always use `git worktree` under a `.worktrees` folder at the project's root to make your changes, so that other agents can work in parallel with you on the same codebase.
 - Prefer small, reviewable changes and keep commits focused.
 - Keep the repository buildable/testable; run the fastest relevant checks when possible.
 - When uncertain, search the repo for the canonical commands (README, CI config) and follow them.
@@ -19,6 +22,10 @@ This file provides instructions for automated coding agents working in this repo
 - The user requires that all test files created during development (e.g., reproduction scripts, mocks) be committed to the repository.
 - Prefer object oriented style whenever possible, avoid functional style.
 - Modularize into encapsulable and separable functions, methods and objects whenever possible. Always avoid copying similar code blocks: rule of thumb: if a code is repeated twice, make it into a function or a method.
+- Generalize your solutions to solve the intended use case, not just the specific problem or example given (unless explicitly stated otherwise).
+- If asked to make commits, use conventional commits, add a concise description of the root causes or motivation and of the fixes/features implemented, and finally a line describing what agentic harness was used (eg, OpenCode, OpenCode+OMO, etc) as well as the LLM model and model version (eg, OpenAI ChatGPT-5.5).
+- If asked to create or fix features and we are working on the main branch, create a new branch (unless stated otherwise).
+- When reviewing feedbacks to fix a commit/PR, verify each finding against current code. Fix only still-valid issues, skip the rest with a brief reason, keep changes minimal, and validate.
 
 ## High-level workflow
 - Work in **small PRs** (minimal diffs, minimal file touch).
@@ -27,7 +34,7 @@ This file provides instructions for automated coding agents working in this repo
 - Keep CI green; add/adjust tests when behavior changes.
 
 ## Main branch policy (human-maintained)
-- `main` must remain **linear** (no merge commits on `main`).
+- main branch must remain **linear** (no merge commits on `main`).
 - PRs are merged into `main` via **Squash and merge** (1 PR → 1 commit on `main`) by a human operator once the PR is ready.
 
 ## Technical style
