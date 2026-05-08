@@ -600,7 +600,6 @@ function onKeyDown(e) {
 
 function onShowLiveOnlyToggle() {
     showLiveOnly = !showLiveOnly;
-    const isTurningOffLiveOnly = !showLiveOnly;
 
     if (showLiveOnly) {
         showLiveOnlyBtn.classList.add('active');
@@ -611,14 +610,12 @@ function onShowLiveOnlyToggle() {
     if (currentSession) {
         renderSession(currentSession);
 
-        // When toggling Live Only off, the previously selected logical tab may become
-        // visible again outside the viewport. Reuse the existing locator behavior so the
-        // user immediately regains context around the selected tab.
-        if (isTurningOffLiveOnly) {
-            requestAnimationFrame(() => {
-                scrollToActiveTab();
-            });
-        }
+        // After either toggle direction, the visible tab set changes and the active live
+        // tab can drift out of view. Reuse the existing locator behavior so users keep
+        // context without manually searching for the selected tab.
+        requestAnimationFrame(() => {
+            scrollToActiveTab();
+        });
     }
 }
 
