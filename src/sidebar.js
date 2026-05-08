@@ -432,8 +432,16 @@ function haveTabsChanged(s1, s2) {
 
 function onMessage(message, sender, sendResponse) {
     if (message.type === "STATE_UPDATED") {
+        // Keep the dropdown label synchronized for all sessions, even when
+        // the updated session belongs to a different window than this sidebar.
+        const updatedSession = message.session;
+        const updatedOption = sessionSelector.querySelector(`option[value="${updatedSession.sessionId}"]`);
+        if (updatedOption) {
+            updatedOption.textContent = `${updatedSession.name} (${updatedSession.logicalTabs.length})`;
+        }
+
         if (message.windowId === currentWindowId) {
-            const newSession = message.session;
+            const newSession = updatedSession;
 
             // Check if update is necessary
             if (!haveTabsChanged(currentSession, newSession)) {
@@ -444,10 +452,7 @@ function onMessage(message, sender, sendResponse) {
             currentSession = newSession;
 
             // Update selector if needed (e.g. if name changed or just bound)
-            const opt = sessionSelector.querySelector(`option[value="${currentSession.sessionId}"]`);
-            if (opt) {
-                opt.textContent = `${currentSession.name} (${currentSession.logicalTabs.length})`;
-            }
+            const opt = updatedOption;
 
             if (sessionSelector.value !== currentSession.sessionId) {
                 // It might be a new session not in our list yet?

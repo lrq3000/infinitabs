@@ -464,18 +464,22 @@ async function getSessionList() {
     return sessions.map(folder => {
         let tabCount = 0;
 
-        function countUrls(node) {
-            if (node.url) {
+        // Keep counting semantics aligned with loadSessionFromBookmarks():
+        // - Count direct URL bookmarks under the session folder.
+        // - Count one nested level for group folders.
+        // - Ignore deeper nesting because restore currently ignores it too.
+        for (const child of (folder.children || [])) {
+            if (child.url) {
                 tabCount++;
+                continue;
             }
-            if (node.children) {
-                for (const child of node.children) {
-                    countUrls(child);
+
+            for (const grandchild of (child.children || [])) {
+                if (grandchild.url) {
+                    tabCount++;
                 }
             }
         }
-
-        countUrls(folder);
 
         return {
             sessionId: folder.id,
