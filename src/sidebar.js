@@ -600,13 +600,22 @@ function onKeyDown(e) {
 
 function onShowLiveOnlyToggle() {
     showLiveOnly = !showLiveOnly;
+
     if (showLiveOnly) {
         showLiveOnlyBtn.classList.add('active');
     } else {
         showLiveOnlyBtn.classList.remove('active');
     }
+
     if (currentSession) {
         renderSession(currentSession);
+
+        // After either toggle direction, the visible tab set changes and the active live
+        // tab can drift out of view. Reuse the existing locator behavior so users keep
+        // context without manually searching for the selected tab.
+        requestAnimationFrame(() => {
+            scrollToActiveTab();
+        });
     }
 }
 
