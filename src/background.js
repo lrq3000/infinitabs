@@ -1690,9 +1690,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     break;
                 }
                 case "CREATE_NEW_SESSION": {
-                    const created = await createNewSessionFolder(message.windowId);
-                    await handleSwitchSession(message.windowId, created.id);
-                    sendResponse({ success: true });
+                    // Guard the operation early so callers receive a clear failure signal
+                    // and we avoid creating unbound/orphaned bookmark folders.
+                    if (!message.windowId) {
+                        sendResponse({ success: false, error: "windowId is required" });
+                        break;
+                    }
+
+                    let created = null;
+                    try {
+                        created = await createNewSessionFolder(message.windowId);
+                        await handleSwitchSession(message.windowId, created.id);
+                        sendResponse({ success: true, sessionId: created.id });
+                    } catch (e) {
+                        // Roll back the created folder if switching failed mid-flight,
+                        // so we do not leave orphaned sessions in bookmarks.
+                        if (created && created.id) {
+                            await chrome.bookmarks.removeTree(created.id).catch((cleanupError) => {
+                                console.warn("Failed to rollback newly created session folder", cleanupError);
+                            });
+                        }
+                        throw e;
+                    }
                     break;
                 }
                 case "SWITCH_SESSION": {
@@ -1857,19 +1876,18 @@ async function handleRenameSession(sessionId, newName) {
 }
 
 async function handleSwitchSession(windowId, newSessionId) {
-    const oldSessionId = state.windowToSession[windowId];
-    if (oldSessionId) {
-        const oldSession = state.sessionsById[oldSessionId];
-        const placeholder = await chrome.tabs.create({ windowId, url: "about:blank", active: true });
+    // Always clear the current window tab strip before rebinding so
+    // "new session" and "switch session" semantics stay consistent,
+    // including windows that were not previously bound to any session.
+    const placeholder = await chrome.tabs.create({ windowId, url: "about:blank", active: true });
 
-        const tabs = await chrome.tabs.query({ windowId });
-        const toClose = tabs.filter(t => t.id !== placeholder.id).map(t => t.id);
-        if (toClose.length > 0) {
-            await chrome.tabs.remove(toClose);
-        }
-
-        for (const tid of toClose) delete state.tabToLogical[tid];
+    const tabs = await chrome.tabs.query({ windowId });
+    const toClose = tabs.filter(t => t.id !== placeholder.id).map(t => t.id);
+    if (toClose.length > 0) {
+        await chrome.tabs.remove(toClose);
     }
+
+    for (const tid of toClose) delete state.tabToLogical[tid];
 
     await bindWindowToSession(windowId, newSessionId);
 
