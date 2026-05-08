@@ -515,7 +515,7 @@ function performSearch() {
 
     tabItems.forEach(el => {
         const title = el.querySelector('.tab-title').textContent.toLowerCase();
-        const url = el.title.toLowerCase(); // Render sets title attribute to URL
+        const url = el.title.toLowerCase(); // Render sets title attribute to "title\nurl" for tooltip display
 
         let matches = false;
 
@@ -883,6 +883,7 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
     }
 
     // Tooltip
+    // Format: "Page Title\nURL" for contextual hover details.
     const tooltip = `${tab.title}\n${tab.url}`;
     if (el.title !== tooltip) el.title = tooltip;
 
