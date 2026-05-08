@@ -211,9 +211,9 @@ body.dark-mode .top-level-tab.active {
 }
 
 #show-live-only-btn.active {
-  background-color: #007bff;
-  color: white;
-  border-color: #0056b3;
+  background-color: var(--active-bg);
+  color: var(--active-fg, white);
+  border-color: var(--active-border);
 }
 
 /* Search Styles */

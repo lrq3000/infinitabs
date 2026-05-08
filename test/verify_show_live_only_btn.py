@@ -95,6 +95,9 @@ def test_show_live_only_btn():
             }};
         """)
 
+        page.on("console", lambda msg: print(f"PAGE LOG: {msg.text}"))
+        page.on("pageerror", lambda err: print(f"PAGE ERROR: {err}"))
+
         file_path = os.path.abspath("src/sidebar.html")
         url = f"file://{file_path}"
         page.goto(url)
@@ -128,6 +131,8 @@ def test_show_live_only_btn():
         assert page.locator("[data-id='group-1']").is_visible()
 
         print("SUCCESS: show-live-only-btn works correctly.")
+
+        browser.close()
 
 if __name__ == "__main__":
     test_show_live_only_btn()
