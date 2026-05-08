@@ -5,7 +5,7 @@ from playwright.sync_api import sync_playwright
 
 def test_locate_btn():
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, args=['--disable-web-security'])
         # Create a context with small height to ensure scrolling is needed
         context = browser.new_context(viewport={"width": 400, "height": 600})
         page = context.new_page()

@@ -173,6 +173,12 @@ body.dark-mode .top-level-tab.active {
   gap: 2px;
 }
 
+.header-right-group {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
 #theme-toggle-btn,
 #settings-btn {
   background: none;
@@ -188,6 +194,7 @@ body.dark-mode .top-level-tab.active {
   background-color: var(--hover-bg);
 }
 
+#show-live-only-btn,
 #unmount-others-btn {
   font-size: 12px;
   padding: 4px 8px;
@@ -198,8 +205,15 @@ body.dark-mode .top-level-tab.active {
   color: var(--btn-text);
 }
 
+#show-live-only-btn:hover,
 #unmount-others-btn:hover {
   background-color: var(--btn-hover);
+}
+
+#show-live-only-btn.active {
+  background-color: var(--active-bg);
+  color: var(--text-color);
+  border-color: var(--active-border);
 }
 
 /* Search Styles */
