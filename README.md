@@ -321,6 +321,58 @@ Future releases will introduce:
 * Firefox port
 * Edge and other Chromium-based browsers
 
+
+## FAQ
+
+### What is InfiniTabs, in one sentence?
+It is a live session layer for browser tabs: your tabs are continuously tracked as logical tabs (bookmarks), while only the tabs you actively use are mounted as live tabs.
+
+### Is this just another session manager or OneTab-like dumper?
+No. Snapshot tools save copies at points in time. InfiniTabs tracks sessions continuously in real time, so you resume live state instead of replacing snapshots.
+
+### Who is this for?
+People who keep many tabs, switch contexts often, and want reliable recovery without manual save rituals.
+
+### Do I need to manually save sessions?
+No. Session state is recorded automatically as you browse (open/move/close), so there is nothing special to trigger.
+
+### What changes in my daily workflow?
+Very little: browse normally, and use the sidebar to mount/unmount tabs and switch sessions. The main difference is that old context is always resumable.
+
+### Can I resume only part of a past session?
+Yes. You can reopen a subset and keep the full surrounding context visible in the sidebar, instead of losing context in a detached new window.
+
+### Will this reduce RAM usage?
+Usually yes, especially with large tab sets, because logical tabs stay unloaded until clicked.
+
+### Does switching sessions reload everything?
+No. Session switching is lazy: the full structure appears immediately, and content is loaded only for tabs you mount.
+
+### How many tabs/sessions can I keep?
+Far more than traditional always-live tab workflows, because storage shifts from RAM pressure to bookmark/storage capacity.
+
+### What happens if Chrome crashes?
+Your session structure remains recoverable because it is persisted as bookmarks continuously, not only at periodic snapshot times.
+
+### What if the extension breaks or is uninstalled?
+Your data remains in native bookmarks, so you still keep the session tree and can inspect/extract it with standard bookmark tooling.
+
+### Is my data locked in a proprietary format?
+No. Sessions are bookmark folders (URL, title, tree position), which are portable and interoperable.
+
+### Does this work with bookmark ecosystem tools?
+Yes. Search, sync, archival, and AI bookmark tools can operate on InfiniTabs sessions because sessions are native bookmarks.
+
+### Does it support multiple windows/projects?
+Yes. One window maps to one session, and workspaces can capture sets of windows for multi-project continuity.
+
+### Are there known tradeoffs?
+Yes. Chrome Side Panel has UI limitations (for example sizing/collapse behavior), but the choice improves reliability and visibility across page types.
+
+### Should I keep some tabs always live?
+For some workflows, yes (for example auto-refresh dashboards or queue pages). InfiniTabs supports focusing on selected live tabs while unloading the rest.
+
+---
 ## Author
 
 Authored by Stephen Karl Larroque.
