@@ -235,13 +235,22 @@ async function onSessionSwitch(e) {
 }
 
 async function onNewSession() {
-    await chrome.runtime.sendMessage({
+    const response = await chrome.runtime.sendMessage({
         type: "CREATE_NEW_SESSION",
         windowId: currentWindowId
     }).catch((err) => {
         console.error("Failed to create new session", err);
         alert("Failed to create new session. Please try again.");
+        return null;
     });
+
+    // Handle explicit background-side failures so users are not left
+    // with a silent no-op when session creation is rejected.
+    if (!response || response.error || response.success === false) {
+        const details = response && response.error ? `: ${response.error}` : "";
+        console.error(`Failed to create new session${details}`);
+        alert(`Failed to create new session${details}. Please try again.`);
+    }
 }
 
 async function onRenameSession() {
