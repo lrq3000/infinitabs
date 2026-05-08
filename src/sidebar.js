@@ -5,6 +5,7 @@ const sessionSelector = document.getElementById('session-selector');
 const renameSessionBtn = document.getElementById('rename-session-btn');
 const refreshSessionsBtn = document.getElementById('refresh-sessions');
 const unmountOthersBtn = document.getElementById('unmount-others-btn');
+const showLiveOnlyBtn = document.getElementById('show-live-only-btn');
 const themeToggleBtn = document.getElementById('theme-toggle-btn');
 const settingsBtn = document.getElementById('settings-btn');
 const tabsContainer = document.getElementById('tabs-container');
@@ -36,6 +37,7 @@ let isDarkMode = false;
 let currentMatches = [];
 let currentMatchIndex = -1;
 let lastScrolledActiveId = null;
+let showLiveOnly = false;
 
 // Selection & Drag State
 let selectedLogicalIds = new Set();
@@ -58,6 +60,7 @@ async function init() {
     refreshSessionsBtn.addEventListener('click', loadSessionsList);
     sessionSelector.addEventListener('change', onSessionSwitch);
     unmountOthersBtn.addEventListener('click', onUnmountOthers);
+    showLiveOnlyBtn.addEventListener('click', onShowLiveOnlyToggle);
     themeToggleBtn.addEventListener('click', toggleTheme);
     settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
@@ -595,6 +598,18 @@ function onKeyDown(e) {
     }
 }
 
+function onShowLiveOnlyToggle() {
+    showLiveOnly = !showLiveOnly;
+    if (showLiveOnly) {
+        showLiveOnlyBtn.classList.add('active');
+    } else {
+        showLiveOnlyBtn.classList.remove('active');
+    }
+    if (currentSession) {
+        renderSession(currentSession);
+    }
+}
+
 // --- Rendering ---
 
 function renderSession(session) {
@@ -619,7 +634,22 @@ function renderSession(session) {
     const itemsToRender = [];
     const groupColors = {};
 
+    // If filtering by live tabs, pre-calculate which groups contain at least one live tab
+    const liveGroupIds = new Set();
+    if (showLiveOnly) {
+        session.logicalTabs.forEach(tab => {
+            if (tab.liveTabIds && tab.liveTabIds.length > 0 && tab.groupId) {
+                liveGroupIds.add(tab.groupId);
+            }
+        });
+    }
+
     Object.values(session.groups).forEach(group => {
+        // If showing only live tabs, skip groups that have no live tabs
+        if (showLiveOnly && !liveGroupIds.has(group.groupId)) {
+            return;
+        }
+
         const { name, color } = parseGroupTitle(group.title);
         itemsToRender.push({
             type: 'group',
@@ -633,6 +663,11 @@ function renderSession(session) {
     });
 
     session.logicalTabs.forEach(tab => {
+        // If showing only live tabs, skip non-live tabs
+        if (showLiveOnly && (!tab.liveTabIds || tab.liveTabIds.length === 0)) {
+            return;
+        }
+
         // Skip rendering if group is collapsed
         if (tab.groupId && collapsedGroups.has(tab.groupId)) {
             return;
