@@ -161,8 +161,11 @@ def test_show_live_only_btn():
         assert tabs_count_restored == 5, f"Expected 5 tabs after untoggle, got {tabs_count_restored}"
         assert groups_count_restored == 2, f"Expected 2 groups after untoggle, got {groups_count_restored}"
 
-        # Wait a frame for requestAnimationFrame(scrollToActiveTab) to run.
-        page.wait_for_timeout(100)
+        # Wait deterministically for requestAnimationFrame(scrollToActiveTab) side-effect.
+        page.wait_for_function(
+            "() => Array.isArray(window.__scrollIntoViewTargets) && window.__scrollIntoViewTargets.includes('tab-1')",
+            timeout=2000
+        )
         scroll_targets = page.evaluate("window.__scrollIntoViewTargets")
         assert "tab-1" in scroll_targets, f"Expected untoggle auto-scroll to focus tab-1, got {scroll_targets}"
 
