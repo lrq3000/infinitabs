@@ -212,7 +212,7 @@ body.dark-mode .top-level-tab.active {
 
 #show-live-only-btn.active {
   background-color: var(--active-bg);
-  color: var(--active-fg, white);
+  color: var(--text-color);
   border-color: var(--active-border);
 }
 
