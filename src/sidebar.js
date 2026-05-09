@@ -83,9 +83,14 @@ async function init() {
     crashDismissBtn.addEventListener('click', onCrashDismiss);
 
     // Crash Popup Listeners
-    crashPopupRestoreBtn.addEventListener('click', onCrashRestore);
-    crashPopupClose.addEventListener('click', onCrashPopupClose);
-    crashPopupNoBtn.addEventListener('click', onCrashPopupClose);
+    // Keep this defensive: if markup ids ever drift, the sidebar should still boot.
+    if (crashPopupRestoreBtn && crashPopupClose && crashPopupNoBtn) {
+        crashPopupRestoreBtn.addEventListener('click', onCrashRestore);
+        crashPopupClose.addEventListener('click', onCrashPopupClose);
+        crashPopupNoBtn.addEventListener('click', onCrashPopupClose);
+    } else {
+        console.warn('Crash popup controls are missing from sidebar DOM; popup listeners were skipped.');
+    }
 
     chrome.runtime.onMessage.addListener(onMessage);
 
@@ -360,13 +365,16 @@ async function checkCrashStatus() {
     }).catch((err) => {
         console.error("Failed to check crash status", err);
     });
-    if (response.crashed && response.lastWorkspace) {
+    if (response && response.crashed && response.lastWorkspace) {
         crashRecoveryContainer.style.display = 'block';
         crashRecoveryContainer.dataset.workspace = JSON.stringify(response.lastWorkspace);
 
         // Also show the popup
-        crashPopup.style.display = 'flex';
-        crashPopup.dataset.workspace = JSON.stringify(response.lastWorkspace);
+        // The popup does not need duplicate workspace storage because
+        // onCrashRestore reads from crashRecoveryContainer.dataset.workspace.
+        if (crashPopup) {
+            crashPopup.style.display = 'flex';
+        }
     }
 }
 
@@ -382,12 +390,16 @@ async function onCrashRestore() {
             alert("Failed to restore workspace. Please try again.");
         });
         crashRecoveryContainer.style.display = 'none';
-        crashPopup.style.display = 'none';
+        if (crashPopup) {
+            crashPopup.style.display = 'none';
+        }
     }
 }
 
 function onCrashPopupClose() {
-    crashPopup.style.display = 'none';
+    if (crashPopup) {
+        crashPopup.style.display = 'none';
+    }
 }
 
 function onCrashDismiss() {
