@@ -71,7 +71,7 @@ describe('isWorkspaceTrivial', () => {
         const snapshot = {
             sessions: [
                 { sessionId: 'session-2' },
-                { sessionId: 'session-2' }
+                { sessionId: 'session-1' }
             ]
         };
         expect(isWorkspaceTrivial(snapshot, mockState)).toBe(false);
