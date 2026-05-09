@@ -459,10 +459,39 @@ function onMessage(message, sender, sendResponse) {
                     });
                 }
             }
+            // Preserve the current active search match (if any) before rerender.
+            // We prefer a stable logical tab id over index, because rerenders can
+            // reorder elements or remove/add tabs while still representing the same
+            // logical tab.
+            const previousActiveMatchId =
+                currentMatchIndex >= 0 && currentMatches[currentMatchIndex]
+                    ? currentMatches[currentMatchIndex].dataset.id
+                    : (document.querySelector('.tab-item.active-match')?.dataset.id || null);
+            const previousMatchIndex = currentMatchIndex;
+
             renderSession(currentSession);
             // Re-apply search if exists
             // Pass false to update results without jumping to the first match on data refresh
-            if (searchInput.value) performSearch(false);
+            if (searchInput.value) {
+                performSearch(false);
+
+                // Restore the same active result when possible so background updates
+                // do not reset the user's place in search navigation.
+                let restoredIndex = -1;
+                if (previousActiveMatchId) {
+                    restoredIndex = currentMatches.findIndex(el => el.dataset.id === previousActiveMatchId);
+                }
+
+                // Fallback: if the original match disappeared, keep a nearby index.
+                if (restoredIndex === -1 && previousMatchIndex >= 0 && currentMatches.length > 0) {
+                    restoredIndex = Math.min(previousMatchIndex, currentMatches.length - 1);
+                }
+
+                if (restoredIndex !== -1 && currentMatches[restoredIndex]) {
+                    currentMatchIndex = restoredIndex;
+                    currentMatches[restoredIndex].classList.add('active-match');
+                }
+            }
         }
     } else if (message.type === "HISTORY_UPDATED") {
         loadPastWorkspaces();
