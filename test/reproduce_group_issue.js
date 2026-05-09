@@ -37,6 +37,9 @@ async function runTest() {
     let children = await chrome.bookmarks.getChildren(sessionId);
     let groups = children.filter(c => !c.url);
     console.log(`Groups before test: ${groups.length}`); // Should be 1
+    if (groups.length !== 1) {
+        throw new Error(`Test setup failed: expected exactly one existing group, got ${groups.length}.`);
+    }
 
     // 3. Simulate "Open background tab in existing group"
     // We assume 'sync' missed this group, so it is NOT in state.liveGroupToBookmark.
@@ -75,18 +78,28 @@ async function runTest() {
 
     groups.forEach(g => console.log(`- ${g.title} (${g.id})`));
 
-    if (groups.length > 1) {
-        console.log("FAILURE: Duplicate groups detected!");
+    if (groups.length === 0) {
+        throw new Error("Test setup or execution failed: no group folder found after triggering tabs.onCreated.");
+    }
 
-        // check titles
+    if (groups.length > 1) {
+        console.error("FAILURE: Duplicate groups detected!");
+
+        // Check whether at least one duplicate title exists to help diagnose root cause quickly.
         const titles = groups.map(g => g.title);
         const unique = new Set(titles);
         if (unique.size < titles.length) {
-             console.log("CONFIRMED: Duplicate titles found.");
+            throw new Error("Duplicate group folders detected with at least one duplicate title.");
         }
-    } else {
-        console.log("SUCCESS: No duplicates found (or test setup failed to trigger creation).");
+
+        throw new Error("Duplicate group folders detected.");
     }
+
+    if (groups[0].title !== EXPECTED_TITLE) {
+        throw new Error(`Unexpected group title: expected '${EXPECTED_TITLE}', got '${groups[0].title}'.`);
+    }
+
+    console.log("SUCCESS: No duplicates found.");
 
 }
 

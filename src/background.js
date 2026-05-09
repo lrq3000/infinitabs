@@ -178,7 +178,17 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
                 let existingGroupFolder = null;
                 try {
                     const children = await chrome.bookmarks.getChildren(currentSessionId);
-                    existingGroupFolder = children.find(c => !c.url && c.title === title) || null;
+                    const candidateFolders = children.filter(c => !c.url && c.title === title);
+
+                    // Important identity rule: a folder title is not a unique group identifier.
+                    // Different live groups can share the same title/color, so we must avoid
+                    // reusing a folder that is already mapped to another live group.
+                    const mappedFolderIds = new Set(Object.values(state.liveGroupToBookmark));
+                    const reusableFolders = candidateFolders.filter(c => !mappedFolderIds.has(c.id));
+
+                    // Reuse only when unambiguous. If multiple reusable folders exist, creating
+                    // a new one is safer than guessing and potentially merging logical groups.
+                    existingGroupFolder = reusableFolders.length === 1 ? reusableFolders[0] : null;
                 } catch (err) {
                     // If lookup fails, continue with creation path below.
                     existingGroupFolder = null;
