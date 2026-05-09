@@ -6,6 +6,7 @@ const renameSessionBtn = document.getElementById('rename-session-btn');
 const refreshSessionsBtn = document.getElementById('refresh-sessions');
 const unmountOthersBtn = document.getElementById('unmount-others-btn');
 const showLiveOnlyBtn = document.getElementById('show-live-only-btn');
+const addNewTabBtn = document.getElementById('add-new-tab-btn');
 const themeToggleBtn = document.getElementById('theme-toggle-btn');
 const settingsBtn = document.getElementById('settings-btn');
 const tabsContainer = document.getElementById('tabs-container');
@@ -61,6 +62,7 @@ async function init() {
     sessionSelector.addEventListener('change', onSessionSwitch);
     unmountOthersBtn.addEventListener('click', onUnmountOthers);
     showLiveOnlyBtn.addEventListener('click', onShowLiveOnlyToggle);
+    addNewTabBtn.addEventListener('click', onAddNewTab);
     themeToggleBtn.addEventListener('click', toggleTheme);
     settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
@@ -608,6 +610,17 @@ function onShowLiveOnlyToggle() {
     if (currentSession) {
         renderSession(currentSession);
     }
+}
+
+function onAddNewTab(event) {
+    if (!currentSession) return;
+    chrome.runtime.sendMessage({
+        type: "ADD_NEW_TAB",
+        windowId: currentWindowId,
+        ctrlKey: event.ctrlKey
+    }).catch(err => {
+        console.error("Failed to add new tab:", err);
+    });
 }
 
 // --- Rendering ---

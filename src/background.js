@@ -1726,6 +1726,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     sendResponse({ success: true });
                     break;
                 }
+                case "ADD_NEW_TAB": {
+                    await handleAddNewTab(message.windowId, message.ctrlKey);
+                    sendResponse({ success: true });
+                    break;
+                }
                 case "MOVE_LOGICAL_TABS": {
                     await handleMoveLogicalTabs(
                         message.windowId,
@@ -1953,6 +1958,53 @@ async function focusOrMountLogicalTab(windowId, logicalId) {
 
     session.lastActiveLogicalTabId = logicalId;
     notifySidebarStateUpdated(windowId, sessionId);
+}
+
+async function handleAddNewTab(windowId, ctrlKey) {
+    const sessionId = state.windowToSession[windowId];
+    if (!sessionId) return;
+
+    // Find active live tab in the window to use as an anchor
+    const activeTabs = await chrome.tabs.query({ windowId, active: true });
+    const activeTab = activeTabs.length > 0 ? activeTabs[0] : null;
+
+    let insertIndex;
+    let groupId;
+
+    if (activeTab) {
+        if (!ctrlKey) {
+            insertIndex = activeTab.index + 1;
+            groupId = activeTab.groupId !== -1 ? activeTab.groupId : undefined;
+        } else {
+            if (activeTab.groupId !== -1) {
+                const groupTabs = await chrome.tabs.query({ windowId, groupId: activeTab.groupId });
+                let highestIndex = -1;
+                for (const t of groupTabs) {
+                    if (t.index > highestIndex) highestIndex = t.index;
+                }
+                insertIndex = highestIndex + 1;
+                groupId = activeTab.groupId;
+            } else {
+                insertIndex = undefined;
+                groupId = undefined;
+            }
+        }
+    }
+
+    try {
+        const createProps = { windowId, url: 'chrome://newtab/', active: true };
+        if (insertIndex !== undefined) {
+            createProps.index = insertIndex;
+        }
+
+        const newTab = await chrome.tabs.create(createProps);
+
+        if (groupId !== undefined) {
+            await chrome.tabs.group({ tabIds: newTab.id, groupId: groupId });
+        }
+    } catch (e) {
+        console.error("Failed to add new tab", e);
+    }
 }
 
 async function handleDeleteLogicalTab(windowId, logicalId) {
