@@ -657,6 +657,17 @@ body.dark-mode .live-indicator-wrapper:hover {
 .group-line-orange { background-color: var(--group-orange); }
 
 /* Global Search */
+.global-panel {
+    /*
+     * Make Workspaces content a column flex layout so descendants that use
+     * flex growth (for example .tabs-list) can receive bounded height.
+     */
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
 .global-search-container {
     margin-top: 20px;
     border-top: 1px solid var(--border-color);
@@ -664,6 +675,13 @@ body.dark-mode .live-indicator-wrapper:hover {
 }
 
 #global-search-results {
+    /*
+     * This creates a bounded, independently scrollable results region inside
+     * the Workspaces panel without letting results push the info text away.
+     */
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
     margin-top: 10px;
 }
 
