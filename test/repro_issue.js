@@ -31,6 +31,10 @@ await new Promise(r => setTimeout(r, 100)); // Wait for async bind
 // Verify session created
 const root = (await chrome.bookmarks.getTree())[0];
 const sessionFolder = root.children[0].children.find(c => c.title.includes("Window 100"));
+if (!sessionFolder) {
+    console.error("FAILURE: Session folder not found for window 100.");
+    process.exit(1);
+}
 const sessionId = sessionFolder.id;
 
 console.log(`Session created: ${sessionId}`);
@@ -67,7 +71,20 @@ await new Promise(r => setTimeout(r, 200)); // Allow sync and bookmark creation
 let response = await new Promise(resolve => {
     listeners['onMessage']({ type: "GET_CURRENT_SESSION_STATE", windowId: 100 }, {}, resolve);
 });
+
+// Defensive validation: this repro relies on a bound session and at least one
+// logical group existing before we can move tabs into that group.
+if (!response || !response.session) {
+    console.error("FAILURE: Session state response is missing.");
+    process.exit(1);
+}
+
 let session = response.session;
+if (!session.groups || Object.keys(session.groups).length === 0) {
+    console.error("FAILURE: Session groups are missing or empty.");
+    process.exit(1);
+}
+
 const logicalGroup = Object.values(session.groups)[0]; // Should be one group
 console.log('Logical Group:', logicalGroup);
 
