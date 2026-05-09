@@ -101,7 +101,11 @@ async function moveTabWithMoveEventSuppression(tabId, targetIndex) {
         throw e;
     }
 
-    state.ignoreMoveEventsForTabIds.delete(tabId);
+    // Do not eagerly delete suppression on success: tabs.onMoved is serialized
+    // through moveMutex.run(), so its suppression check may run after this await.
+    // Cleanup is intentionally delegated to either:
+    // 1) tabs.onMoved suppression branch (normal success path), or
+    // 2) the timeout fallback above (safety net if move event never arrives).
 }
 
 /**
