@@ -1354,7 +1354,8 @@ chrome.tabs.onAttached.addListener((tabId, attachInfo) => {
 
             if (oldSessionId && oldSessionId !== newSessionId) {
                 let insertParentId = newSessionId;
-                let insertIndex = 0;
+                // Null means "append"; we only pass index when we can place deterministically.
+                let insertIndex = null;
                 const tabs = await chrome.tabs.query({ windowId: newWindowId });
                 const currentTab = tabs[attachInfo.newPosition];
 
@@ -1363,6 +1364,39 @@ chrome.tabs.onAttached.addListener((tabId, attachInfo) => {
                         const bookmarkId = await getOrCreateGroupBookmark(currentTab.groupId, newWindowId);
                         if (bookmarkId) {
                             insertParentId = bookmarkId;
+
+                            // Preserve order within the destination group: anchor to the nearest mapped
+                            // neighbor on the left that belongs to the same live group. If none is mapped,
+                            // we keep append semantics to avoid forcing a brittle index of 0.
+                            let anchorLogical = null;
+                            for (let i = attachInfo.newPosition - 1; i >= 0; i--) {
+                                const t = tabs[i];
+                                if (t.groupId !== currentTab.groupId) break;
+
+                                const lid = state.tabToLogical[t.id];
+                                if (!lid) continue;
+
+                                const s = state.sessionsById[newSessionId];
+                                if (!s) continue;
+
+                                const l = s.logicalTabs.find(x => x.logicalId === lid);
+                                if (l) {
+                                    anchorLogical = l;
+                                    break;
+                                }
+                            }
+
+                            if (anchorLogical) {
+                                try {
+                                    const nodes = await chrome.bookmarks.get(anchorLogical.bookmarkId);
+                                    if (nodes && nodes.length > 0) {
+                                        const anchorNode = nodes[0];
+                                        if (anchorNode.parentId === insertParentId) {
+                                            insertIndex = anchorNode.index + 1;
+                                        }
+                                    }
+                                } catch (e) {}
+                            }
                         }
                     } else if (attachInfo.newPosition > 0) {
                         let anchorLogical = null;
@@ -2196,30 +2230,44 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
 
     if (!targetBookmarkId) return;
 
-    // Collect bookmark IDs to move and identify source sessions
+    // Collect bookmark IDs to move and identify source sessions.
+    // Build a direct lookup index once so each logicalId lookup is O(1)
+    // instead of repeatedly scanning every session and logical tab.
+    const logicalIdIndex = {};
+    for (const sid in state.sessionsById) {
+        const indexedSession = state.sessionsById[sid];
+
+        for (const logicalTab of indexedSession.logicalTabs) {
+            logicalIdIndex[logicalTab.logicalId] = {
+                session: indexedSession,
+                logicalTab: logicalTab,
+                group: null
+            };
+        }
+
+        for (const groupId in indexedSession.groups) {
+            logicalIdIndex[groupId] = {
+                session: indexedSession,
+                logicalTab: null,
+                group: indexedSession.groups[groupId]
+            };
+        }
+    }
+
     const bookmarksToMove = [];
     const sourceSessionsToReload = new Set();
     const liveTabsToMoveCrossWindow = []; // { logical: oldLogical, oldSession: session }
 
     for (const lid of logicalIds) {
-        // 1. Try to find in current session (common case)
-        let l = session.logicalTabs.find(t => t.logicalId === lid);
-        let s = session;
-        let g = session.groups[lid];
+        const indexed = logicalIdIndex[lid];
+        if (!indexed) continue;
 
-        // 2. If not found, search other sessions
-        if (!l && !g) {
-            for (const sid in state.sessionsById) {
-                if (sid === sessionId) continue;
-                const candidate = state.sessionsById[sid];
-                l = candidate.logicalTabs.find(t => t.logicalId === lid);
-                g = candidate.groups[lid];
-                if (l || g) {
-                    s = candidate;
-                    sourceSessionsToReload.add(sid);
-                    break;
-                }
-            }
+        const l = indexed.logicalTab;
+        const g = indexed.group;
+        const s = indexed.session;
+
+        if (s.sessionId !== sessionId) {
+            sourceSessionsToReload.add(s.sessionId);
         }
 
         if (g) {
@@ -2352,17 +2400,17 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
 
     // We need a way to track them. Bookmark IDs.
 
-    const relevantBookmarkIds = bookmarksToMove;
+    const relevantBookmarkIds = new Set(bookmarksToMove);
 
     // Find these in reloadedSession
-    const movedLogicals = reloadedSession.logicalTabs.filter(l => relevantBookmarkIds.includes(l.bookmarkId) || (l.groupId && relevantBookmarkIds.includes(l.groupId)));
+    const movedLogicals = reloadedSession.logicalTabs.filter(l => relevantBookmarkIds.has(l.bookmarkId) || (l.groupId && relevantBookmarkIds.has(l.groupId)));
 
     // Ensure grouping
     for (const logical of movedLogicals) {
         if (logical.liveTabIds.length > 0) {
             if (logical.groupId) {
                 for (const tid of logical.liveTabIds) {
-                    await ensureLiveGroupForLogicalTab(tid, logical.groupId, session);
+                    await ensureLiveGroupForLogicalTab(tid, logical.groupId, reloadedSession);
                 }
             } else {
                 try {

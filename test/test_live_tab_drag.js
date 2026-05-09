@@ -1,6 +1,7 @@
 
 import './mock_chrome.js';
 import { listeners } from './mock_chrome.js';
+import { waitFor } from './test_utils.js';
 
 // Mock utils globally
 global.formatGroupTitle = function(title, color) { return `${title} [${color}]`; };
@@ -15,22 +16,30 @@ async function run() {
 
     // Trigger startup
     if (listeners['onStartup']) listeners['onStartup']();
-    await new Promise(r => setTimeout(r, 100));
+    await waitFor(async () => {
+        const roots = await chrome.bookmarks.search({ title: "InfiniTabs Sessions" });
+        return roots.length > 0;
+    }, { label: 'session root creation after startup' });
 
     // Create Window 1
     const win1 = await chrome.windows.create({ id: 1 });
-    // This should trigger session binding
-    await new Promise(r => setTimeout(r, 500));
-
     // Create Window 2
     const win2 = await chrome.windows.create({ id: 2 });
-    await new Promise(r => setTimeout(r, 500));
+
+    await waitFor(async () => {
+        const windows = await chrome.windows.getAll();
+        return windows.some(w => w.id === 1) && windows.some(w => w.id === 2);
+    }, { label: 'two windows to exist' });
 
     // Verify Sessions created
     const root = await chrome.bookmarks.getChildren('0'); // '0' is usually root, but mock implementation might vary.
     // Wait, mock creates "InfiniTabs Sessions" at root.
     const roots = await chrome.bookmarks.search({ title: "InfiniTabs Sessions" });
     const sessionRootId = roots[0].id;
+    await waitFor(async () => {
+        const currentSessions = await chrome.bookmarks.getChildren(sessionRootId);
+        return currentSessions.some(s => s.title.includes('windowId:1')) && currentSessions.some(s => s.title.includes('windowId:2'));
+    }, { label: 'window sessions to be created' });
     const sessions = await chrome.bookmarks.getChildren(sessionRootId);
     console.log(`Sessions created: ${sessions.length}`);
     if (sessions.length !== 2) {
@@ -43,7 +52,10 @@ async function run() {
 
     // Create a tab in Window 1
     const tab1 = await chrome.tabs.create({ windowId: 1, url: 'http://example.com', title: 'Test Tab' });
-    await new Promise(r => setTimeout(r, 500));
+    await waitFor(async () => {
+        const children = await chrome.bookmarks.getChildren(session1Id);
+        return children.some(b => b.url === 'http://example.com');
+    }, { label: 'new tab bookmark in source session' });
 
     // Verify bookmark in Session 1
     const session1Children = await chrome.bookmarks.getChildren(session1Id);
@@ -74,7 +86,14 @@ async function run() {
         listeners['tabs.onAttached'](tab1.id, { newWindowId: 2, newPosition: 0 });
     }
 
-    await new Promise(r => setTimeout(r, 1000));
+    await waitFor(async () => {
+        const session1ChildrenCurrent = await chrome.bookmarks.getChildren(session1Id);
+        const session2ChildrenCurrent = await chrome.bookmarks.getChildren(session2Id);
+
+        const bookmarkStillInSession1 = session1ChildrenCurrent.some(b => b.id === bookmark.id);
+        const bookmarkInSession2 = session2ChildrenCurrent.some(b => b.id === bookmark.id);
+        return !bookmarkStillInSession1 && bookmarkInSession2;
+    }, { label: 'bookmark transfer to target session' });
 
     // Check if bookmark moved to Session 2
     const session1ChildrenAfter = await chrome.bookmarks.getChildren(session1Id);

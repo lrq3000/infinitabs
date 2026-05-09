@@ -1099,17 +1099,19 @@ function onDrop(e) {
 
     let idsToMove = draggedLogicalIds;
     if (idsToMove.length === 0) {
+        // Cross-window drag can lose in-memory selection; recover IDs from dataTransfer.
         try {
             const data = e.dataTransfer.getData('text/plain');
             if (data) {
-                idsToMove = JSON.parse(data);
+                const parsed = JSON.parse(data);
+                idsToMove = Array.isArray(parsed) ? parsed : [];
             }
         } catch (err) {
             console.error("Failed to parse drag data", err);
         }
     }
 
-    if (!idsToMove || idsToMove.length === 0) return;
+    if (!Array.isArray(idsToMove) || idsToMove.length === 0) return;
 
     // Avoid dropping onto self
     if (idsToMove.includes(targetId) && position !== 'inside') return;
