@@ -67,9 +67,15 @@ class MemoryStorage {
         const nodes = await this._load();
         const parent = nodes.get(id);
         if (!parent) return [];
-        return (parent.children || []).map(childId => {
-            return JSON.parse(JSON.stringify(nodes.get(childId)));
-        });
+        return (parent.children || [])
+            .map(childId => nodes.get(childId))
+            .filter(node => {
+                // Be defensive against inconsistent storage state where a child id
+                // exists in parent.children but its node payload is missing.
+                // We skip missing nodes to preserve API behavior for valid children.
+                return node !== undefined;
+            })
+            .map(node => JSON.parse(JSON.stringify(node)));
     }
 
     async getSubTree(id) {
@@ -79,9 +85,17 @@ class MemoryStorage {
 
         const buildTree = (nodeId) => {
             const node = nodes.get(nodeId);
+            if (!node) {
+                // Defensive fallback for inconsistent trees: if a child id points to
+                // a missing node, omit it from the returned subtree instead of
+                // throwing while dereferencing undefined fields.
+                return null;
+            }
             const clone = { ...node };
             if (node.children) {
-                clone.children = node.children.map(childId => buildTree(childId));
+                clone.children = node.children
+                    .map(childId => buildTree(childId))
+                    .filter(child => child !== null);
             }
             return clone;
         };
