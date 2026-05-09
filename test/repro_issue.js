@@ -91,6 +91,10 @@ console.log('Logical Group:', logicalGroup);
 // Get logical IDs for A and B
 const logicalA = session.logicalTabs.find(t => t.url === "http://a.com");
 const logicalB = session.logicalTabs.find(t => t.url === "http://b.com");
+if (!logicalA || !logicalB) {
+    console.error("FAILURE: Could not resolve logical IDs for tabs A and B.");
+    process.exit(1);
+}
 
 console.log('Logical A:', logicalA.logicalId);
 console.log('Logical B:', logicalB.logicalId);
@@ -121,7 +125,24 @@ console.log('Group Calls:', JSON.stringify(groupCalls, null, 2));
 
 // Expectation: 2 calls. One for A, one for B.
 if (groupCalls.length === 2) {
-    console.log("SUCCESS: Both tabs grouped.");
+    // Validate that both moved tabs were grouped into the intended live group,
+    // not merely that two grouping calls happened.
+    const groupedTabIds = groupCalls.flatMap(call => call.tabIds || []);
+    const expectedTabIds = [tabA.id, tabB.id];
+    const allExpectedTabsGrouped = expectedTabIds.every(id => groupedTabIds.includes(id));
+    if (!allExpectedTabsGrouped) {
+        console.error(`FAILURE: Wrong tabs grouped. Expected ${expectedTabIds}, got ${groupedTabIds}.`);
+        process.exit(1);
+    }
+
+    const groupedToExpectedLiveGroup = groupCalls.every(call => call.groupId === liveGroupId);
+    if (!groupedToExpectedLiveGroup) {
+        const actualGroupIds = groupCalls.map(call => call.groupId);
+        console.error(`FAILURE: Wrong group IDs used. Expected ${liveGroupId}, got ${actualGroupIds}.`);
+        process.exit(1);
+    }
+
+    console.log("SUCCESS: Both tabs grouped into the expected live group.");
 } else {
     console.error(`FAILURE: Expected 2 group calls, got ${groupCalls.length}.`);
     process.exit(1);

@@ -2192,7 +2192,9 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
                 // Use the new helper
                 // Note: we iterate liveTabIds, which is array
                 for (const tid of logical.liveTabIds) {
-                    await ensureLiveGroupForLogicalTab(tid, logical.groupId, session);
+                    // Use the reloaded session snapshot for consistency with the newly resolved
+                    // logical tab IDs and group metadata after bookmark moves.
+                    await ensureLiveGroupForLogicalTab(tid, logical.groupId, reloadedSession);
                 }
             } else {
                 // Should be ungrouped
