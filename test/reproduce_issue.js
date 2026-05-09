@@ -21,18 +21,13 @@ async function runTest() {
     // Wait for async init
     await new Promise(r => setTimeout(r, 100));
 
-    // Get the session ID
-    let sessionId;
-    listeners['onMessage']({ type: "GET_CURRENT_SESSION_STATE", windowId: windowId }, {}, (response) => {
-        if (response.session) sessionId = response.session.sessionId;
-    });
-
-    if (!sessionId) {
-        await new Promise(r => setTimeout(r, 100));
+    // Get the session ID — wrap in a Promise to correctly await the asynchronous sendResponse callback,
+    // removing the brittle timeout-based fallback that could race with late-bind session creation.
+    const sessionId = await new Promise(resolve => {
         listeners['onMessage']({ type: "GET_CURRENT_SESSION_STATE", windowId: windowId }, {}, (response) => {
-            if (response.session) sessionId = response.session.sessionId;
+            resolve(response.session ? response.session.sessionId : null);
         });
-    }
+    });
 
     assert.ok(sessionId, "Session should be created");
     console.log("Session ID:", sessionId);
@@ -62,10 +57,12 @@ async function runTest() {
         }, {}, () => resolve());
     });
 
-    // Get session state again to find logical IDs
-    let session;
-    listeners['onMessage']({ type: "GET_CURRENT_SESSION_STATE", windowId: windowId }, {}, (response) => {
-        session = response.session;
+    // Get session state again to find logical IDs — use a Promise to correctly await
+    // the asynchronous sendResponse callback, preventing a race where `session` is undefined.
+    const session = await new Promise(resolve => {
+        listeners['onMessage']({ type: "GET_CURRENT_SESSION_STATE", windowId: windowId }, {}, (response) => {
+            resolve(response.session || null);
+        });
     });
 
     assert.ok(session, "Session should be reloaded");
