@@ -885,6 +885,30 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
     // Tooltip
     if (el.title !== tab.url) el.title = tab.url;
 
+    // Add Tab Button (Overlay)
+    let addBtn = el.querySelector('.add-tab-btn');
+    if (isActive) {
+        if (!addBtn) {
+            addBtn = document.createElement('button');
+            addBtn.className = 'add-tab-btn';
+            addBtn.innerHTML = '+';
+            addBtn.title = 'Add new tab after this one';
+            addBtn.addEventListener('click', (e) => {
+                e.stopPropagation(); // prevent activating the tab
+                chrome.runtime.sendMessage({
+                    type: "CREATE_NEW_TAB_AFTER",
+                    windowId: currentWindowId,
+                    logicalId: tab.logicalId
+                }).catch((err) => {
+                    console.error("Failed to create new tab", err);
+                });
+            });
+            el.appendChild(addBtn);
+        }
+    } else {
+        if (addBtn) addBtn.remove();
+    }
+
     // Content
     const icon = el.querySelector('.tab-icon');
     const title = el.querySelector('.tab-title');

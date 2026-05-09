@@ -4,7 +4,7 @@ from playwright.sync_api import sync_playwright
 
 def test_settings_btn():
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, args=["--disable-web-security"])
         context = browser.new_context()
         page = context.new_page()
 

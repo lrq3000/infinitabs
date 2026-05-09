@@ -1726,6 +1726,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     sendResponse({ success: true });
                     break;
                 }
+                case "CREATE_NEW_TAB_AFTER": {
+                    await handleCreateNewTabAfter(message.windowId, message.logicalId);
+                    sendResponse({ success: true });
+                    break;
+                }
                 case "MOVE_LOGICAL_TABS": {
                     await handleMoveLogicalTabs(
                         message.windowId,
@@ -1953,6 +1958,40 @@ async function focusOrMountLogicalTab(windowId, logicalId) {
 
     session.lastActiveLogicalTabId = logicalId;
     notifySidebarStateUpdated(windowId, sessionId);
+}
+
+async function handleCreateNewTabAfter(windowId, logicalId) {
+    const sessionId = state.windowToSession[windowId];
+    if (!sessionId) return;
+    const session = state.sessionsById[sessionId];
+    if (!session) return;
+
+    const logical = session.logicalTabs.find(l => l.logicalId === logicalId);
+    if (!logical) return;
+
+    let insertIndex = null;
+
+    if (logical.liveTabIds.length > 0) {
+        try {
+            // Find the last live tab for this logical tab to insert after it
+            const liveTabId = logical.liveTabIds[logical.liveTabIds.length - 1];
+            const liveTab = await chrome.tabs.get(liveTabId);
+            insertIndex = liveTab.index + 1;
+        } catch (e) {
+            console.warn("Failed to get live tab for new tab insertion", e);
+        }
+    }
+
+    try {
+        await chrome.tabs.create({
+            windowId,
+            url: "about:blank",
+            active: true,
+            index: insertIndex !== null ? insertIndex : undefined
+        });
+    } catch (e) {
+        console.error("Failed to create new tab after current tab", e);
+    }
 }
 
 async function handleDeleteLogicalTab(windowId, logicalId) {

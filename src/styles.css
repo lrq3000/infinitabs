@@ -308,6 +308,53 @@ body.dark-mode .tab-item.logical {
   color: #aaa;
 }
 
+/* Add Tab Button (Overlay on Active) */
+.add-tab-btn {
+  position: absolute;
+  right: 35px; /* Prevent overlapping with the delete button */
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background-color: var(--active-border);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  z-index: 15;
+  font-weight: bold;
+  font-size: 18px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+  transition: background-color 0.2s, transform 0.1s;
+}
+
+.add-tab-btn:hover {
+  background-color: #0056b3;
+  transform: translateY(-50%) scale(1.1);
+}
+
+.add-tab-btn:active {
+  transform: translateY(-50%) scale(0.95);
+}
+
+body.dark-mode .add-tab-btn {
+  background-color: var(--active-border);
+  color: #fff;
+}
+
+body.dark-mode .add-tab-btn:hover {
+  background-color: #3b82f6; /* slightly lighter blue for dark mode */
+}
+
+/* Ensure title doesn't overlap with add button when active */
+.tab-item.active-live .tab-title {
+  padding-right: 45px;
+}
+
 /* Delete Button */
 .tab-delete-btn {
   position: absolute;
