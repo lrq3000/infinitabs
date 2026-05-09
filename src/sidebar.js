@@ -521,10 +521,10 @@ function clearSearch() {
     performSearch();
 }
 
-// Added navigate parameter to control auto-focus behavior
+// Added navigate parameter to control auto-focus behavior.
 /**
  * Recomputes search matches.
- * `@param` {boolean} navigate When true, move to the first match (and scroll); when false, only highlight matches.
+ * @param {boolean} navigate When true, move to the first match (and scroll); when false, only highlight matches.
  */
 function performSearch(navigate = true) {
     const query = searchInput.value;
@@ -549,8 +549,10 @@ function performSearch(navigate = true) {
     if (terms.length === 0) return;
 
     tabItems.forEach(el => {
-        const title = el.querySelector('.tab-title').textContent.toLowerCase();
-        const url = el.title.toLowerCase(); // Render sets title attribute to URL
+        // Prefer cached normalized fields to avoid per-keystroke DOM text reads
+        // and repeated lowercasing. Fallbacks keep compatibility with older DOM.
+        const title = el.dataset.searchTitle || '';
+        const url = el.dataset.searchUrl || el.title.toLowerCase(); // Render sets title attribute to URL
 
         let matches = false;
 
@@ -920,6 +922,13 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
 
     // Tooltip
     if (el.title !== tab.url) el.title = tab.url;
+
+    // Cache normalized search fields once per render/update so performSearch can
+    // do O(1) reads per tab element without repeated toLowerCase() allocations.
+    const normalizedTitle = (tab.title || '').toLowerCase();
+    const normalizedUrl = (tab.url || '').toLowerCase();
+    if (el.dataset.searchTitle !== normalizedTitle) el.dataset.searchTitle = normalizedTitle;
+    if (el.dataset.searchUrl !== normalizedUrl) el.dataset.searchUrl = normalizedUrl;
 
     // Content
     const icon = el.querySelector('.tab-icon');
