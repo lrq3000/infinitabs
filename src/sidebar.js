@@ -246,7 +246,7 @@ async function onNewSession() {
 
     // Handle explicit background-side failures so users are not left
     // with a silent no-op when session creation is rejected.
-    if (!response || response.error || response.success === false) {
+    if (response && (response.error || response.success === false)) {
         const details = response && response.error ? `: ${response.error}` : "";
         console.error(`Failed to create new session${details}`);
         alert(`Failed to create new session${details}. Please try again.`);
