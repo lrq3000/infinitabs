@@ -33,6 +33,8 @@ const crashPopupNoBtn = document.getElementById('crash-popup-no-btn');
 // Global Search Elements
 const globalSearchInput = document.getElementById('global-search-input');
 const globalSearchResults = document.getElementById('global-search-results');
+// Monotonic token used to ignore stale async responses from older queries.
+let globalSearchRequestId = 0;
 
 let currentSession = null;
 let currentWindowId = null;
@@ -1147,13 +1149,28 @@ async function performGlobalSearch() {
         return;
     }
 
-    const response = await chrome.runtime.sendMessage({
-        type: "SEARCH_ALL_SESSIONS",
-        query: query
-    });
+    // Capture a per-call token so late responses from older queries are ignored.
+    const requestId = ++globalSearchRequestId;
 
-    const results = response.results || [];
-    renderGlobalSearchResults(results);
+    try {
+        const response = await chrome.runtime.sendMessage({
+            type: "SEARCH_ALL_SESSIONS",
+            query: query
+        });
+
+        // If a newer search started, this result is stale and must be discarded.
+        if (requestId !== globalSearchRequestId) return;
+        // Also ensure the visible input still matches the query that produced this response.
+        if (globalSearchInput.value !== query) return;
+
+        const results = (response && response.results) ? response.results : [];
+        renderGlobalSearchResults(results);
+    } catch (err) {
+        // Ignore stale failures too: only the latest request should update UI.
+        if (requestId !== globalSearchRequestId) return;
+        console.error("Global search failed", err);
+        globalSearchResults.innerHTML = '<div style="padding:10px; color:#888;">Search failed. Try again.</div>';
+    }
 }
 
 function renderGlobalSearchResults(results) {

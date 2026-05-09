@@ -2352,12 +2352,26 @@ async function searchAllSessions(query) {
 
     const root = sessions[0];
     const matches = [];
-    const terms = query.toLowerCase().split(/\s+/).filter(t => t);
+    // Keep global-search query semantics aligned with in-session search:
+    // - quoted phrases are preserved as one token
+    // - unquoted terms are OR-ed (any token can match)
+    const terms = [];
+    const regex = /"([^"]+)"|(\S+)/g;
+    let match;
+    while ((match = regex.exec(query)) !== null) {
+        if (match[1]) {
+            terms.push({ term: match[1].toLowerCase(), exact: true });
+        } else {
+            terms.push({ term: match[2].toLowerCase(), exact: false });
+        }
+    }
+    if (terms.length === 0) return [];
 
     // Helper to check match
     const isMatch = (title, url) => {
         const text = (title + " " + (url || "")).toLowerCase();
-        return terms.every(term => text.includes(term));
+        // OR behavior matches sidebar search: any token match is enough.
+        return terms.some(({ term }) => text.includes(term));
     };
 
     // Traverse
