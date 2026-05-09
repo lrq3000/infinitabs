@@ -2,6 +2,12 @@
 import { listeners } from './mock_chrome.js';
 import '../src/background.js';
 
+function assert(condition, message) {
+    if (!condition) {
+        throw new Error(message);
+    }
+}
+
 async function runTest() {
     console.log("Starting reproduction test...");
 
@@ -52,13 +58,11 @@ async function runTest() {
         listeners['onMessage']({ type: "GET_CURRENT_SESSION_STATE", windowId: windowId }, {}, resolve);
     });
 
-    if (!response1.session) {
-        throw new Error("Session failed to bind!");
-    }
+    assert(!!response1.session, "Session failed to bind!");
 
     const logicalGroups = response1.session.groups;
     const groupKey = Object.keys(logicalGroups)[0];
-    if (!groupKey) throw new Error("Group not found in session");
+    assert(!!groupKey, "Group not found in session");
     console.log(`Initial Session Loaded. Group ID: ${groupKey}`);
 
     // 3. Simulate User Restoring Tab (Cmd+Shift+T)
@@ -98,33 +102,86 @@ async function runTest() {
     const session = response2.session;
     const restoredTab = session.logicalTabs.find(t => t.liveTabIds.includes(500));
 
-    if (!restoredTab) {
-        console.error("FAIL: Restored tab not mapped.");
-    } else {
-        console.log("Restored Tab Logical Group ID:", restoredTab.groupId);
-        console.log("Original Logical Group ID:", generatedGroupId);
+    assert(!!restoredTab, "FAIL: Restored tab not mapped.");
 
-        if (restoredTab.groupId !== generatedGroupId) {
-            console.error("FAIL: Tab was NOT placed in the original logical group.");
-            if (restoredTab.groupId === null) {
-                console.error("-> Tab is ungrouped (in session root).");
-            } else {
-                console.error(`-> Tab is in a new group: ${restoredTab.groupId}`);
-            }
-        } else {
-            console.log("PASS: Tab correctly placed in original logical group.");
-        }
-    }
+    console.log("Restored Tab Logical Group ID:", restoredTab.groupId);
+    console.log("Original Logical Group ID:", generatedGroupId);
+    assert(restoredTab.groupId === generatedGroupId, "FAIL: Tab was NOT placed in the original logical group.");
+    console.log("PASS: Tab correctly placed in original logical group.");
 
     // Check for duplicates
     const children = await global.chrome.bookmarks.getChildren(sessionFolder.id);
     const groups = children.filter(c => !c.url);
-    if (groups.length > 1) {
-        console.error("FAIL: Duplicate group folders found.");
-        groups.forEach(g => console.log(` - ${g.title} (${g.id})`));
-    } else {
-        console.log("PASS: No duplicate groups.");
-    }
+    assert(groups.length <= 1, "FAIL: Duplicate group folders found.");
+    console.log("PASS: No duplicate groups.");
+
+    // 5. Regression for ambiguous title matches:
+    // If two unmapped logical folders share the same title/color, restoration MUST NOT
+    // bind to either existing folder by guesswork. A new folder should be created instead.
+    const ambiguousWindowId = 101;
+    const ambiguousSessionFolder = await global.chrome.bookmarks.create({
+        parentId: root.id,
+        title: `Session - Window ${ambiguousWindowId} [windowId:${ambiguousWindowId}]`
+    });
+
+    const ambiguousGroupA = await global.chrome.bookmarks.create({
+        parentId: ambiguousSessionFolder.id,
+        title: fullGroupTitle
+    });
+    await global.chrome.bookmarks.create({
+        parentId: ambiguousGroupA.id,
+        title: "Tab A",
+        url: "https://example-a.com"
+    });
+
+    const ambiguousGroupB = await global.chrome.bookmarks.create({
+        parentId: ambiguousSessionFolder.id,
+        title: fullGroupTitle
+    });
+    await global.chrome.bookmarks.create({
+        parentId: ambiguousGroupB.id,
+        title: "Tab B",
+        url: "https://example-b.com"
+    });
+
+    await global.chrome.windows.create({ id: ambiguousWindowId });
+    await listeners['onStartup']();
+    await new Promise(r => setTimeout(r, 500));
+
+    const ambiguousLiveGroupId = 1001;
+    await listeners['tabGroups.onCreated']({
+        id: ambiguousLiveGroupId,
+        windowId: ambiguousWindowId,
+        title: groupTitle,
+        color: groupColor
+    });
+
+    await listeners['tabs.onCreated']({
+        id: 1002,
+        windowId: ambiguousWindowId,
+        groupId: ambiguousLiveGroupId,
+        title: "Restored",
+        url: "https://restored-tab.com",
+        index: 0,
+        active: true
+    });
+
+    await new Promise(r => setTimeout(r, 1000));
+
+    const ambiguousResponse = await new Promise(resolve => {
+        listeners['onMessage']({ type: "GET_CURRENT_SESSION_STATE", windowId: ambiguousWindowId }, {}, resolve);
+    });
+    assert(!!ambiguousResponse.session, "FAIL: Ambiguous scenario session failed to bind.");
+
+    const ambiguousRestoredTab = ambiguousResponse.session.logicalTabs.find(t => t.liveTabIds.includes(1002));
+    assert(!!ambiguousRestoredTab, "FAIL: Ambiguous scenario restored tab not mapped.");
+
+    assert(
+        ambiguousRestoredTab.groupId !== ambiguousGroupA.id && ambiguousRestoredTab.groupId !== ambiguousGroupB.id,
+        "FAIL: Ambiguous title match incorrectly reused an existing logical group."
+    );
+
+    console.log("PASS: Ambiguous title match did not reuse an existing logical group.");
 }
 
 runTest().catch(e => console.error(e));

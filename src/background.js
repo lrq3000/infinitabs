@@ -165,25 +165,34 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
 
             const title = formatGroupTitle(groupInfo.title, groupInfo.color);
 
-            // Check if we already have a logical group with this title that is NOT mapped to a live group
+            // Check if we already have a logical group with this title that is NOT mapped to a live group.
+            // Important disambiguation rule:
+            // - Reuse only when there is exactly one unmapped candidate.
+            // - If there are multiple title/color matches, the match is ambiguous and we MUST create a new
+            //   folder instead of arbitrarily picking one. This avoids wrongly merging unrelated groups that
+            //   happen to share the same user-visible title/color.
             const session = state.sessionsById[sessionId];
-            let existingUnmappedGroup = null;
             if (session) {
-                const liveBookmarkIds = Object.values(state.liveGroupToBookmark);
+                // Use a Set for O(1) membership checks while scanning logical groups.
+                const liveBookmarkIds = new Set(Object.values(state.liveGroupToBookmark));
+                const unmappedTitleMatches = [];
+
                 for (const grpId of Object.keys(session.groups)) {
                     const grp = session.groups[grpId];
-                    const grpTitle = formatGroupTitle(parseGroupTitle(grp.title).name, parseGroupTitle(grp.title).color);
-                    if (grpTitle === title && !liveBookmarkIds.includes(grp.groupId)) {
-                        existingUnmappedGroup = grp;
-                        break;
+                    const parsedGroupTitle = parseGroupTitle(grp.title);
+                    const normalizedGroupTitle = formatGroupTitle(parsedGroupTitle.name, parsedGroupTitle.color);
+
+                    if (normalizedGroupTitle === title && !liveBookmarkIds.has(grp.groupId)) {
+                        unmappedTitleMatches.push(grp);
                     }
                 }
-            }
 
-            if (existingUnmappedGroup) {
-                state.liveGroupToBookmark[groupId] = existingUnmappedGroup.groupId;
-                // No need to create bookmark or reload session, just update mapping
-                return existingUnmappedGroup.groupId;
+                if (unmappedTitleMatches.length === 1) {
+                    const existingUnmappedGroup = unmappedTitleMatches[0];
+                    state.liveGroupToBookmark[groupId] = existingUnmappedGroup.groupId;
+                    // No need to create bookmark or reload session, just update mapping.
+                    return existingUnmappedGroup.groupId;
+                }
             }
 
             const created = await chrome.bookmarks.create({
