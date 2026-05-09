@@ -82,6 +82,29 @@ function generateSessionName() {
 }
 
 /**
+ * Prevent programmatic mount repositioning from triggering bookmark reorder logic.
+ *
+ * `tabs.onMoved` treats moves as user intent unless the tab ID is pre-registered
+ * in `ignoreMoveEventsForTabIds`. We wrap single-tab repositioning with that guard
+ * so restore/mount flows do not accidentally de-group bookmarks.
+ */
+async function moveTabWithMoveEventSuppression(tabId, targetIndex) {
+    state.ignoreMoveEventsForTabIds.add(tabId);
+    setTimeout(() => {
+        state.ignoreMoveEventsForTabIds.delete(tabId);
+    }, 2000);
+
+    try {
+        await chrome.tabs.move(tabId, { index: targetIndex });
+    } catch (e) {
+        state.ignoreMoveEventsForTabIds.delete(tabId);
+        throw e;
+    }
+
+    state.ignoreMoveEventsForTabIds.delete(tabId);
+}
+
+/**
  * Tries to activate the previous tab from history, excluding specified tabs.
  * @param {number} windowId
  * @param {Array<number>} excludingTabIds
@@ -1242,7 +1265,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
                         try {
                             // Check if current index matches desired
                             if (tab.index !== insertIndex) {
-                                await chrome.tabs.move(tab.id, { index: insertIndex });
+                                await moveTabWithMoveEventSuppression(tab.id, insertIndex);
                             }
                         } catch (e) {
                             console.warn("Failed to move mounted tab to position", e);
@@ -1961,7 +1984,7 @@ async function focusOrMountLogicalTab(windowId, logicalId) {
                 if (insertIndex !== undefined && insertIndex !== null) {
                     try {
                         if (tab.index !== insertIndex) {
-                            await chrome.tabs.move(tab.id, { index: insertIndex });
+                            await moveTabWithMoveEventSuppression(tab.id, insertIndex);
                         }
                     } catch (e) {
                          console.warn("Failed to move mounted tab to position", e);
