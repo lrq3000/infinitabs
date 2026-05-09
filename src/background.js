@@ -165,27 +165,6 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
 
             const title = formatGroupTitle(groupInfo.title, groupInfo.color);
 
-            // Check if a folder with this title already exists in the session to prevent duplicates
-            let created;
-            try {
-                const children = await chrome.bookmarks.getChildren(currentSessionId);
-                const existing = children.find(c => !c.url && c.title === title);
-                if (existing) {
-                    created = existing;
-                } else {
-                    created = await chrome.bookmarks.create({
-                        parentId: currentSessionId,
-                        title: title
-                    });
-                }
-            } catch (err) {
-                // Fallback to creation if search fails
-                created = await chrome.bookmarks.create({
-                    parentId: currentSessionId,
-                    title: title
-                });
-            }
-
             // Ensure adequate placement of new logical tab groups in sidebar by:
             // 1. Querying the live tabs in the window.
             // 2. Identifying the tabs belonging to the new group.
@@ -193,6 +172,18 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
             // 4. Inserting the new group folder bookmark immediately after the anchor tab (or its parent group folder if the anchor is grouped).
             // This ensures that the sidebar order reflects the visual order of tabs and groups in the native live tabs strip.
             return moveMutex.run(async () => {
+                // Run lookup and create under the same mutex-critical section.
+                // This prevents a duplicated-create flow where a pre-mutex create is followed by
+                // a second unconditional create in the placement logic below.
+                let existingGroupFolder = null;
+                try {
+                    const children = await chrome.bookmarks.getChildren(currentSessionId);
+                    existingGroupFolder = children.find(c => !c.url && c.title === title) || null;
+                } catch (err) {
+                    // If lookup fails, continue with creation path below.
+                    existingGroupFolder = null;
+                }
+
                 let insertIndex = null;
                 try {
                     const tabs = await chrome.tabs.query({ windowId });
@@ -246,15 +237,18 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
                     console.warn("Failed to calculate group insertion index", e);
                 }
 
-                const createData = {
-                    parentId: sessionId,
-                    title: title
-                };
-                if (insertIndex !== null) {
-                    createData.index = insertIndex;
+                // Reuse an existing matching folder when present, otherwise create exactly one folder.
+                let created = existingGroupFolder;
+                if (!created) {
+                    const createData = {
+                        parentId: sessionId,
+                        title: title
+                    };
+                    if (insertIndex !== null) {
+                        createData.index = insertIndex;
+                    }
+                    created = await chrome.bookmarks.create(createData);
                 }
-
-                const created = await chrome.bookmarks.create(createData);
 
                 state.liveGroupToBookmark[groupId] = created.id;
 
