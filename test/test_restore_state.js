@@ -37,7 +37,7 @@ function runInSandbox(storageData, extraSetup) {
                 onActivated: { addListener: (fn) => sandbox.listeners['tabs.onActivated'] = fn },
                 query: async (queryInfo) => {
                      return sandbox.tabs.filter(t => {
-                         if (queryInfo.windowId && t.windowId !== queryInfo.windowId) return false;
+                         if (queryInfo.windowId !== undefined && t.windowId !== queryInfo.windowId) return false;
                          if (queryInfo.active !== undefined && t.active !== queryInfo.active) return false;
                          return true;
                      });
@@ -79,6 +79,7 @@ function runInSandbox(storageData, extraSetup) {
                 create: async (data) => {
                     const b = { id: 'bm_' + Math.floor(Math.random()*10000), ...data, children: [] };
                     sandbox.bookmarks.push(b);
+                    sandbox.bookmarksById.set(b.id, b);
                     // Handle parent children
                     if (data.parentId) {
                         const p = sandbox.findBookmark(data.parentId);
@@ -102,7 +103,7 @@ function runInSandbox(storageData, extraSetup) {
                         // keys is list or object with defaults
                         if (Array.isArray(keys)) {
                             const res = {};
-                            keys.forEach(k => res[k] = storageData[k]);
+                            keys.forEach(k => { res[k] = storageData[k]; });
                             return res;
                         } else {
                             // Object with defaults
@@ -127,14 +128,19 @@ function runInSandbox(storageData, extraSetup) {
         windows: [],
         tabs: [],
         bookmarks: [],
-        findBookmark: (id) => {
-             const stack = [...sandbox.bookmarks];
-             while(stack.length) {
-                 const node = stack.pop();
-                 if (node.id === id) return node;
-                 if (node.children) stack.push(...node.children);
-             }
-             return null;
+        bookmarksById: new Map(), // O(1) lookup by bookmark ID
+        findBookmark: (id) => sandbox.bookmarksById.get(id) || null,
+        rebuildBookmarkIndex: () => {
+            sandbox.bookmarksById.clear();
+            const stack = [...sandbox.bookmarks];
+            while (stack.length) {
+                const node = stack.pop();
+                if (!node || !node.id) continue;
+                sandbox.bookmarksById.set(node.id, node);
+                if (node.children && node.children.length > 0) {
+                    stack.push(...node.children);
+                }
+            }
         }
     };
 
@@ -147,9 +153,30 @@ function runInSandbox(storageData, extraSetup) {
 
     if (extraSetup) extraSetup(sandbox);
 
-    const scriptContent = fs.readFileSync('src/background.js', 'utf8');
+    const rawScript = fs.readFileSync('src/background.js', 'utf8');
+    // Strip ES module import/export statements so vm.runInContext can evaluate
+    // the script as classic JS. The mock environment already provides the
+    // required globals (formatGroupTitle, parseGroupTitle) via sandbox injection.
+    const scriptContent = rawScript
+        .replace(/^import\s+.*$/gm, '')
+        .replace(/^export\s+.*$/gm, '')
+        // Node.js v24 vm contexts can scope top-level declarations per script.
+        // Expose the smallest explicit hook only when the function exists, so
+        // the test can flush persistence without fixed sleeps.
+        + '\nif (typeof persistMountedTabs === "function") { globalThis.__testFlushPersistence = persistMountedTabs; }\n';
     vm.createContext(sandbox);
     vm.runInContext(scriptContent, sandbox);
+
+    // Prefer direct access when available; otherwise use the explicit hook.
+    // This keeps the test deterministic while avoiding assumptions about VM
+    // exposure rules across Node versions.
+    if (typeof sandbox.persistMountedTabs === 'function') {
+        sandbox.flushMountedTabsPersistence = sandbox.persistMountedTabs.bind(sandbox);
+    } else if (typeof sandbox.__testFlushPersistence === 'function') {
+        sandbox.flushMountedTabsPersistence = sandbox.__testFlushPersistence.bind(sandbox);
+    } else {
+        throw new Error('No callable mounted-tabs persistence flush hook found in sandbox');
+    }
 
     return sandbox;
 }
@@ -185,9 +212,10 @@ async function runTest() {
     console.log("Creating Tab 1...");
     await onCreated1(tab1);
 
-    // Wait for debounce (persistMountedTabs)
-    console.log("Waiting for persistence...");
-    await new Promise(r => setTimeout(r, 2500));
+    // Trigger persistence directly instead of relying on a fixed sleep,
+    // making the test deterministic and faster.
+    console.log("Persisting mounted tabs...");
+    await sandbox1.flushMountedTabsPersistence();
 
     console.log("Storage after Phase 1:", JSON.stringify(persistentStorage.sessionMountedTabs, null, 2));
 
@@ -213,6 +241,7 @@ async function runTest() {
 
     // Copy bookmarks to simulate persistence
     sandbox2.bookmarks = JSON.parse(JSON.stringify(sandbox1.bookmarks));
+    sandbox2.rebuildBookmarkIndex();
 
     // Initialize Phase 2
     if (sandbox2.listeners['onInstalled']) await sandbox2.listeners['onInstalled']();

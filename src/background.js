@@ -32,7 +32,54 @@ const state = {
 // Kept outside 'state' object to ensure it's not accidentally reset or lost during state operations
 let isRestoring = false;
 
-const pendingMounts = []; // Queue of { logicalId, windowId }
+// Map<windowId, logicalId[]> — O(1) enqueue/dequeue per window, replacing
+// the previous flat array that required O(n) linear scans.
+const pendingMountsByWindow = new Map();
+
+/**
+ * Enqueues a mount operation for later matching in chrome.tabs.onCreated.
+ * @param {string} logicalId
+ * @param {number} windowId
+ */
+function enqueueMount(logicalId, windowId) {
+    const queue = pendingMountsByWindow.get(windowId);
+    if (queue) {
+        queue.push(logicalId);
+    } else {
+        pendingMountsByWindow.set(windowId, [logicalId]);
+    }
+}
+
+/**
+ * Dequeues the oldest mount operation for the given window (FIFO).
+ * Returns the dequeued logicalId, or null if the window has no pending mounts.
+ * Cleans up the map entry when the queue is empty.
+ * @param {number} windowId
+ * @returns {string|null}
+ */
+function dequeueMountForWindow(windowId) {
+    const queue = pendingMountsByWindow.get(windowId);
+    if (!queue || queue.length === 0) return null;
+    const logicalId = queue.shift();
+    if (queue.length === 0) pendingMountsByWindow.delete(windowId);
+    return logicalId;
+}
+
+/**
+ * Removes a specific pending mount entry matching both logicalId and windowId.
+ * Used during cleanup in the try/catch blocks of mount callers.
+ * @param {string} logicalId
+ * @param {number} windowId
+ */
+function cancelMount(logicalId, windowId) {
+    const queue = pendingMountsByWindow.get(windowId);
+    if (!queue) return;
+    const idx = queue.indexOf(logicalId);
+    if (idx !== -1) {
+        queue.splice(idx, 1);
+        if (queue.length === 0) pendingMountsByWindow.delete(windowId);
+    }
+}
 
 // --- Helper Functions ---
 // Queue for serializing move operations to handle group moves (SHIFT+Drag)
@@ -342,9 +389,12 @@ async function persistMountedTabs() {
         const session = state.sessionsById[sessionId];
         if (!session) continue;
 
-        const mountedIds = session.logicalTabs
-            .filter(lt => lt.liveTabIds.length > 0)
-            .map(lt => lt.logicalId);
+        const mountedIds = [];
+        for (const lt of session.logicalTabs) {
+            if (lt.liveTabIds.length > 0) {
+                mountedIds.push(lt.logicalId);
+            }
+        }
 
         if (mountedIds.length > 0 || session.lastActiveLogicalTabId) {
             mountedState[sessionId] = {
@@ -380,21 +430,24 @@ async function restoreMountedTabsForSession(sessionId, windowId) {
     toMount.sort((a, b) => a.indexInSession - b.indexInSession);
 
     for (const logical of toMount) {
+        const logicalId = logical.logicalId;
+        enqueueMount(logicalId, windowId);
         try {
-             const pendingEntry = { logicalId: logical.logicalId, windowId };
-             pendingMounts.push(pendingEntry);
+            const tab = await chrome.tabs.create({
+                windowId,
+                url: logical.url,
+                active: false
+            });
 
-             const tab = await chrome.tabs.create({
-                 windowId,
-                 url: logical.url,
-                 active: false
-             });
+            cancelMount(logicalId, windowId);
+            attachLiveTabToLogical(tab, logical);
 
-             // Ensure group mapping
-             if (logical.groupId) {
-                 await ensureLiveGroupForLogicalTab(tab.id, logical.groupId, session);
-             }
+            // Ensure group mapping
+            if (logical.groupId) {
+                await ensureLiveGroupForLogicalTab(tab.id, logical.groupId, session);
+            }
         } catch (e) {
+            cancelMount(logicalId, windowId);
             console.error("Failed to restore tab", e);
         }
     }
@@ -1296,10 +1349,8 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 
     const windowId = tab.windowId;
 
-    const pendingIndex = pendingMounts.findIndex(p => p.windowId === windowId);
-    if (pendingIndex !== -1) {
-        const { logicalId } = pendingMounts[pendingIndex];
-        pendingMounts.splice(pendingIndex, 1);
+    const logicalId = dequeueMountForWindow(windowId);
+    if (logicalId) {
 
         const sessionId = state.windowToSession[windowId];
         if (sessionId) {
@@ -1981,8 +2032,7 @@ async function focusOrMountLogicalTab(windowId, logicalId) {
             await focusOrMountLogicalTab(windowId, logicalId);
         }
     } else {
-        const pendingEntry = { logicalId, windowId };
-        pendingMounts.push(pendingEntry);
+        enqueueMount(logicalId, windowId);
 
         // Calculate smart insert index
         // Look for the closest left-side neighbor that is live
@@ -2013,21 +2063,17 @@ async function focusOrMountLogicalTab(windowId, logicalId) {
                 index: insertIndex
             });
 
-            const idx = pendingMounts.indexOf(pendingEntry);
-            if (idx !== -1) {
-                pendingMounts.splice(idx, 1);
-                attachLiveTabToLogical(tab, logical);
+            cancelMount(logicalId, windowId);
+            attachLiveTabToLogical(tab, logical);
 
-                // If the bookmark is in a group, we should add the live tab to a group
-                if (logical.groupId) {
-                    await ensureLiveGroupForLogicalTab(tab.id, logical.groupId, session);
-                }
-
-                notifySidebarStateUpdated(windowId, sessionId);
+            // If the bookmark is in a group, we should add the live tab to a group
+            if (logical.groupId) {
+                await ensureLiveGroupForLogicalTab(tab.id, logical.groupId, session);
             }
+
+            notifySidebarStateUpdated(windowId, sessionId);
         } catch (e) {
-            const idx = pendingMounts.indexOf(pendingEntry);
-            if (idx !== -1) pendingMounts.splice(idx, 1);
+            cancelMount(logicalId, windowId);
             console.error("Failed to create tab", e);
         }
     }
