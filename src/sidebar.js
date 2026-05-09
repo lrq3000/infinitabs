@@ -44,10 +44,19 @@ let ignoreNextAutoScroll = false;
 // Group Collapse State (persisted per group ID or just transient? Task says "can be collapsed". Transient is fine for now.)
 let collapsedGroups = new Set();
 
+/**
+ * Manages in-session sidebar search state, matching, and keyboard/navigation behavior.
+ * Invariants:
+ * - `currentMatches` stores the current DOM elements marked as search matches.
+ * - `currentMatchIndex` is `-1` when there is no active match, otherwise it is a valid index in `currentMatches`.
+ * - `performSearch()` and `clearSearch()` reset match state before recomputing highlights.
+ * - `navigateSearch()` keeps navigation cyclic within `currentMatches` and updates the active highlight.
+ */
 class SearchController {
     constructor() {
         this.currentMatches = [];
         this.currentMatchIndex = -1;
+        this.searchDebounceId = null;
 
         // Cache elements
         this.searchInput = document.getElementById('search-input');
@@ -61,7 +70,7 @@ class SearchController {
 
     bindEvents() {
         // Pass true to enable navigation when user types
-        this.searchInput.addEventListener('input', () => this.performSearch(true));
+        this.searchInput.addEventListener('input', () => this.scheduleSearch(true));
         this.searchInput.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
                 e.preventDefault();
@@ -76,6 +85,17 @@ class SearchController {
         this.locateCurrentBtn.addEventListener('click', scrollToActiveTab);
 
         document.addEventListener('keydown', (e) => this.handleKeyDown(e));
+    }
+
+    scheduleSearch(navigate) {
+        // Debounce input-driven search to avoid recomputing on every keystroke burst.
+        if (this.searchDebounceId !== null) {
+            clearTimeout(this.searchDebounceId);
+        }
+        this.searchDebounceId = setTimeout(() => {
+            this.searchDebounceId = null;
+            this.performSearch(navigate);
+        }, 75);
     }
 
     handleKeyDown(e) {
