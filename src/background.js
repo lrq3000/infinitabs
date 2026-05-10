@@ -1964,7 +1964,7 @@ async function handleAddNewTab(windowId, ctrlKey) {
     const sessionId = state.windowToSession[windowId];
     if (!sessionId) return;
 
-    // Find active live tab in the window to use as an anchor
+    // Find the active live tab to decide where the new tab should be inserted.
     const activeTabs = await chrome.tabs.query({ windowId, active: true });
     const activeTab = activeTabs.length > 0 ? activeTabs[0] : null;
 
@@ -1973,10 +1973,12 @@ async function handleAddNewTab(windowId, ctrlKey) {
 
     if (activeTab) {
         if (!ctrlKey) {
+            // No Ctrl: insert right after the active tab and inherit its group when present.
             insertIndex = activeTab.index + 1;
             groupId = activeTab.groupId !== -1 ? activeTab.groupId : undefined;
         } else {
             if (activeTab.groupId !== -1) {
+                // Ctrl + grouped active tab: append after the last tab in that group.
                 const groupTabs = await chrome.tabs.query({ windowId, groupId: activeTab.groupId });
                 let highestIndex = -1;
                 for (const t of groupTabs) {
@@ -1985,6 +1987,7 @@ async function handleAddNewTab(windowId, ctrlKey) {
                 insertIndex = highestIndex + 1;
                 groupId = activeTab.groupId;
             } else {
+                // Ctrl + ungrouped active tab: omit index so Chrome opens at the window end.
                 insertIndex = undefined;
                 groupId = undefined;
             }
@@ -1993,12 +1996,14 @@ async function handleAddNewTab(windowId, ctrlKey) {
 
     try {
         const createProps = { windowId, url: 'chrome://newtab/', active: true };
+        // When index is undefined we intentionally let Chrome choose the insertion point.
         if (insertIndex !== undefined) {
             createProps.index = insertIndex;
         }
 
         const newTab = await chrome.tabs.create(createProps);
 
+        // Grouping is applied after creation because the tab ID is only known post-create.
         if (groupId !== undefined) {
             await chrome.tabs.group({ tabIds: newTab.id, groupId: groupId });
         }
