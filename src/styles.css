@@ -227,6 +227,7 @@ body.dark-mode .top-level-tab.active {
   display: flex;
   align-items: center;
   justify-content: center;
+  line-height: 1;
   font-weight: bold;
   font-size: 16px;
   padding: 0;
