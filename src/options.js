@@ -9,6 +9,7 @@ const activeTabColorInput = document.getElementById('active-tab-color-input');
 const selectedTabColorInput = document.getElementById('selected-tab-color-input');
 const nameSessionsWithWordsCheckbox = document.getElementById('name-sessions-with-words-checkbox');
 const statusDiv = document.getElementById('status');
+const configureHotkeysBtn = document.getElementById('configure-hotkeys-btn');
 
 // Defaults
 const DEFAULT_CONFIRM_DELETE = true;
@@ -99,3 +100,5 @@ reloadOnRestartCheckbox.addEventListener('change', saveOptions);
 activeTabColorInput.addEventListener('input', debouncedSaveOptions);
 selectedTabColorInput.addEventListener('input', debouncedSaveOptions);
 nameSessionsWithWordsCheckbox.addEventListener('change', saveOptions);
+
+configureHotkeysBtn.addEventListener('click', () => chrome.tabs.create({ url: 'chrome://extensions/shortcuts' }));
