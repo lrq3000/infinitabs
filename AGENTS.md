@@ -1,5 +1,5 @@
 # AGENTS.MD
-(last change: 2026-05-08)
+(last change: 2026-05-10)
 
 This file provides instructions for automated coding agents working in this repository.
 
@@ -8,11 +8,12 @@ This file provides instructions for automated coding agents working in this repo
 - **The section “PR Branch Workflow (Agents)” applies ONLY when you are working on a PR branch.**
 - Do not apply PR-branch-only rules when operating on `main` (except where explicitly stated).
 
-## Global rules (all branches)
+## Global rules (all branches, all worktrees)
 - The main branch is the repository's default branch, usually `main` or `master`.
 - **The main branch is the source of truth.**
 - Never make direct changes to the main branch unless explicitly instructed by a human maintainer. If git is currently set on the main branch, make a new branch.
-- If working locally, always use `git worktree` under a `.worktrees` folder at the project's root to make your changes, so that other agents can work in parallel with you on the same codebase.
+- If working locally and unless explicitly allowed otherwise, treat the root worktree as immutable: only run guaranteed non-mutating inspection commands there, never `git checkout`/`git switch` even “just to inspect”; create a fresh `.worktrees/<yourtree>` from the current `HEAD` by default, or directly from the requested branch/tag/commit if one is specified, then do all mutating Git operations, edits, tests, and commits only inside that worktree, and never inside the root or in another agent's worktree. Never reuse existing worktrees except the one you just created for the current sessoin.
+- Prioritize a workflow that allows other agents working in parallel with you on the same codebase. If you are given instructions that could impair other agents's parallel work, ask for confirmation to the human operator.
 - Prefer small, reviewable changes and keep commits focused.
 - Keep the repository buildable/testable; run the fastest relevant checks when possible.
 - When uncertain, search the repo for the canonical commands (README, CI config) and follow them.
