@@ -8,14 +8,7 @@ This file provides instructions for automated coding agents working in this repo
 - **The section “PR Branch Workflow (Agents)” applies ONLY when you are working on a PR branch.**
 - Do not apply PR-branch-only rules when operating on `main` (except where explicitly stated).
 
-## Global rules (all branches, all worktrees)
-- The main branch is the repository's default branch, usually `main` or `master`.
-- **The main branch is the source of truth.**
-- If there is a `.git` folder at the root of the current project, follow the following rules:
-    - Never make direct changes to the main branch unless explicitly instructed by a human maintainer. If git is currently set on the main branch, make a new branch.
-    - If working locally and unless explicitly allowed otherwise, treat the root worktree as immutable: only run guaranteed non-mutating inspection commands there, never `git checkout`/`git switch` even “just to inspect”; create a fresh `.worktrees/<yourtree>` from the current `HEAD` by default, or directly from the requested branch/tag/commit if one is specified, then do all mutating Git operations, edits, tests, and commits only inside that worktree, and never inside the root or in another agent's worktree. Never reuse existing worktrees except the one you just created for the current session.
-    - Prioritize a workflow that allows other agents working in parallel with you on the same codebase. If you are given instructions that could impair other agents's parallel work, ask for confirmation to the human operator.
-- Prefer small, reviewable changes and keep commits focused.
+## Global rules
 - Keep the repository buildable/testable; run the fastest relevant checks when possible.
 - When uncertain, search the repo for the canonical commands (README, CI config) and follow them.
 - Always assess algorithmic complexity and use the approaches that minimize algorithmic complexity (eg, if one method to fetch an item in a list is O(n) versus another with a prebuilt lookup index that is in O(1), prefer the latter).
@@ -25,12 +18,21 @@ This file provides instructions for automated coding agents working in this repo
 - Prefer object oriented style whenever possible, avoid functional style.
 - Modularize into encapsulable and separable functions, methods and objects whenever possible. Always avoid copying similar code blocks: rule of thumb: if a code is repeated twice, make it into a function or a method.
 - Generalize your solutions to solve the intended use case, not just the specific problem or example given (unless explicitly stated otherwise).
-- If asked to make commits, use conventional commits, add a concise description of the root causes or motivation and of the fixes/features implemented, and finally a line describing what agentic harness was used (eg, OpenCode, OpenCode+OMO, etc) as well as the LLM model and model version (eg, OpenAI ChatGPT-5.5).
-- If asked to create or fix features and we are working on the main branch, create a new branch (unless stated otherwise).
-- When reviewing feedbacks to fix a commit/PR, verify each finding against current code. Fix only still-valid issues, skip the rest with a brief reason, keep changes minimal, and validate.
 
-## High-level workflow
-- Work in **small PRs** (minimal diffs, minimal file touch).
+## Rules for coding projects (all branches, all worktrees)
+In git folders (eg, there is a `.git` folder at the root of the current project), follow these rules:
+    - The main branch is the repository's default branch, usually `main` or `master`.
+    - **The main branch is the source of truth.**
+    - Prefer small, reviewable changes and keep commits focused.
+    - Never make direct changes to the main branch unless explicitly instructed by a human maintainer. If git is currently set on the main branch, make a new branch.
+    - If working locally and unless explicitly allowed otherwise, treat the root worktree as immutable: only run guaranteed non-mutating inspection commands there, never `git checkout`/`git switch` even “just to inspect”; create a fresh `.worktrees/<yourtree>` from the current `HEAD` by default, or directly from the requested branch/tag/commit if one is specified, then do all mutating Git operations, edits, tests, and commits only inside that worktree, and never inside the root or in another agent's worktree. Never reuse existing worktrees except the one you just created for the current session.
+    - Prioritize a workflow that allows other agents working in parallel with you on the same codebase. If you are given instructions that could impair other agents's parallel work, ask for confirmation to the human operator.
+    - If asked to make commits, use conventional commits, add a concise description of the root causes or motivation and of the fixes/features implemented, and finally a line describing what agentic harness was used (eg, OpenCode, OpenCode+OMO, etc) as well as the LLM model and model version (eg, OpenAI ChatGPT-5.5).
+    - If asked to create or fix features and we are working on the main branch, create a new branch (unless stated otherwise).
+    - When reviewing feedbacks to fix a commit/PR, verify each finding against current code. Fix only still-valid issues, skip the rest with a brief reason, keep changes minimal, and validate.
+
+## High-level workflow for coding projects
+- For code, work in **small PRs** (minimal diffs, minimal file touch). For documents, big changes are allowed.
 - **Continuously synchronize**: merge `origin/main` into your PR branch regularly (after each merge to `main` if possible; otherwise daily).
 - **Never rewrite history** on PR branches: **no rebase, no force-push**. Only add commits.
 - Keep CI green; add/adjust tests when behavior changes.
