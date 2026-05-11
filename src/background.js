@@ -1701,6 +1701,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     sendResponse({ success: true });
                     break;
                 }
+                case "DELETE_MOUNTED_TABS_IN_GROUP": {
+                    await handleDeleteMountedTabsInGroup(message.windowId, message.groupId);
+                    sendResponse({ success: true });
+                    break;
+                }
                 case "RENAME_SESSION": {
                     await handleRenameSession(message.sessionId, message.newName);
                     sendResponse({ success: true });
@@ -2106,6 +2111,57 @@ async function handleDeleteLogicalGroup(windowId, groupId) {
         delete state.liveGroupToBookmark[liveGroupId];
     }
 
+    await reloadSessionAndPreserveState(sessionId, windowId);
+    notifySidebarStateUpdated(windowId, sessionId);
+}
+
+async function handleDeleteMountedTabsInGroup(windowId, groupId) {
+    const sessionId = state.windowToSession[windowId];
+    if (!sessionId) return;
+    const session = state.sessionsById[sessionId];
+    if (!session) return;
+
+    const group = session.groups[groupId];
+    if (!group) return;
+
+    // Identify logical tabs in this group that have live tabs
+    const tabsInGroupWithLiveTabs = session.logicalTabs.filter(t => t.groupId === groupId && t.liveTabIds && t.liveTabIds.length > 0);
+    const liveTabsToClose = [];
+
+    // Remove bookmarks for these mounted tabs
+    for (const t of tabsInGroupWithLiveTabs) {
+        liveTabsToClose.push(...t.liveTabIds);
+        try {
+            await chrome.bookmarks.remove(t.bookmarkId);
+        } catch (e) {
+            console.error("Failed to delete bookmark for mounted tab in group", e);
+        }
+    }
+
+    // Remove from session model
+    session.logicalTabs = session.logicalTabs.filter(t => !(t.groupId === groupId && t.liveTabIds && t.liveTabIds.length > 0));
+
+    // Close live tabs
+    if (liveTabsToClose.length > 0) {
+        // Switch tab if active tab is being closed
+        const activeTab = await chrome.tabs.query({ active: true, windowId }).then(tabs => tabs[0]);
+        if (activeTab && liveTabsToClose.includes(activeTab.id)) {
+            await activatePreviousTab(windowId, liveTabsToClose);
+        }
+
+        try {
+            await chrome.tabs.remove(liveTabsToClose);
+        } catch (e) {
+            console.warn("Failed to close live tabs for deleted mounted tabs in group", e);
+        }
+
+        // Clean up tabToLogical mappings
+        liveTabsToClose.forEach(tid => {
+            delete state.tabToLogical[tid];
+        });
+    }
+
+    // Notice we DO NOT delete the group bookmark folder.
     await reloadSessionAndPreserveState(sessionId, windowId);
     notifySidebarStateUpdated(windowId, sessionId);
 }

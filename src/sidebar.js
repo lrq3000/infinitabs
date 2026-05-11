@@ -782,18 +782,31 @@ function createGroupElement(group, displayName, color) {
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'group-delete-btn';
     deleteBtn.textContent = '×';
-    deleteBtn.title = 'Delete logical group and all tabs within';
+    deleteBtn.title = showLiveOnly ? 'Delete mounted tabs in logical group' : 'Delete logical group and all tabs within';
     deleteBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (confirm("Are you sure you want to delete this group? This will delete all tabs inside it.")) {
-             chrome.runtime.sendMessage({
-                type: "DELETE_LOGICAL_GROUP",
-                windowId: currentWindowId,
-                groupId: group.groupId
-            }).catch((err) => {
-                console.error("Failed to delete group", err);
-                alert("Failed to delete group. Please try again.");
-            });
+        if (showLiveOnly) {
+            if (confirm("Are you sure you want to delete all visible (mounted) tabs in this group?")) {
+                 chrome.runtime.sendMessage({
+                    type: "DELETE_MOUNTED_TABS_IN_GROUP",
+                    windowId: currentWindowId,
+                    groupId: group.groupId
+                }).catch((err) => {
+                    console.error("Failed to delete mounted tabs in group", err);
+                    alert("Failed to delete mounted tabs. Please try again.");
+                });
+            }
+        } else {
+            if (confirm("Are you sure you want to delete this group? This will delete all tabs inside it.")) {
+                 chrome.runtime.sendMessage({
+                    type: "DELETE_LOGICAL_GROUP",
+                    windowId: currentWindowId,
+                    groupId: group.groupId
+                }).catch((err) => {
+                    console.error("Failed to delete group", err);
+                    alert("Failed to delete group. Please try again.");
+                });
+            }
         }
     });
     el.appendChild(deleteBtn);
