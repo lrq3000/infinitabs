@@ -786,27 +786,21 @@ function createGroupElement(group, displayName, color) {
     deleteBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         if (showLiveOnly) {
-            if (confirm("Are you sure you want to delete all visible (mounted) tabs in this group?")) {
-                 chrome.runtime.sendMessage({
-                    type: "DELETE_MOUNTED_TABS_IN_GROUP",
-                    windowId: currentWindowId,
-                    groupId: group.groupId
-                }).catch((err) => {
-                    console.error("Failed to delete mounted tabs in group", err);
-                    alert("Failed to delete mounted tabs. Please try again.");
-                });
-            }
+            confirmAndSendDeleteGroup(
+                "DELETE_MOUNTED_TABS_IN_GROUP",
+                currentWindowId,
+                group.groupId,
+                "Are you sure you want to delete all visible (mounted) tabs in this group?",
+                "Failed to delete mounted tabs in group"
+            );
         } else {
-            if (confirm("Are you sure you want to delete this group? This will delete all tabs inside it.")) {
-                 chrome.runtime.sendMessage({
-                    type: "DELETE_LOGICAL_GROUP",
-                    windowId: currentWindowId,
-                    groupId: group.groupId
-                }).catch((err) => {
-                    console.error("Failed to delete group", err);
-                    alert("Failed to delete group. Please try again.");
-                });
-            }
+            confirmAndSendDeleteGroup(
+                "DELETE_LOGICAL_GROUP",
+                currentWindowId,
+                group.groupId,
+                "Are you sure you want to delete this group? This will delete all tabs inside it.",
+                "Failed to delete group"
+            );
         }
     });
     el.appendChild(deleteBtn);
@@ -815,10 +809,43 @@ function createGroupElement(group, displayName, color) {
     return el;
 }
 
+/**
+ * Confirm-then-send helper: shows a confirmation dialog and, if accepted,
+ * sends a chrome.runtime.sendMessage with the given type. Avoids duplicating
+ * the confirm/sendMessage/catch pattern across the Live Only and normal branches.
+ *
+ * @param {string} messageType - The message type string (e.g. "DELETE_LOGICAL_GROUP")
+ * @param {number} windowId - The current window ID for the message payload
+ * @param {string} groupId - The logical group ID for the message payload
+ * @param {string} confirmText - The text shown in the confirm() dialog
+ * @param {string} errorLabel - Short label used in console.error and alert messages
+ */
+async function confirmAndSendDeleteGroup(messageType, windowId, groupId, confirmText, errorLabel) {
+    if (confirm(confirmText)) {
+        try {
+            await chrome.runtime.sendMessage({
+                type: messageType,
+                windowId,
+                groupId
+            });
+        } catch (err) {
+            console.error(errorLabel, err);
+            alert(`${errorLabel}. Please try again.`);
+        }
+    }
+}
+
 function updateGroupElement(el, group, displayName, color) {
     const titleSpan = el.querySelector('.group-title-text');
     if (titleSpan.textContent !== displayName) {
         titleSpan.textContent = displayName;
+    }
+
+    // Refresh the delete button tooltip based on the current Live Only mode,
+    // since it may have been toggled after the group element was first created.
+    const deleteBtn = el.querySelector('.group-delete-btn');
+    if (deleteBtn) {
+        deleteBtn.title = showLiveOnly ? 'Delete mounted tabs in logical group' : 'Delete logical group and all tabs within';
     }
 
     // Update color styles

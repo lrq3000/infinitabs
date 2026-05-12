@@ -1,7 +1,12 @@
 import os
 import sys
 import json
+import tempfile
 from playwright.sync_api import sync_playwright
+
+# Configurable artifact directories — override via environment variables for CI/portability
+SCREENSHOT_DIR = os.getenv('VERIFICATION_SCREENSHOT_DIR', os.path.join(tempfile.gettempdir(), 'verification_screenshots'))
+VIDEO_DIR = os.getenv('VERIFICATION_VIDEO_DIR', os.path.join(tempfile.gettempdir(), 'verification_videos'))
 
 def run_cuj(page):
     # Setup mock state for sidebar
@@ -122,15 +127,17 @@ def run_cuj(page):
     assert sent_mounted is True
     print("Live Only mode: DELETE_MOUNTED_TABS_IN_GROUP sent successfully.")
 
-    page.screenshot(path="/home/jules/verification/screenshots/verification.png")
+    os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+    page.screenshot(path=os.path.join(SCREENSHOT_DIR, "verification.png"))
     page.wait_for_timeout(1000)
 
 
 if __name__ == "__main__":
+    os.makedirs(VIDEO_DIR, exist_ok=True)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=['--disable-web-security'])
         context = browser.new_context(
-            record_video_dir="/home/jules/verification/videos",
+            record_video_dir=VIDEO_DIR,
             viewport={"width": 800, "height": 600}
         )
         page = context.new_page()
