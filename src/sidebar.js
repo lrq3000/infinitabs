@@ -44,6 +44,7 @@ let showLiveOnly = false;
 let selectedLogicalIds = new Set();
 let lastSelectedLogicalId = null; // For shift-click range
 let draggedLogicalIds = [];
+let dragStartTime = 0;
 let ignoreNextAutoScroll = false;
 
 // Group Collapse State (persisted per group ID or just transient? Task says "can be collapsed". Transient is fine for now.)
@@ -1077,6 +1078,7 @@ function setupDragHandlers(el) {
 }
 
 function onDragStart(e) {
+    dragStartTime = Date.now();
     const id = e.target.dataset.id;
     if (!id) return;
 
@@ -1137,6 +1139,8 @@ function onDrop(e) {
     const target = e.currentTarget;
     target.classList.remove('drop-before', 'drop-after', 'drop-inside');
 
+    if (Date.now() - dragStartTime < 500) return;
+
     const targetId = target.dataset.id;
     if (!targetId) return;
 
@@ -1177,6 +1181,10 @@ function onDrop(e) {
 function onDragEnd(e) {
     e.target.classList.remove('dragging');
     draggedLogicalIds = [];
+
+    if (Date.now() - dragStartTime < 500) {
+        handleTabClick(e, e.target.dataset.id);
+    }
 }
 
 // Start
