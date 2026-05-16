@@ -47,6 +47,9 @@ let draggedLogicalIds = [];
 let dragStartTime = 0;
 let ignoreNextAutoScroll = false;
 
+// Quick-drag timing threshold
+const QUICK_DRAG_THRESHOLD_MS = 500;
+
 // Group Collapse State (persisted per group ID or just transient? Task says "can be collapsed". Transient is fine for now.)
 let collapsedGroups = new Set();
 
@@ -1012,6 +1015,10 @@ function escapeHtml(text) {
 
 // --- Selection & Drag Logic ---
 
+function isQuickDrag(dragStartTime) {
+    return Date.now() - dragStartTime < QUICK_DRAG_THRESHOLD_MS;
+}
+
 function handleTabClick(e, logicalId) {
     if (e.ctrlKey || e.metaKey) {
         // Toggle selection
@@ -1139,7 +1146,7 @@ function onDrop(e) {
     const target = e.currentTarget;
     target.classList.remove('drop-before', 'drop-after', 'drop-inside');
 
-    if (Date.now() - dragStartTime < 500) return;
+    if (isQuickDrag(dragStartTime)) return;
 
     const targetId = target.dataset.id;
     if (!targetId) return;
@@ -1182,7 +1189,7 @@ function onDragEnd(e) {
     e.target.classList.remove('dragging');
     draggedLogicalIds = [];
 
-    if (Date.now() - dragStartTime < 500) {
+    if (isQuickDrag(dragStartTime)) {
         if (e.currentTarget.dataset.type === 'tab') handleTabClick(e, e.currentTarget.dataset.id);
     }
 }
