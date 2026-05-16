@@ -1016,7 +1016,7 @@ function escapeHtml(text) {
 // --- Selection & Drag Logic ---
 
 function isQuickDrag(dragStartTime) {
-    return Date.now() - dragStartTime < QUICK_DRAG_THRESHOLD_MS;
+    return dragStartTime > 0 && Date.now() - dragStartTime < QUICK_DRAG_THRESHOLD_MS;
 }
 
 function handleTabClick(e, logicalId) {
@@ -1186,12 +1186,17 @@ function onDrop(e) {
 }
 
 function onDragEnd(e) {
-    e.target.classList.remove('dragging');
+    const draggedElement = e.currentTarget;
+
+    draggedElement.classList.remove('dragging');
     draggedLogicalIds = [];
 
     if (isQuickDrag(dragStartTime)) {
-        if (e.currentTarget.dataset.type === 'tab') handleTabClick(e, e.currentTarget.dataset.id);
+        // Keep this fallback tab-only: group IDs must never flow into FOCUS_OR_MOUNT_TAB.
+        if (draggedElement.dataset.type === 'tab') handleTabClick(e, draggedElement.dataset.id);
     }
+
+    dragStartTime = 0;
 }
 
 // Start
