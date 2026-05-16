@@ -1183,7 +1183,7 @@ function onDragEnd(e) {
     draggedLogicalIds = [];
 
     if (Date.now() - dragStartTime < 500) {
-        handleTabClick(e, e.target.dataset.id);
+        if (e.currentTarget.dataset.type === 'tab') handleTabClick(e, e.currentTarget.dataset.id);
     }
 }
 
