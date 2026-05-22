@@ -104,6 +104,14 @@ function runTest() {
     console.log('Starting test_sidebar_quick_drag.js...');
 
     const result = runSidebarScenario(`
+        const dragStartClassList = { added: [], add(...classNames) { this.added.push(...classNames); } };
+        const dragStartRoot = { dataset: { type: 'tab', id: 'tab-start-1' }, classList: dragStartClassList };
+        const dragStartChildTarget = { dataset: {}, classList: { add() {} } };
+        const fakeDataTransfer = { effectAllowed: '', setData() {} };
+
+        // onDragStart should read dataset/classList from the draggable root, not from child targets.
+        onDragStart({ currentTarget: dragStartRoot, target: dragStartChildTarget, dataTransfer: fakeDataTransfer });
+
         const rootClassList = { removed: [], remove(...classNames) { this.removed.push(...classNames); } };
         const tabRoot = { dataset: { type: 'tab', id: 'tab-1' }, classList: rootClassList };
         const childTarget = { dataset: {} };
@@ -128,6 +136,7 @@ function runTest() {
         onDragEnd({ currentTarget: secondTabRoot, target: secondTabRoot });
 
         __results = {
+            dragStartAddedClasses: dragStartClassList.added.slice(),
             childTargetThrew,
             removedAfterChildTarget,
             messagesAfterChildTarget,
@@ -135,6 +144,7 @@ function runTest() {
         };
     `);
 
+    assert.deepStrictEqual(Array.from(result.dragStartAddedClasses), ['dragging'], 'dragstart should add dragging on the draggable root even when the event target is a child');
     assert.strictEqual(result.childTargetThrew, false, 'dragend should use the draggable root when the event target is a child');
     assert.deepStrictEqual(Array.from(result.removedAfterChildTarget), ['dragging'], 'dragend should clear dragging from the draggable root');
     assert.strictEqual(result.messagesAfterChildTarget.length, 1, 'a quick tab drag should synthesize exactly one tab click');

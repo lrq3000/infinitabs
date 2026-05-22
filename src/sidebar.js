@@ -1086,7 +1086,8 @@ function setupDragHandlers(el) {
 
 function onDragStart(e) {
     dragStartTime = Date.now();
-    const id = e.target.dataset.id;
+    const draggedElement = e.currentTarget;
+    const id = draggedElement.dataset.id;
     if (!id) return;
 
     // If dragging a selected item, drag all selected.
@@ -1103,7 +1104,9 @@ function onDragStart(e) {
     e.dataTransfer.setData('text/plain', JSON.stringify(draggedLogicalIds));
 
     // Visual feedback
-    e.target.classList.add('dragging');
+    // Use the draggable root element instead of the deepest child target,
+    // so nested tab/group markup cannot break drag state bookkeeping.
+    draggedElement.classList.add('dragging');
 }
 
 function onDragOver(e) {
