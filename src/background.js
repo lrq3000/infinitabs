@@ -11,6 +11,7 @@ const state = {
     sessionsById: {},     // Record<SessionId, Session>
     windowToSession: {},  // Record<WindowId, SessionId>
     tabToLogical: {},     // Record<TabId, LogicalTabId>
+    sessionMountedTabs: {}, // Record<SessionId, Array<{bookmarkId: string, url: string}>>
     liveGroupToBookmark: {}, // Record<LiveGroupId, BookmarkId>
     ignoreMoveEventsForTabIds: new Set(), // Set<TabId>
     isCreatingGroup: false, // Flag to suppress bookmark creation during programmatic group creation
@@ -473,6 +474,42 @@ function notifySidebarStateUpdated(windowId, sessionId) {
 }
 
 /**
+ * Returns true for URLs that are too generic to identify a session.
+ * These pages are frequently auto-created by the browser and should not
+ * dominate the matching heuristic.
+ */
+function isTrivialSessionMatchUrl(url) {
+    return !url || url === "chrome://newtab/" || url === "edge://newtab/" || url === "about:blank";
+}
+
+/**
+ * Rebuilds the persisted mounted-tab index for one session.
+ *
+ * We intentionally persist stable bookmark IDs (not logical IDs) because
+ * logical IDs are regenerated when bookmarks are reloaded from storage.
+ * Keeping bookmarkId + URL preserves the relative tab identity across restarts.
+ */
+function refreshSessionMountedTabs(sessionId) {
+    const session = state.sessionsById[sessionId];
+    if (!session) {
+        delete state.sessionMountedTabs[sessionId];
+        return;
+    }
+
+    const mountedTabs = [];
+    for (const logical of session.logicalTabs) {
+        if (!logical || !logical.bookmarkId || !logical.url) continue;
+        if (!logical.liveTabIds || logical.liveTabIds.length === 0) continue;
+        mountedTabs.push({
+            bookmarkId: logical.bookmarkId,
+            url: logical.url
+        });
+    }
+
+    state.sessionMountedTabs[sessionId] = mountedTabs;
+}
+
+/**
  * Maps a live tab to a logical tab in memory.
  */
 function attachLiveTabToLogical(tab, logical) {
@@ -491,6 +528,7 @@ function attachLiveTabToLogical(tab, logical) {
 async function persistState() {
     await chrome.storage.local.set({
         windowToSession: state.windowToSession,
+        sessionMountedTabs: state.sessionMountedTabs,
         workspaceHistory: state.workspaceHistory,
         favoriteWorkspaces: state.favoriteWorkspaces,
         lastKnownWorkspace: state.lastKnownWorkspace,
@@ -527,6 +565,11 @@ async function bindWindowToSession(windowId, sessionId) {
 
     // 4. Sync existing tabs
     await syncExistingTabsInWindowToSession(windowId, sessionId);
+
+    // Persist mounted-tab records right after synchronization so startup
+    // matching can identify browser-restored windows in future launches.
+    refreshSessionMountedTabs(sessionId);
+    await persistState();
 
     // 5. Notify UI
     notifySidebarStateUpdated(windowId, sessionId);
@@ -677,6 +720,91 @@ async function syncExistingTabsInWindowToSession(windowId, sessionId) {
             }
         }
     }
+}
+
+/**
+ * Tries to match a list of live tabs to a session ID from a given pool based on persisted mounted tabs.
+ * Useful to detect if the browser restored windows/tabs from a previous session.
+ * @param {Array<chrome.tabs.Tab>} tabs
+ * @param {Array<string>} sessionIds
+ * @returns {Promise<string|null>} The best matching sessionId or null.
+ */
+async function matchWindowToSession(tabs, sessionIds) {
+    if (tabs.length === 0) return null;
+
+    let bestMatchSessionId = null;
+    let maxMatchedUrls = 0;
+
+    // Keep raw positional order for sequence scoring, then build a second
+    // filtered/hashed view for presence scoring. Using two views avoids index
+    // drift when trivial URLs are removed.
+    const allTabUrls = tabs.map(t => t.url || "");
+    const meaningfulTabUrls = allTabUrls.filter(url => !isTrivialSessionMatchUrl(url));
+    const meaningfulTabUrlSet = new Set(meaningfulTabUrls);
+
+    // If everything is trivial, there is no reliable signal for matching.
+    if (meaningfulTabUrls.length === 0) return null;
+
+    for (const sessionId of sessionIds) {
+        // state.sessionMountedTabs stores stable bookmark records.
+        // For backward compatibility we also accept the old logicalId[] shape,
+        // but we normalize both shapes into the same matching payload.
+        const mountedEntries = state.sessionMountedTabs[sessionId];
+        if (!mountedEntries || mountedEntries.length === 0) continue;
+
+        // Ensure session is loaded to validate bookmark IDs and provide URL
+        // fallbacks for legacy entries.
+        let session = state.sessionsById[sessionId];
+        if (!session) {
+            try {
+                session = await loadSessionFromBookmarks(sessionId);
+            } catch(e) {
+                continue;
+            }
+        }
+
+        // Build O(1) indexes once per session to avoid repeated O(n) scans.
+        const logicalTabByBookmarkId = new Map(session.logicalTabs.map(lt => [lt.bookmarkId, lt]));
+        const logicalTabByLogicalId = new Map(session.logicalTabs.map(lt => [lt.logicalId, lt]));
+
+        let matchCount = 0;
+        // Scoring heuristic:
+        // - +1.0 if URL matches at the same index (strong order-preserving signal)
+        // - +0.5 if URL exists elsewhere (weaker presence-only signal)
+        // This balances exact restores and partial reorderings.
+        for (let i = 0; i < mountedEntries.length; i++) {
+            const entry = mountedEntries[i];
+            let logicalTab = null;
+
+            // Current canonical shape: { bookmarkId, url }.
+            if (entry && typeof entry === 'object' && entry.bookmarkId) {
+                logicalTab = logicalTabByBookmarkId.get(entry.bookmarkId) || null;
+            }
+
+            // Legacy compatibility: old persisted value was logicalId string.
+            if (!logicalTab && typeof entry === 'string') {
+                logicalTab = logicalTabByLogicalId.get(entry) || null;
+            }
+
+            const entryUrl = (logicalTab && logicalTab.url) || (entry && typeof entry === 'object' ? entry.url : null);
+            if (!entryUrl || isTrivialSessionMatchUrl(entryUrl)) continue;
+
+            // Compare with unfiltered positional URLs to avoid index mismatch.
+            if (i < allTabUrls.length && allTabUrls[i] === entryUrl) {
+                matchCount++;
+            } else if (meaningfulTabUrlSet.has(entryUrl)) {
+                matchCount += 0.5;
+            }
+        }
+
+        // Threshold: require at least one solid signal and keep the best score.
+        if (matchCount > maxMatchedUrls && matchCount >= 1) {
+            maxMatchedUrls = matchCount;
+            bestMatchSessionId = sessionId;
+        }
+    }
+
+    return bestMatchSessionId;
 }
 
 /**
@@ -850,9 +978,41 @@ async function restoreWorkspace(snapshot) {
 
     try {
         const currentWindows = await chrome.windows.getAll();
+        const matchedWindowIds = new Set();
+
+        // Optimize: Match existing windows if the browser restored them
+        const sessionIdsToRestore = snapshot.sessions.map(s => s.sessionId);
+
+        for (const win of currentWindows) {
+             if (win.type !== 'normal' && win.type !== 'popup') continue;
+             const tabs = await chrome.tabs.query({ windowId: win.id });
+             const matchedSessionId = await matchWindowToSession(tabs, sessionIdsToRestore);
+             if (matchedSessionId) {
+                 // Prevent double matching
+                 const idx = sessionIdsToRestore.indexOf(matchedSessionId);
+                 if (idx !== -1) {
+                     sessionIdsToRestore.splice(idx, 1); // remove from pool
+                     matchedWindowIds.add(win.id);
+                     console.log(`restoreWorkspace: Matched existing window ${win.id} to session ${matchedSessionId}`);
+
+                     // Bind existing window to session instead of creating a new one
+                     try {
+                         await bindWindowToSession(win.id, matchedSessionId);
+                     } catch (err) {
+                         console.error(`restoreWorkspace: Failed to bind matched session ${matchedSessionId}`, err);
+                     }
+                 }
+             }
+        }
+
         const newWindowIds = [];
 
         for (const sessionInfo of snapshot.sessions) {
+            // Skip if this session was already matched to an existing window
+            if (!sessionIdsToRestore.includes(sessionInfo.sessionId)) {
+                continue;
+            }
+
             const createData = {
                 url: "about:blank", // Will be populated by session bind
                 state: sessionInfo.state || 'normal'
@@ -899,13 +1059,15 @@ async function restoreWorkspace(snapshot) {
             }
         }
 
-        // Close old windows
+        // Close old windows ONLY if they were not matched to a session
         for (const win of currentWindows) {
             if (win.type === 'normal' || win.type === 'popup') {
-                try {
-                    await chrome.windows.remove(win.id);
-                } catch (e) {
-                    console.warn("Failed to close window", win.id, e);
+                if (!matchedWindowIds.has(win.id)) {
+                    try {
+                        await chrome.windows.remove(win.id);
+                    } catch (e) {
+                        console.warn("Failed to close window", win.id, e);
+                    }
                 }
             }
         }
@@ -935,8 +1097,9 @@ function init(options = {}) {
             }
 
             // Restore persisted state
-            const storage = await chrome.storage.local.get(['windowToSession', 'workspaceHistory', 'favoriteWorkspaces', 'lastKnownWorkspace', 'historySize', 'reloadOnRestart', 'nameSessionsWithWords', 'selectLastActiveTab', 'maxTabHistory']);
+            const storage = await chrome.storage.local.get(['windowToSession', 'sessionMountedTabs', 'workspaceHistory', 'favoriteWorkspaces', 'lastKnownWorkspace', 'historySize', 'reloadOnRestart', 'nameSessionsWithWords', 'selectLastActiveTab', 'maxTabHistory']);
             if (storage.windowToSession) state.windowToSession = storage.windowToSession;
+            if (storage.sessionMountedTabs) state.sessionMountedTabs = storage.sessionMountedTabs;
             if (storage.workspaceHistory) state.workspaceHistory = storage.workspaceHistory;
             if (storage.favoriteWorkspaces) state.favoriteWorkspaces = storage.favoriteWorkspaces;
             if (storage.lastKnownWorkspace) state.lastKnownWorkspace = storage.lastKnownWorkspace;
@@ -969,11 +1132,15 @@ function init(options = {}) {
                     }
                 }
 
+                const allSessionIds = sessionFolders.map(f => f.id);
+
                 for (const win of windows) {
                     const storedSessionId = state.windowToSession[win.id];
                     if (storedSessionId) {
                         try {
                             await bindWindowToSession(win.id, storedSessionId);
+                            const idx = allSessionIds.indexOf(storedSessionId);
+                            if (idx !== -1) allSessionIds.splice(idx, 1);
                         } catch (e) {
                             console.warn(`Could not restore session ${storedSessionId} for window ${win.id}`, e);
                             delete state.windowToSession[win.id];
@@ -982,15 +1149,34 @@ function init(options = {}) {
                     } else if (sessionFoldersByWindowId[win.id]) {
                         // Found an existing session folder for this window
                         await bindWindowToSession(win.id, sessionFoldersByWindowId[win.id]);
+                        const idx = allSessionIds.indexOf(sessionFoldersByWindowId[win.id]);
+                        if (idx !== -1) allSessionIds.splice(idx, 1);
                     } else {
-                        // Create a new session folder
-                        const baseName = generateSessionName();
-                        const newSessionTitle = formatSessionTitle(baseName, win.id);
-                        const created = await chrome.bookmarks.create({
-                            parentId: rootId,
-                            title: newSessionTitle
-                        });
-                        await bindWindowToSession(win.id, created.id);
+                        // Try to match the window to a previous session (in case the browser restored tabs but changed window ID)
+                        let matchedSessionId = null;
+                        try {
+                            const tabs = await chrome.tabs.query({ windowId: win.id });
+                            // Check if these tabs match a known session from our persisted sessionMountedTabs
+                            matchedSessionId = await matchWindowToSession(tabs, allSessionIds);
+                        } catch (e) {
+                            console.warn("Could not query tabs for window", win.id, e);
+                        }
+
+                        if (matchedSessionId) {
+                            console.log(`init: Matched restored window ${win.id} to past session ${matchedSessionId}`);
+                            await bindWindowToSession(win.id, matchedSessionId);
+                            const idx = allSessionIds.indexOf(matchedSessionId);
+                            if (idx !== -1) allSessionIds.splice(idx, 1);
+                        } else {
+                            // Create a new session folder
+                            const baseName = generateSessionName();
+                            const newSessionTitle = formatSessionTitle(baseName, win.id);
+                            const created = await chrome.bookmarks.create({
+                                parentId: rootId,
+                                title: newSessionTitle
+                            });
+                            await bindWindowToSession(win.id, created.id);
+                        }
                     }
                 }
 
@@ -1234,6 +1420,8 @@ chrome.tabs.onCreated.addListener(async (tab) => {
                 const logical = session.logicalTabs.find(l => l.logicalId === logicalId);
                 if (logical) {
                     attachLiveTabToLogical(tab, logical);
+                    refreshSessionMountedTabs(sessionId);
+                    await persistState();
 
                     // Sync Group Mapping if logical has group and live doesn't (or mismatch)
                     // If logical is in a group, we should try to put live tab in that group?
@@ -1347,6 +1535,8 @@ chrome.tabs.onCreated.addListener(async (tab) => {
     const newLogical = reloadedSession.logicalTabs.find(l => l.bookmarkId === createdBookmark.id);
     if (newLogical) {
         attachLiveTabToLogical(tab, newLogical);
+        refreshSessionMountedTabs(sessionId);
+        await persistState();
 
         // Fix for race condition: If the new tab is active, update the selection immediately
         if (tab.active) {
@@ -1510,6 +1700,8 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
                 if (logical) {
                     logical.liveTabIds = logical.liveTabIds.filter(id => id !== tabId);
                 }
+                refreshSessionMountedTabs(sessionId);
+                await persistState();
                 notifySidebarStateUpdated(removeInfo.windowId, sessionId);
             }
         }
@@ -1952,6 +2144,8 @@ async function focusOrMountLogicalTab(windowId, logicalId) {
             if (idx !== -1) {
                 pendingMounts.splice(idx, 1);
                 attachLiveTabToLogical(tab, logical);
+                refreshSessionMountedTabs(sessionId);
+                await persistState();
 
                 // If the bookmark is in a group, we should add the live tab to a group
                 if (logical.groupId) {
@@ -2197,6 +2391,8 @@ async function handleUnmountLogicalTab(windowId, logicalId) {
         }
 
         toClose.forEach(tid => delete state.tabToLogical[tid]);
+        refreshSessionMountedTabs(sessionId);
+        await persistState();
         notifySidebarStateUpdated(windowId, sessionId);
     }
 }
