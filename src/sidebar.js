@@ -44,7 +44,11 @@ let showLiveOnly = false;
 let selectedLogicalIds = new Set();
 let lastSelectedLogicalId = null; // For shift-click range
 let draggedLogicalIds = [];
+let dragStartTime = 0;
 let ignoreNextAutoScroll = false;
+
+// Quick-drag timing threshold
+const QUICK_DRAG_THRESHOLD_MS = 500;
 
 // Group Collapse State (persisted per group ID or just transient? Task says "can be collapsed". Transient is fine for now.)
 let collapsedGroups = new Set();
@@ -1011,6 +1015,10 @@ function escapeHtml(text) {
 
 // --- Selection & Drag Logic ---
 
+function isQuickDrag(dragStartTime) {
+    return dragStartTime > 0 && Date.now() - dragStartTime < QUICK_DRAG_THRESHOLD_MS;
+}
+
 function handleTabClick(e, logicalId) {
     if (e.ctrlKey || e.metaKey) {
         // Toggle selection
@@ -1077,7 +1085,9 @@ function setupDragHandlers(el) {
 }
 
 function onDragStart(e) {
-    const id = e.target.dataset.id;
+    dragStartTime = Date.now();
+    const draggedElement = e.currentTarget;
+    const id = draggedElement.dataset.id;
     if (!id) return;
 
     // If dragging a selected item, drag all selected.
@@ -1094,7 +1104,9 @@ function onDragStart(e) {
     e.dataTransfer.setData('text/plain', JSON.stringify(draggedLogicalIds));
 
     // Visual feedback
-    e.target.classList.add('dragging');
+    // Use the draggable root element instead of the deepest child target,
+    // so nested tab/group markup cannot break drag state bookkeeping.
+    draggedElement.classList.add('dragging');
 }
 
 function onDragOver(e) {
@@ -1137,6 +1149,8 @@ function onDrop(e) {
     const target = e.currentTarget;
     target.classList.remove('drop-before', 'drop-after', 'drop-inside');
 
+    if (isQuickDrag(dragStartTime)) return;
+
     const targetId = target.dataset.id;
     if (!targetId) return;
 
@@ -1175,8 +1189,17 @@ function onDrop(e) {
 }
 
 function onDragEnd(e) {
-    e.target.classList.remove('dragging');
+    const draggedElement = e.currentTarget;
+
+    draggedElement.classList.remove('dragging');
     draggedLogicalIds = [];
+
+    if (isQuickDrag(dragStartTime)) {
+        // Keep this fallback tab-only: group IDs must never flow into FOCUS_OR_MOUNT_TAB.
+        if (draggedElement.dataset.type === 'tab') handleTabClick(e, draggedElement.dataset.id);
+    }
+
+    dragStartTime = 0;
 }
 
 // Start
