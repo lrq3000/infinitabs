@@ -23,6 +23,8 @@ const state = {
     selectLastActiveTab: true, // User Preference
     maxTabHistory: 100, // User Preference
     tabHistory: {}, // Record<WindowId, Array<TabId>> - MRU Stack
+    historyNavIndex: {}, // Record<WindowId, number> - Current navigation index for prev/next active tab
+    ignoreNextHistoryUpdate: {}, // Record<WindowId, boolean> - Flag to ignore the next tab activation for history
     initialized: false
 };
 
@@ -1631,15 +1633,22 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     if (!state.tabHistory[windowId]) state.tabHistory[windowId] = [];
     const history = state.tabHistory[windowId];
 
-    // Remove existing occurrence to move to end (MRU)
-    const idx = history.indexOf(tabId);
-    if (idx !== -1) history.splice(idx, 1);
+    if (state.ignoreNextHistoryUpdate[windowId]) {
+        state.ignoreNextHistoryUpdate[windowId] = false;
+    } else {
+        // Reset history navigation index on manual tab switch
+        state.historyNavIndex[windowId] = undefined;
 
-    history.push(tabId);
+        // Remove existing occurrence to move to end (MRU)
+        const idx = history.indexOf(tabId);
+        if (idx !== -1) history.splice(idx, 1);
 
-    // Trim
-    if (history.length > state.maxTabHistory) {
-        history.shift();
+        history.push(tabId);
+
+        // Trim
+        if (history.length > state.maxTabHistory) {
+            history.shift();
+        }
     }
 
     const sessionId = state.windowToSession[windowId];
@@ -1739,6 +1748,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
                 case "ADD_NEW_TAB": {
                     await handleAddNewTab(message.windowId, message.ctrlKey);
+                    sendResponse({ success: true });
+                    break;
+                }
+                case "NAVIGATE_TAB_HISTORY": {
+                    const { windowId, direction } = message;
+                    const history = state.tabHistory[windowId];
+                    if (history && history.length > 0) {
+                        if (state.historyNavIndex[windowId] === undefined) {
+                            state.historyNavIndex[windowId] = history.length - 1;
+                        }
+                        let newIndex = state.historyNavIndex[windowId] + direction;
+                        // Clamp index between 0 and history.length - 1
+                        if (newIndex < 0) newIndex = 0;
+                        if (newIndex >= history.length) newIndex = history.length - 1;
+
+                        if (newIndex !== state.historyNavIndex[windowId]) {
+                            state.historyNavIndex[windowId] = newIndex;
+                            const tabId = history[newIndex];
+                            state.ignoreNextHistoryUpdate[windowId] = true;
+                            await chrome.tabs.update(tabId, { active: true });
+                        }
+                    }
                     sendResponse({ success: true });
                     break;
                 }
