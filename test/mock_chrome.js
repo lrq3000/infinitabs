@@ -35,6 +35,8 @@ global.chrome = {
         onCreated: { addListener: (fn) => listeners['tabs.onCreated'] = fn },
         onUpdated: { addListener: (fn) => listeners['tabs.onUpdated'] = fn },
         onRemoved: { addListener: (fn) => listeners['tabs.onRemoved'] = fn },
+        onAttached: { addListener: (fn) => listeners['tabs.onAttached'] = fn },
+        onDetached: { addListener: (fn) => listeners['tabs.onDetached'] = fn },
         onMoved: { addListener: (fn) => listeners['tabs.onMoved'] = fn },
         onActivated: { addListener: (fn) => listeners['tabs.onActivated'] = fn },
         query: async (queryInfo) => {
@@ -47,7 +49,7 @@ global.chrome = {
              });
         },
         create: async (data) => {
-             const tab = { id: Math.floor(Math.random() * 1000), ...data };
+             const tab = { id: Math.floor(Math.random() * 1000), groupId: -1, index: tabs.length, ...data };
              console.log('Mock Tab Created:', tab);
              tabs.push(tab);
              if (listeners['tabs.onCreated']) listeners['tabs.onCreated'](tab);
@@ -85,13 +87,30 @@ global.chrome = {
         move: async (ids, moveInfo) => {
             const idArr = Array.isArray(ids) ? ids : [ids];
             const toMove = tabs.filter(t => idArr.includes(t.id));
+
+            if (moveInfo.windowId !== undefined) {
+                toMove.forEach(t => t.windowId = moveInfo.windowId);
+                // Trigger onDetached/onAttached?
+                // Real Chrome does. Mock should?
+                // background.js relies on onAttached for "native drag", but for "programmatic move" via handleMoveLogicalTabs,
+                // we explicitly handle logic. But wait, handleMoveLogicalTabs updates state BEFORE move.
+                // If onAttached fires, it checks logic.
+                // If I don't trigger events, handleMoveLogicalTabs logic runs and is fine.
+                // But tests for onAttached (native drag) rely on manual firing.
+                // Test for functional drag relies on message handler calling move.
+                // So updating windowId is enough for verification.
+            }
+
             // Remove from current positions
             for (const t of toMove) {
                 const idx = tabs.indexOf(t);
                 if (idx !== -1) tabs.splice(idx, 1);
             }
             // Insert at new position
-            tabs.splice(moveInfo.index, 0, ...toMove);
+            // Logic for index -1 (append)
+            let insertIdx = moveInfo.index;
+            if (insertIdx === -1) insertIdx = tabs.length;
+            tabs.splice(insertIdx, 0, ...toMove);
             // Update indices
             tabs.forEach((t, i) => t.index = i);
         },
