@@ -2453,3 +2453,26 @@ async function handleUnmountAllExcept(windowId, logicalIdsToKeep) {
 
     notifySidebarStateUpdated(windowId, sessionId);
 }
+
+
+chrome.commands.onCommand.addListener(async (command) => {
+    if (command === 'unmount-current-tab') {
+        const win = await chrome.windows.getLastFocused({ populate: true });
+        if (win) {
+            const activeTab = win.tabs.find(t => t.active);
+            if (activeTab) {
+                const windowId = win.id;
+                const sessionId = state.windowToSession[windowId];
+                if (sessionId) {
+                    const session = state.sessionsById[sessionId];
+                    if (session) {
+                        const logical = session.logicalTabs.find(l => l.liveTabIds.includes(activeTab.id));
+                        if (logical) {
+                            await handleUnmountLogicalTab(windowId, logical.logicalId);
+                        }
+                    }
+                }
+            }
+        }
+    }
+});
