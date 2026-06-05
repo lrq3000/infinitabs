@@ -453,10 +453,40 @@ async function loadSessionFromBookmarks(sessionId) {
  */
 async function getSessionList() {
     const rootId = await ensureRootFolder();
-    const children = await chrome.bookmarks.getChildren(rootId);
-    return children
-        .filter(node => !node.url) // Only folders
-        .map(folder => ({ sessionId: folder.id, name: parseSessionTitle(folder.title).name }));
+    const rootNodes = await chrome.bookmarks.getSubTree(rootId);
+
+    if (!rootNodes || rootNodes.length === 0 || !rootNodes[0].children) {
+        return [];
+    }
+
+    const sessions = rootNodes[0].children.filter(node => !node.url); // Only folders
+
+    return sessions.map(folder => {
+        let tabCount = 0;
+
+        // Keep counting semantics aligned with loadSessionFromBookmarks():
+        // - Count direct URL bookmarks under the session folder.
+        // - Count one nested level for group folders.
+        // - Ignore deeper nesting because restore currently ignores it too.
+        for (const child of (folder.children || [])) {
+            if (child.url) {
+                tabCount++;
+                continue;
+            }
+
+            for (const grandchild of (child.children || [])) {
+                if (grandchild.url) {
+                    tabCount++;
+                }
+            }
+        }
+
+        return {
+            sessionId: folder.id,
+            name: parseSessionTitle(folder.title).name,
+            tabCount: tabCount
+        };
+    });
 }
 
 function notifySidebarStateUpdated(windowId, sessionId) {
