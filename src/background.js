@@ -677,6 +677,16 @@ async function syncExistingTabsInWindowToSession(windowId, sessionId) {
             }
         }
     }
+
+    // Identify active tab and update session state
+    const activeTabs = await chrome.tabs.query({ windowId, active: true });
+    if (activeTabs.length > 0) {
+        const activeTab = activeTabs[0];
+        const logicalId = state.tabToLogical[activeTab.id];
+        if (logicalId) {
+            refreshedSession.lastActiveLogicalTabId = logicalId;
+        }
+    }
 }
 
 /**
