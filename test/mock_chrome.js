@@ -53,6 +53,11 @@ global.chrome = {
              if (listeners['tabs.onCreated']) listeners['tabs.onCreated'](tab);
              return tab;
         },
+        update: async (tabId, updateProperties) => {
+             const tab = tabs.find(t => t.id === tabId);
+             if (tab) Object.assign(tab, updateProperties);
+             return tab;
+        },
         get: async (id) => tabs.find(t => t.id === id),
         update: async (tabId, updateProperties) => {
             const tab = tabs.find(t => t.id === tabId);
