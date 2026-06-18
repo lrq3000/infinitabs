@@ -172,6 +172,28 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
             // 4. Inserting the new group folder bookmark immediately after the anchor tab (or its parent group folder if the anchor is grouped).
             // This ensures that the sidebar order reflects the visual order of tabs and groups in the native live tabs strip.
             return moveMutex.run(async () => {
+                // Run lookup and create under the same mutex-critical section.
+                // This prevents a duplicated-create flow where a pre-mutex create is followed by
+                // a second unconditional create in the placement logic below.
+                let existingGroupFolder = null;
+                try {
+                    const children = await chrome.bookmarks.getChildren(currentSessionId);
+                    const candidateFolders = children.filter(c => !c.url && c.title === title);
+
+                    // Important identity rule: a folder title is not a unique group identifier.
+                    // Different live groups can share the same title/color, so we must avoid
+                    // reusing a folder that is already mapped to another live group.
+                    const mappedFolderIds = new Set(Object.values(state.liveGroupToBookmark));
+                    const reusableFolders = candidateFolders.filter(c => !mappedFolderIds.has(c.id));
+
+                    // Reuse only when unambiguous. If multiple reusable folders exist, creating
+                    // a new one is safer than guessing and potentially merging logical groups.
+                    existingGroupFolder = reusableFolders.length === 1 ? reusableFolders[0] : null;
+                } catch (err) {
+                    // If lookup fails, continue with creation path below.
+                    existingGroupFolder = null;
+                }
+
                 let insertIndex = null;
                 try {
                     const tabs = await chrome.tabs.query({ windowId });
@@ -225,15 +247,18 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
                     console.warn("Failed to calculate group insertion index", e);
                 }
 
-                const createData = {
-                    parentId: sessionId,
-                    title: title
-                };
-                if (insertIndex !== null) {
-                    createData.index = insertIndex;
+                // Reuse an existing matching folder when present, otherwise create exactly one folder.
+                let created = existingGroupFolder;
+                if (!created) {
+                    const createData = {
+                        parentId: sessionId,
+                        title: title
+                    };
+                    if (insertIndex !== null) {
+                        createData.index = insertIndex;
+                    }
+                    created = await chrome.bookmarks.create(createData);
                 }
-
-                const created = await chrome.bookmarks.create(createData);
 
                 state.liveGroupToBookmark[groupId] = created.id;
 
@@ -1271,19 +1296,13 @@ chrome.tabs.onCreated.addListener(async (tab) => {
             insertParentId = bookmarkId;
         } else {
             // Group exists live but not mapped?
-            // Wait for onCreated logic to create folder?
-            // onCreated fires before onUpdated(tabs) usually?
-            // If tab is created with groupId, maybe we haven't seen the group yet?
-            // We can try to create it here too if missing.
+            // This happens if the group was just created or sync failed.
+            // Use helper to safely get or create the group folder (checking for duplicates).
             try {
-                const groupInfo = await chrome.tabGroups.get(tab.groupId);
-                const groupTitle = formatGroupTitle(groupInfo.title, groupInfo.color);
-                const createdGroup = await chrome.bookmarks.create({
-                    parentId: sessionId,
-                    title: groupTitle
-                });
-                state.liveGroupToBookmark[tab.groupId] = createdGroup.id;
-                insertParentId = createdGroup.id;
+                const groupBookmarkId = await getOrCreateGroupBookmark(tab.groupId, tab.windowId);
+                if (groupBookmarkId) {
+                    insertParentId = groupBookmarkId;
+                }
             } catch (e) {
                  // ignore
             }
