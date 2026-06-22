@@ -32,6 +32,12 @@ const crashPopupClose = document.getElementById('crash-popup-close');
 const crashPopupRestoreBtn = document.getElementById('crash-popup-restore-btn');
 const crashPopupNoBtn = document.getElementById('crash-popup-no-btn');
 
+// Global Search Elements
+const globalSearchInput = document.getElementById('global-search-input');
+const globalSearchResults = document.getElementById('global-search-results');
+// Monotonic token used to ignore stale async responses from older queries.
+let globalSearchRequestId = 0;
+
 let currentSession = null;
 let currentWindowId = null;
 let isDarkMode = false;
@@ -95,6 +101,17 @@ async function init() {
     crashPopupRestoreBtn.addEventListener('click', onCrashRestore);
     crashPopupClose.addEventListener('click', onCrashPopupClose);
     crashPopupNoBtn.addEventListener('click', onCrashPopupClose);
+
+    // Global Search Listeners
+    if (globalSearchInput) {
+        globalSearchInput.addEventListener('input', debounce(performGlobalSearch, 300));
+        globalSearchInput.addEventListener('keydown', (e) => {
+             if (e.key === 'Escape') {
+                 globalSearchInput.value = '';
+                 globalSearchResults.innerHTML = '';
+             }
+        });
+    }
 
     chrome.runtime.onMessage.addListener(onMessage);
 
@@ -1244,3 +1261,127 @@ function onDragEnd(e) {
 
 // Start
 init();
+
+// --- Global Search Logic ---
+
+function debounce(func, wait) {
+    let timeout;
+    return function(...args) {
+        const context = this;
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(context, args), wait);
+    };
+}
+
+async function performGlobalSearch() {
+    const query = globalSearchInput.value;
+    if (!query || !query.trim()) {
+        globalSearchResults.innerHTML = '';
+        return;
+    }
+
+    // Capture a per-call token so late responses from older queries are ignored.
+    const requestId = ++globalSearchRequestId;
+
+    try {
+        const response = await chrome.runtime.sendMessage({
+            type: "SEARCH_ALL_SESSIONS",
+            query: query
+        });
+
+        // If a newer search started, this result is stale and must be discarded.
+        if (requestId !== globalSearchRequestId) return;
+        // Also ensure the visible input still matches the query that produced this response.
+        if (globalSearchInput.value !== query) return;
+
+        const results = (response && response.results) ? response.results : [];
+        renderGlobalSearchResults(results);
+    } catch (err) {
+        // Ignore stale failures too: only the latest request should update UI.
+        if (requestId !== globalSearchRequestId) return;
+        console.error("Global search failed", err);
+        globalSearchResults.innerHTML = '<div style="padding:10px; color:#888;">Search failed. Try again.</div>';
+    }
+}
+
+function renderGlobalSearchResults(results) {
+    globalSearchResults.innerHTML = '';
+
+    if (results.length === 0) {
+        globalSearchResults.innerHTML = '<div style="padding:10px; color:#888;">No matches found.</div>';
+        return;
+    }
+
+    results.forEach(item => {
+        // item: { sessionId, sessionName, tab: { title, url, id } }
+        const el = document.createElement('div');
+        el.className = 'tab-item logical'; // Reuse styles
+        el.style.height = 'auto'; // Allow variable height
+        el.style.padding = '8px';
+        el.style.flexDirection = 'column';
+        el.style.alignItems = 'flex-start';
+
+        // Container for Top Row (Icon + Title)
+        const topRow = document.createElement('div');
+        topRow.style.display = 'flex';
+        topRow.style.alignItems = 'center';
+        topRow.style.width = '100%';
+
+        const icon = document.createElement('img');
+        icon.className = 'tab-icon';
+        const faviconUrl = chrome.runtime.getURL("/_favicon/") + "?pageUrl=" + encodeURIComponent(item.tab.url) + "&size=16";
+        icon.src = faviconUrl;
+        topRow.appendChild(icon);
+
+        const title = document.createElement('span');
+        title.className = 'tab-title';
+        title.textContent = item.tab.title;
+        title.style.marginLeft = '8px';
+        topRow.appendChild(title);
+
+        el.appendChild(topRow);
+
+        // Context (Prev)
+        if (item.context && item.context.prev) {
+            const prevRow = document.createElement('div');
+            prevRow.className = 'search-context prev';
+            prevRow.textContent = `... ${item.context.prev}`;
+            el.appendChild(prevRow);
+        }
+
+        // Subtitle (Session Name)
+        const subRow = document.createElement('div');
+        subRow.style.fontSize = '0.85em';
+        subRow.style.color = 'var(--text-muted)';
+        subRow.style.marginTop = '4px';
+        subRow.style.marginLeft = '24px'; // Indent to align with text
+        subRow.textContent = `Session: ${item.sessionName}`;
+        el.appendChild(subRow);
+
+        // Context (Next)
+        if (item.context && item.context.next) {
+            const nextRow = document.createElement('div');
+            nextRow.className = 'search-context next';
+            nextRow.textContent = `${item.context.next} ...`;
+            el.appendChild(nextRow);
+        }
+
+        el.title = item.tab.url;
+
+        // Click Handler
+        el.addEventListener('click', async (e) => {
+            if (e.ctrlKey || e.metaKey) {
+                // Open in current window
+                await chrome.tabs.create({ url: item.tab.url });
+            } else {
+                await chrome.runtime.sendMessage({
+                    type: "SWITCH_SESSION",
+                    windowId: currentWindowId,
+                    sessionId: item.sessionId
+                });
+            }
+        });
+
+        globalSearchResults.appendChild(el);
+    });
+}
