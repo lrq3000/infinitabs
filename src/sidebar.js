@@ -4,6 +4,7 @@ import { parseGroupTitle } from './utils.js';
 const sessionSelector = document.getElementById('session-selector');
 const renameSessionBtn = document.getElementById('rename-session-btn');
 const refreshSessionsBtn = document.getElementById('refresh-sessions');
+const newSessionBtn = document.getElementById('new-session-btn');
 const unmountOthersBtn = document.getElementById('unmount-others-btn');
 const showLiveOnlyBtn = document.getElementById('show-live-only-btn');
 const addNewTabBtn = document.getElementById('add-new-tab-btn');
@@ -63,6 +64,7 @@ async function init() {
     // Setup Listeners
     renameSessionBtn.addEventListener('click', onRenameSession);
     refreshSessionsBtn.addEventListener('click', loadSessionsList);
+    newSessionBtn.addEventListener('click', onNewSession);
     sessionSelector.addEventListener('change', onSessionSwitch);
     unmountOthersBtn.addEventListener('click', onUnmountOthers);
     showLiveOnlyBtn.addEventListener('click', onShowLiveOnlyToggle);
@@ -239,6 +241,25 @@ async function onSessionSwitch(e) {
 
     // The background will reply, but we also expect a STATE_UPDATED message
     // which will trigger re-render.
+}
+
+async function onNewSession() {
+    const response = await chrome.runtime.sendMessage({
+        type: "CREATE_NEW_SESSION",
+        windowId: currentWindowId
+    }).catch((err) => {
+        console.error("Failed to create new session", err);
+        alert("Failed to create new session. Please try again.");
+        return null;
+    });
+
+    // Handle explicit background-side failures so users are not left
+    // with a silent no-op when session creation is rejected.
+    if (response && (response.error || response.success === false)) {
+        const details = response && response.error ? `: ${response.error}` : "";
+        console.error(`Failed to create new session${details}`);
+        alert(`Failed to create new session${details}. Please try again.`);
+    }
 }
 
 async function onRenameSession() {
