@@ -71,7 +71,8 @@ async function init() {
     settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
     // Search Listeners
-    searchInput.addEventListener('input', performSearch);
+    // Pass true to enable navigation when user types
+    searchInput.addEventListener('input', () => performSearch(true));
     searchInput.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
             e.preventDefault();
@@ -467,9 +468,39 @@ function onMessage(message, sender, sendResponse) {
                     });
                 }
             }
+            // Preserve the current active search match (if any) before rerender.
+            // We prefer a stable logical tab id over index, because rerenders can
+            // reorder elements or remove/add tabs while still representing the same
+            // logical tab.
+            const previousActiveMatchId =
+                currentMatchIndex >= 0 && currentMatches[currentMatchIndex]
+                    ? currentMatches[currentMatchIndex].dataset.id
+                    : (document.querySelector('.tab-item.active-match')?.dataset.id || null);
+            const previousMatchIndex = currentMatchIndex;
+
             renderSession(currentSession);
             // Re-apply search if exists
-            if (searchInput.value) performSearch();
+            // Pass false to update results without jumping to the first match on data refresh
+            if (searchInput.value) {
+                performSearch(false);
+
+                // Restore the same active result when possible so background updates
+                // do not reset the user's place in search navigation.
+                let restoredIndex = -1;
+                if (previousActiveMatchId) {
+                    restoredIndex = currentMatches.findIndex(el => el.dataset.id === previousActiveMatchId);
+                }
+
+                // Fallback: if the original match disappeared, keep a nearby index.
+                if (restoredIndex === -1 && previousMatchIndex >= 0 && currentMatches.length > 0) {
+                    restoredIndex = Math.min(previousMatchIndex, currentMatches.length - 1);
+                }
+
+                if (restoredIndex !== -1 && currentMatches[restoredIndex]) {
+                    currentMatchIndex = restoredIndex;
+                    currentMatches[restoredIndex].classList.add('active-match');
+                }
+            }
         }
     } else if (message.type === "HISTORY_UPDATED") {
         loadPastWorkspaces();
@@ -499,9 +530,13 @@ function clearSearch() {
     performSearch();
 }
 
-function performSearch() {
+// Added navigate parameter to control auto-focus behavior.
+/**
+ * Recomputes search matches.
+ * @param {boolean} navigate When true, move to the first match (and scroll); when false, only highlight matches.
+ */
+function performSearch(navigate = true) {
     const query = searchInput.value;
-
     // Toggle clear button visibility
     if (query.length > 0) {
         searchClearBtn.style.display = 'block';
@@ -523,8 +558,10 @@ function performSearch() {
     if (terms.length === 0) return;
 
     tabItems.forEach(el => {
-        const title = el.querySelector('.tab-title').textContent.toLowerCase();
-        const url = el.title.toLowerCase(); // Render sets title attribute to URL
+        // Prefer cached normalized fields to avoid per-keystroke DOM text reads
+        // and repeated lowercasing. Fallbacks keep compatibility with older DOM.
+        const title = el.dataset.searchTitle || '';
+        const url = el.dataset.searchUrl || el.title.toLowerCase(); // Render sets title attribute to URL
 
         let matches = false;
 
@@ -551,7 +588,8 @@ function performSearch() {
         }
     });
 
-    if (currentMatches.length > 0) {
+    // Only navigate to the first match if explicitly requested (e.g. user input), avoiding jumps on background updates
+    if (currentMatches.length > 0 && navigate) {
         navigateSearch(1); // Go to first match
     }
 }
@@ -985,6 +1023,13 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
 
     // Tooltip
     if (el.title !== tab.url) el.title = tab.url;
+
+    // Cache normalized search fields once per render/update so performSearch can
+    // do O(1) reads per tab element without repeated toLowerCase() allocations.
+    const normalizedTitle = (tab.title || '').toLowerCase();
+    const normalizedUrl = (tab.url || '').toLowerCase();
+    if (el.dataset.searchTitle !== normalizedTitle) el.dataset.searchTitle = normalizedTitle;
+    if (el.dataset.searchUrl !== normalizedUrl) el.dataset.searchUrl = normalizedUrl;
 
     // Content
     const icon = el.querySelector('.tab-icon');
