@@ -1182,9 +1182,15 @@ chrome.tabGroups.onRemoved.addListener(async (group) => {
 
         const children = await chrome.bookmarks.getChildren(bookmarkId);
 
-        // 1. If folder is empty, delete it regardless.
+        // 1. If folder is empty, only delete it if the logical group no longer exists.
+        //    When handleDeleteMountedTabsInGroup removes all mounted tabs from a group
+        //    that still has a logical group entry, the folder becomes empty but should
+        //    be preserved for potential future unmounted tabs or user recovery.
         if (children.length === 0) {
-            await chrome.bookmarks.remove(bookmarkId);
+            const groupStillExists = session.groups[bookmarkId];
+            if (!groupStillExists) {
+                await chrome.bookmarks.remove(bookmarkId);
+            }
         } else {
             // 2. Check if this is an "Ungroup" operation.
             // If any logical tab *currently in this group* has live tabs, it means the user likely ungrouped them
@@ -1711,6 +1717,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     sendResponse({ success: true });
                     break;
                 }
+                case "DELETE_MOUNTED_TABS_IN_GROUP": {
+                    await handleDeleteMountedTabsInGroup(message.windowId, message.groupId);
+                    sendResponse({ success: true });
+                    break;
+                }
                 case "RENAME_SESSION": {
                     await handleRenameSession(message.sessionId, message.newName);
                     sendResponse({ success: true });
@@ -1733,6 +1744,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
                 case "DELETE_LOGICAL_TAB": {
                     await handleDeleteLogicalTab(message.windowId, message.logicalId);
+                    sendResponse({ success: true });
+                    break;
+                }
+                case "ADD_NEW_TAB": {
+                    await handleAddNewTab(message.windowId, message.ctrlKey);
                     sendResponse({ success: true });
                     break;
                 }
@@ -1965,6 +1981,58 @@ async function focusOrMountLogicalTab(windowId, logicalId) {
     notifySidebarStateUpdated(windowId, sessionId);
 }
 
+async function handleAddNewTab(windowId, ctrlKey) {
+    const sessionId = state.windowToSession[windowId];
+    if (!sessionId) return;
+
+    // Find the active live tab to decide where the new tab should be inserted.
+    const activeTabs = await chrome.tabs.query({ windowId, active: true });
+    const activeTab = activeTabs.length > 0 ? activeTabs[0] : null;
+
+    let insertIndex;
+    let groupId;
+
+    if (activeTab) {
+        if (!ctrlKey) {
+            // No Ctrl: insert right after the active tab and inherit its group when present.
+            insertIndex = activeTab.index + 1;
+            groupId = activeTab.groupId !== -1 ? activeTab.groupId : undefined;
+        } else {
+            if (activeTab.groupId !== -1) {
+                // Ctrl + grouped active tab: append after the last tab in that group.
+                const groupTabs = await chrome.tabs.query({ windowId, groupId: activeTab.groupId });
+                let highestIndex = -1;
+                for (const t of groupTabs) {
+                    if (t.index > highestIndex) highestIndex = t.index;
+                }
+                insertIndex = highestIndex + 1;
+                groupId = activeTab.groupId;
+            } else {
+                // Ctrl + ungrouped active tab: omit index so Chrome opens at the window end.
+                insertIndex = undefined;
+                groupId = undefined;
+            }
+        }
+    }
+
+    try {
+        const createProps = { windowId, url: 'chrome://newtab/', active: true };
+        // When index is undefined we intentionally let Chrome choose the insertion point.
+        if (insertIndex !== undefined) {
+            createProps.index = insertIndex;
+        }
+
+        const newTab = await chrome.tabs.create(createProps);
+
+        // Grouping is applied after creation because the tab ID is only known post-create.
+        if (groupId !== undefined) {
+            await chrome.tabs.group({ tabIds: newTab.id, groupId: groupId });
+        }
+    } catch (e) {
+        console.error("Failed to add new tab", e);
+    }
+}
+
 async function handleDeleteLogicalTab(windowId, logicalId) {
     const sessionId = state.windowToSession[windowId];
     if (!sessionId) return;
@@ -2007,6 +2075,38 @@ async function handleDeleteLogicalTab(windowId, logicalId) {
     notifySidebarStateUpdated(windowId, sessionId);
 }
 
+/**
+ * Closes live browser tabs and cleans up their state mappings.
+ * Shared helper used by both handleDeleteLogicalGroup and handleDeleteMountedTabsInGroup
+ * to avoid duplicating the active-tab switching, tab closing, and tabToLogical cleanup logic.
+ *
+ * @param {number[]} liveTabIds - Array of live browser tab IDs to close
+ * @param {number} windowId - The window ID for active-tab context
+ * @param {string} warnLabel - Label for console.warn messages (caller-specific context)
+ * @returns {Promise<void>}
+ */
+async function closeLiveTabsAndCleanup(liveTabIds, windowId, warnLabel) {
+    if (liveTabIds.length === 0) return;
+
+    // Switch away from the active tab first if it is among those being closed,
+    // to avoid the browser jumping to an unpredictable tab
+    const activeTab = await chrome.tabs.query({ active: true, windowId }).then(tabs => tabs[0]);
+    if (activeTab && liveTabIds.includes(activeTab.id)) {
+        await activatePreviousTab(windowId, liveTabIds);
+    }
+
+    try {
+        await chrome.tabs.remove(liveTabIds);
+    } catch (e) {
+        console.warn(`Failed to close live tabs${warnLabel ? ' ' + warnLabel : ''}`, e);
+    }
+
+    // Clean up reverse-mapping from browser tab ID to logical tab ID
+    liveTabIds.forEach(tid => {
+        delete state.tabToLogical[tid];
+    });
+}
+
 async function handleDeleteLogicalGroup(windowId, groupId) {
     const sessionId = state.windowToSession[windowId];
     if (!sessionId) return;
@@ -2016,49 +2116,68 @@ async function handleDeleteLogicalGroup(windowId, groupId) {
     const group = session.groups[groupId];
     if (!group) return;
 
-    // 1. Remove bookmark folder and children
+    // 1. Remove bookmark folder and all its children
     try {
         await chrome.bookmarks.removeTree(groupId);
     } catch (e) {
         console.error("Failed to delete bookmark group", e);
     }
 
-    // 2. Identify logical tabs in this group to close their live counterparts
+    // 2. Collect live tab IDs from all logical tabs in this group
+    //    so their browser counterparts can be closed
     const tabsInGroup = session.logicalTabs.filter(t => t.groupId === groupId);
-    const liveTabsToClose = [];
+    const liveTabsToClose = tabsInGroup.flatMap(t => t.liveTabIds || []);
 
-    tabsInGroup.forEach(t => {
-        if (t.liveTabIds && t.liveTabIds.length > 0) {
-            liveTabsToClose.push(...t.liveTabIds);
-        }
-    });
+    // 3. Close live browser tabs and clean up mappings
+    await closeLiveTabsAndCleanup(liveTabsToClose, windowId, "for deleted group");
 
-    // 3. Close live tabs
-    if (liveTabsToClose.length > 0) {
-        // Switch tab if active tab is being closed
-        const activeTab = await chrome.tabs.query({ active: true, windowId }).then(tabs => tabs[0]);
-        if (activeTab && liveTabsToClose.includes(activeTab.id)) {
-            await activatePreviousTab(windowId, liveTabsToClose);
-        }
-
-        try {
-            await chrome.tabs.remove(liveTabsToClose);
-        } catch (e) {
-            console.warn("Failed to close live tabs for deleted group", e);
-        }
-
-        // Clean up tabToLogical mappings
-        liveTabsToClose.forEach(tid => {
-            delete state.tabToLogical[tid];
-        });
-    }
-
-    // 4. Clean up state
+    // 4. Clean up live-group-to-bookmark mapping
     const liveGroupId = Object.keys(state.liveGroupToBookmark).find(k => state.liveGroupToBookmark[k] === groupId);
     if (liveGroupId) {
         delete state.liveGroupToBookmark[liveGroupId];
     }
 
+    await reloadSessionAndPreserveState(sessionId, windowId);
+    notifySidebarStateUpdated(windowId, sessionId);
+}
+
+async function handleDeleteMountedTabsInGroup(windowId, groupId) {
+    const sessionId = state.windowToSession[windowId];
+    if (!sessionId) return;
+    const session = state.sessionsById[sessionId];
+    if (!session) return;
+
+    const group = session.groups[groupId];
+    if (!group) return;
+
+    // Select logical (mounted) tabs that still have liveTabIds — these are the
+    // browser tabs that must be closed and whose per-tab bookmarks must be removed.
+    // Unmounted tabs (liveTabIds empty) are left untouched in the group.
+    const tabsInGroupWithLiveTabs = session.logicalTabs.filter(t => t.groupId === groupId && t.liveTabIds && t.liveTabIds.length > 0);
+
+    // Remove per-tab bookmarks for mounted tabs.
+    // We only remove individual bookmarks here, NOT the group folder — the group
+    // folder is preserved so that unmounted tabs or metadata remain available for
+    // reuse or user recovery.
+    for (const t of tabsInGroupWithLiveTabs) {
+        try {
+            await chrome.bookmarks.remove(t.bookmarkId);
+        } catch (e) {
+            console.error("Failed to delete bookmark for mounted tab in group", e);
+        }
+    }
+
+    // Collect all live tab IDs from the mounted tabs we are about to close
+    const liveTabsToClose = tabsInGroupWithLiveTabs.flatMap(t => t.liveTabIds);
+
+    // Remove mounted tabs from the session model, leaving unmounted tabs intact
+    session.logicalTabs = session.logicalTabs.filter(t => !(t.groupId === groupId && t.liveTabIds && t.liveTabIds.length > 0));
+
+    // Close live browser tabs and switch away from active tab if needed
+    await closeLiveTabsAndCleanup(liveTabsToClose, windowId, "for deleted mounted tabs in group");
+
+    // Notice we DO NOT delete the group bookmark folder — only the per-tab bookmarks.
+    // The group folder is preserved for unmounted tabs and potential user recovery.
     await reloadSessionAndPreserveState(sessionId, windowId);
     notifySidebarStateUpdated(windowId, sessionId);
 }

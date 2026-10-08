@@ -6,6 +6,7 @@ const renameSessionBtn = document.getElementById('rename-session-btn');
 const refreshSessionsBtn = document.getElementById('refresh-sessions');
 const unmountOthersBtn = document.getElementById('unmount-others-btn');
 const showLiveOnlyBtn = document.getElementById('show-live-only-btn');
+const addNewTabBtn = document.getElementById('add-new-tab-btn');
 const themeToggleBtn = document.getElementById('theme-toggle-btn');
 const settingsBtn = document.getElementById('settings-btn');
 const tabsContainer = document.getElementById('tabs-container');
@@ -43,7 +44,11 @@ let showLiveOnly = false;
 let selectedLogicalIds = new Set();
 let lastSelectedLogicalId = null; // For shift-click range
 let draggedLogicalIds = [];
+let dragStartTime = 0;
 let ignoreNextAutoScroll = false;
+
+// Quick-drag timing threshold
+const QUICK_DRAG_THRESHOLD_MS = 500;
 
 // Group Collapse State (persisted per group ID or just transient? Task says "can be collapsed". Transient is fine for now.)
 let collapsedGroups = new Set();
@@ -61,6 +66,7 @@ async function init() {
     sessionSelector.addEventListener('change', onSessionSwitch);
     unmountOthersBtn.addEventListener('click', onUnmountOthers);
     showLiveOnlyBtn.addEventListener('click', onShowLiveOnlyToggle);
+    addNewTabBtn.addEventListener('click', onAddNewTab);
     themeToggleBtn.addEventListener('click', toggleTheme);
     settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
@@ -619,6 +625,17 @@ function onShowLiveOnlyToggle() {
     }
 }
 
+function onAddNewTab(event) {
+    if (!currentSession) return;
+    chrome.runtime.sendMessage({
+        type: "ADD_NEW_TAB",
+        windowId: currentWindowId,
+        ctrlKey: event.ctrlKey
+    }).catch(err => {
+        console.error("Failed to add new tab:", err);
+    });
+}
+
 // --- Rendering ---
 
 function renderSession(session) {
@@ -765,18 +782,25 @@ function createGroupElement(group, displayName, color) {
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'group-delete-btn';
     deleteBtn.textContent = '×';
-    deleteBtn.title = 'Delete logical group and all tabs within';
+    deleteBtn.title = showLiveOnly ? 'Delete mounted tabs in logical group' : 'Delete logical group and all tabs within';
     deleteBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (confirm("Are you sure you want to delete this group? This will delete all tabs inside it.")) {
-             chrome.runtime.sendMessage({
-                type: "DELETE_LOGICAL_GROUP",
-                windowId: currentWindowId,
-                groupId: group.groupId
-            }).catch((err) => {
-                console.error("Failed to delete group", err);
-                alert("Failed to delete group. Please try again.");
-            });
+        if (showLiveOnly) {
+            confirmAndSendDeleteGroup(
+                "DELETE_MOUNTED_TABS_IN_GROUP",
+                currentWindowId,
+                group.groupId,
+                "Are you sure you want to delete all visible (mounted) tabs in this group?",
+                "Failed to delete mounted tabs in group"
+            );
+        } else {
+            confirmAndSendDeleteGroup(
+                "DELETE_LOGICAL_GROUP",
+                currentWindowId,
+                group.groupId,
+                "Are you sure you want to delete this group? This will delete all tabs inside it.",
+                "Failed to delete group"
+            );
         }
     });
     el.appendChild(deleteBtn);
@@ -785,10 +809,43 @@ function createGroupElement(group, displayName, color) {
     return el;
 }
 
+/**
+ * Confirm-then-send helper: shows a confirmation dialog and, if accepted,
+ * sends a chrome.runtime.sendMessage with the given type. Avoids duplicating
+ * the confirm/sendMessage/catch pattern across the Live Only and normal branches.
+ *
+ * @param {string} messageType - The message type string (e.g. "DELETE_LOGICAL_GROUP")
+ * @param {number} windowId - The current window ID for the message payload
+ * @param {string} groupId - The logical group ID for the message payload
+ * @param {string} confirmText - The text shown in the confirm() dialog
+ * @param {string} errorLabel - Short label used in console.error and alert messages
+ */
+async function confirmAndSendDeleteGroup(messageType, windowId, groupId, confirmText, errorLabel) {
+    if (confirm(confirmText)) {
+        try {
+            await chrome.runtime.sendMessage({
+                type: messageType,
+                windowId,
+                groupId
+            });
+        } catch (err) {
+            console.error(errorLabel, err);
+            alert(`${errorLabel}. Please try again.`);
+        }
+    }
+}
+
 function updateGroupElement(el, group, displayName, color) {
     const titleSpan = el.querySelector('.group-title-text');
     if (titleSpan.textContent !== displayName) {
         titleSpan.textContent = displayName;
+    }
+
+    // Refresh the delete button tooltip based on the current Live Only mode,
+    // since it may have been toggled after the group element was first created.
+    const deleteBtn = el.querySelector('.group-delete-btn');
+    if (deleteBtn) {
+        deleteBtn.title = showLiveOnly ? 'Delete mounted tabs in logical group' : 'Delete logical group and all tabs within';
     }
 
     // Update color styles
@@ -998,6 +1055,10 @@ function escapeHtml(text) {
 
 // --- Selection & Drag Logic ---
 
+function isQuickDrag(dragStartTime) {
+    return dragStartTime > 0 && Date.now() - dragStartTime < QUICK_DRAG_THRESHOLD_MS;
+}
+
 function handleTabClick(e, logicalId) {
     if (e.ctrlKey || e.metaKey) {
         // Toggle selection
@@ -1064,7 +1125,9 @@ function setupDragHandlers(el) {
 }
 
 function onDragStart(e) {
-    const id = e.target.dataset.id;
+    dragStartTime = Date.now();
+    const draggedElement = e.currentTarget;
+    const id = draggedElement.dataset.id;
     if (!id) return;
 
     // If dragging a selected item, drag all selected.
@@ -1081,7 +1144,9 @@ function onDragStart(e) {
     e.dataTransfer.setData('text/plain', JSON.stringify(draggedLogicalIds));
 
     // Visual feedback
-    e.target.classList.add('dragging');
+    // Use the draggable root element instead of the deepest child target,
+    // so nested tab/group markup cannot break drag state bookkeeping.
+    draggedElement.classList.add('dragging');
 }
 
 function onDragOver(e) {
@@ -1124,6 +1189,8 @@ function onDrop(e) {
     const target = e.currentTarget;
     target.classList.remove('drop-before', 'drop-after', 'drop-inside');
 
+    if (isQuickDrag(dragStartTime)) return;
+
     const targetId = target.dataset.id;
     if (!targetId) return;
 
@@ -1162,8 +1229,17 @@ function onDrop(e) {
 }
 
 function onDragEnd(e) {
-    e.target.classList.remove('dragging');
+    const draggedElement = e.currentTarget;
+
+    draggedElement.classList.remove('dragging');
     draggedLogicalIds = [];
+
+    if (isQuickDrag(dragStartTime)) {
+        // Keep this fallback tab-only: group IDs must never flow into FOCUS_OR_MOUNT_TAB.
+        if (draggedElement.dataset.type === 'tab') handleTabClick(e, draggedElement.dataset.id);
+    }
+
+    dragStartTime = 0;
 }
 
 // Start
