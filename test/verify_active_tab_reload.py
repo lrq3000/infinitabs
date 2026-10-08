@@ -1,13 +1,15 @@
 """Real MV3 regression: reconstruct active state without a later tab activation.
 
 Run: python test/verify_active_tab_reload.py --artifacts-dir <existing-temp-dir>
-Use --flow cold_worker or --flow extension_reload to isolate either boundary.
+The default checks both reload boundaries and the public SWITCH_SESSION caller.
+Use --flow cold_worker, extension_reload, or session_switch to isolate one flow.
 Requires Python Playwright and its bundled Chromium (`playwright install chromium`).
 Loads this checkout's src directly, with its unmodified manifest and no Chrome mocks.
 Screenshots/evidence remain in the artifact directory; the disposable profile is removed.
 """
 
 import argparse
+import hashlib
 import json
 import tempfile
 import time
@@ -56,19 +58,22 @@ class ActiveTabReloadCheck:
             self.fixture.wait_for_timeout(50)
         raise AssertionError(f"Timed out: {description}")
 
-    def session(self):
-        # Same public message used by the shipped sidebar; its handler awaits init.
-        response = self.sidebar.evaluate("""async windowId => {
+    def send_message(self, message):
+        # Public messages used by shipped extension pages; the handler awaits init.
+        return self.sidebar.evaluate("""async message => {
             let timer;
             try {
                 return await Promise.race([
-                    chrome.runtime.sendMessage({type: 'GET_CURRENT_SESSION_STATE', windowId}),
+                    chrome.runtime.sendMessage(message),
                     new Promise((_, reject) => {
-                        timer = setTimeout(() => reject(new Error('Session message timed out')), 15000);
+                        timer = setTimeout(() => reject(new Error(`${message.type} timed out`)), 15000);
                     })
                 ]);
             } finally { clearTimeout(timer); }
-        }""", self.window_id)
+        }""", message)
+
+    def session(self):
+        response = self.send_message({"type": "GET_CURRENT_SESSION_STATE", "windowId": self.window_id})
         self.evidence["last_session_response"] = response
         assert response and response.get("session"), f"Missing session: {response}"
         return response["session"]
@@ -246,11 +251,63 @@ class ActiveTabReloadCheck:
         record["sidebar_highlight"] = logical["logicalId"]
         print(f"PASS {flow}: mounted active identity and real sidebar highlight", flush=True)
 
+    def verify_session_switch(self):
+        previous = self.session()
+        saved = self.sidebar.evaluate("""async ({parentId, url}) => {
+            const folder = await chrome.bookmarks.create({parentId, title: 'PR40 saved session'});
+            const tabs = [];
+            for (const suffix of ['?saved-first', '?saved-second']) {
+                tabs.push(await chrome.bookmarks.create({
+                    parentId: folder.id, title: suffix, url: url + suffix
+                }));
+            }
+            return {folder, tabs};
+        }""", {"parentId": previous["rootFolderId"], "url": self.evidence["target"]["url"]})
+
+        # SWITCH_SESSION closes all old tabs in its window, including our sidebar.
+        # Send from the real options page in a separate disposable window so the
+        # message sender survives. This exercises the public handler, not internals.
+        options_url = self.worker.url.rsplit("/", 1)[0] + "/options.html"
+        with self.context.expect_page() as opened:
+            bridge_window = self.worker.evaluate("""url => chrome.windows.create({
+                url, type: 'popup', width: 600, height: 500
+            })""", options_url)
+        self.sidebar = opened.value
+        self.sidebar.wait_for_url(options_url)
+        self.sidebar.wait_for_load_state()
+        self.send_message({"type": "GET_CURRENT_SESSION_STATE", "windowId": bridge_window["id"]})
+        self.fixture = self.sidebar  # Remains open for condition polling after the switch.
+        request = {"type": "SWITCH_SESSION", "windowId": self.window_id, "sessionId": saved["folder"]["id"]}
+        response = self.send_message(request)
+        assert response.get("success"), f"Switch failed: {response}"
+
+        def loaded_active_tab():
+            active = self.active_tab()
+            return active if active["status"] == "complete" else None
+
+        active = self.wait_until(loaded_active_tab, "switched active tab to finish loading")
+        session = self.session()
+        saved_ids = {bookmark["id"] for bookmark in saved["tabs"]}
+        mounted = [tab for tab in session["logicalTabs"] if tab["bookmarkId"] in saved_ids and tab["liveTabIds"]]
+        logical = next((tab for tab in session["logicalTabs"]
+                        if tab["logicalId"] == session["lastActiveLogicalTabId"]), None)
+        self.evidence["flows"].append({"flow": "session_switch", "request": request,
+            "active_tab": active, "mounted_saved_tabs": mounted, "active_logical_tab": logical})
+        assert session["sessionId"] == saved["folder"]["id"]
+        assert active["url"] == saved["tabs"][0]["url"], f"Switch selected {active['url']} instead of first saved URL"
+        assert len(mounted) == 1, f"Expected one saved page mounted, got {len(mounted)}"
+        assert logical and logical["bookmarkId"] == saved["tabs"][0]["id"]
+        assert logical["liveTabIds"] == [active["id"]]
+        ids = [tab["bookmarkId"] for tab in previous["logicalTabs"]] + list(saved_ids)
+        retained = self.sidebar.evaluate("ids => chrome.bookmarks.get(ids)", ids)
+        assert {bookmark["id"] for bookmark in retained} == set(ids), "Switch deleted bookmark history"
+        print("PASS session_switch: first saved URL active, one saved page mounted, history retained", flush=True)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--artifacts-dir", type=Path, default=Path(tempfile.gettempdir()) / "opencode")
-    parser.add_argument("--flow", choices=["both", "cold_worker", "extension_reload"], default="both")
+    parser.add_argument("--artifacts-dir", type=Path, default=Path(tempfile.gettempdir()))
+    parser.add_argument("--flow", choices=["all", "both", "cold_worker", "extension_reload", "session_switch"], default="all")
     args = parser.parse_args()
     if not args.artifacts_dir.is_dir():
         parser.error("--artifacts-dir must be an existing temporary artifact directory")
@@ -271,13 +328,19 @@ def main():
                 context.set_default_timeout(15000)
                 check = ActiveTabReloadCheck(context, artifacts)
                 check.evidence.update(extension_path=str(extension), isolated_profile=profile,
-                                      chromium=context.browser.version)
+                                      chromium=context.browser.version,
+                                      background_sha256=hashlib.sha256((extension / "background.js").read_bytes()).hexdigest())
                 try:
                     check.prepare(f"http://127.0.0.1:{server.server_port}/active")
                     print(f"Extension ID: {check.evidence['extension_id']}", flush=True)
-                    flows = ["cold_worker", "extension_reload"] if args.flow == "both" else [args.flow]
+                    flows = ["cold_worker", "extension_reload"] if args.flow in ("all", "both") else [args.flow]
+                    if args.flow == "all":
+                        flows.append("session_switch")
                     for flow in flows:
-                        check.verify(flow)
+                        if flow == "session_switch":
+                            check.verify_session_switch()
+                        else:
+                            check.verify(flow)
                 except Exception as error:
                     check.evidence["failure"] = str(error)
                     # Browser-internal diagnostics after a failed run do not influence
