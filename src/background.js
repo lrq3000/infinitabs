@@ -1880,9 +1880,11 @@ async function handleRenameSession(sessionId, newName) {
 
 async function handleSwitchSession(windowId, newSessionId) {
     const oldSessionId = state.windowToSession[windowId];
+    let placeholderTabId = null;
     if (oldSessionId) {
         const oldSession = state.sessionsById[oldSessionId];
         const placeholder = await chrome.tabs.create({ windowId, url: "about:blank", active: true });
+        placeholderTabId = placeholder.id;
 
         const tabs = await chrome.tabs.query({ windowId });
         const toClose = tabs.filter(t => t.id !== placeholder.id).map(t => t.id);
@@ -1897,7 +1899,11 @@ async function handleSwitchSession(windowId, newSessionId) {
 
     const newSession = state.sessionsById[newSessionId];
     let targetLogical = null;
-    if (newSession.lastActiveLogicalTabId) {
+    // Sync recovers the active placeholder too, but it is not the user's choice in
+    // the destination session. Skip only this live ID, retaining saved blank pages
+    // and the existing first-logical fallback (including the empty-session case).
+    if (newSession.lastActiveLogicalTabId &&
+        newSession.lastActiveLogicalTabId !== state.tabToLogical[placeholderTabId]) {
         targetLogical = newSession.logicalTabs.find(l => l.logicalId === newSession.lastActiveLogicalTabId);
     }
     if (!targetLogical && newSession.logicalTabs.length > 0) {
