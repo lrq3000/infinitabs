@@ -2,7 +2,8 @@
 
 Latest reconciliation: [PR76 concurrent contribution audit](pr76-reconciliation.md).
 The dated verification sections below describe their respective historical heads;
-the audit records the combined source, current observer contract, and new evidence.
+the audit records the combined source and observer contract. The root-parent
+follow-up below records the subsequent correction and latest source evidence.
 
 ## Intent and provenance
 
@@ -67,7 +68,7 @@ git diff --check
 The browser script loads `src` directly. Its portable default artifact parent is
 the OS temporary directory. `--flow group_in`, `group_out`, `forward`, `backward`,
 `saved_destination`, `saved_destination_grouped`, `group_entry_leading`,
-`group_entry_trailing`, or `group_entry_mixed` selects one flow. Every flow
+`group_entry_trailing`, `group_entry_mixed`, or `root_boundaries` selects one flow. Every flow
 gets a disposable headed Chromium profile, a loopback
 HTTP fixture, and only this unpacked extension. It uses real extension messages
 and native APIs, with no API mocks. JSON evidence contains request/response state,
@@ -105,6 +106,7 @@ Background SHA256:
 - After saved-only destination correction: `346004910e01d1fc4b4ad05feded204084ecd09b035507fbde4d9079a63e043a`
 - After batched-group insertion correction: `45ee0acb0b8fed3c8214b2c92284dec06f76a3982dba46640222410ff4f081ee`
 - After ungroup-warning follow-up: `7d06be4fc95319dd9b61830a8bdecb4a60332751a3bd1de56e0dad03dd88b457`
+- After root-parent/local-predecessor correction: `0ed4456a0e28ccf1697e3980492804ed4076df6c3c364250cdcc6d9e31e2e265`
 
 The Node movement regression also failed before production edits and passed after
 the fix. Its local adapters provide deterministic IDs and actual in-memory group
@@ -347,3 +349,83 @@ reduces its participant set; worst-case repeated closures cost O(r(n + k)) for r
 such passes. Batch retries likewise strictly shrink. Cross-window drag semantics,
 pinned tabs, multiple mounted copies and whole-group native movement remain
 uncertified, as in the original scope.
+
+## Root-parent and local-predecessor correction after combined review
+
+The approved follow-up starts from merge `96e90cee87c475e59cbfdf20619f613ad77bc69d`.
+Before production edits, three added public-handler/native-event model cases failed:
+
+1. **Root late feedback:** initial A,B,G[C],S(saved-only root),D; public A-before-D
+   correctly produces B,G[C],S,A,D. With A's native feedback deferred, native D
+   immediately moves to index zero. Flushing the callbacks changes the expected
+   D,B,G[C],S,A into D,B,G[C,A],S even though native A is ungrouped.
+2. **Same invariant inside a group:** G[A,B,C,S(saved-only),D] with the corresponding
+   move and immediate D reorder loses S-before-A placement. Expected flattened
+   D,B,C,S,A becomes D,B,C,A,S without changing native A's group.
+3. **Genuine root drag:** moving initially ungrouped A after grouped C reparents
+   its bookmark into G instead of placing it after the G folder in the root.
+
+The real `root_boundaries` flow also failed on that source (`Logical group: A`)
+when a genuine native API move placed A after grouped C. It does not claim to force
+Chromium's callback scheduling. The controlled old-feedback/immediate-drag ordering
+is tested deterministically in Node; the browser uses actual public messages and
+native APIs, including root saved-only S, movement to root start, and past G.
+
+### General rule and implementation
+
+Native membership chooses the parent: session root for an ungrouped tab, the mapped
+folder for a grouped tab. Build the mounted-child projection within that parent;
+at root, roll native groups up to their folder boundary and collapse their adjacent
+members. Compare only the moved bookmark's immediate mounted predecessor with its
+native predecessor, ignoring intervening saved-only siblings. If both parent and
+predecessor already match, do not replay placement because another part of the
+window/container changed. This retains S-before-A in both root and group cases.
+
+When placement really changed, insert after the previous child in the authoritative
+native parent. Preserve the existing root-start index-zero policy and grouped
+leading-edge insertion before the next mounted child. A looser neighbour-bounds
+check was rejected during development because the existing post-failure genuine
+drag test caught it skipping a needed root-start move. No timestamp filter, grace
+timer, extra transaction state, or retry change was added.
+
+The reconciliation bookkeeping is O(n + k + c) time/space for n logical tabs,
+k native tabs and c direct children of the native parent, using Map/Set lookups and
+linear passes. The existing session-reload matching cost is unchanged. Closing-tab
+retry bounds, finally cleanup, stale group-payload checks, and title/URL processing
+remain intact.
+
+### Verification and exact-source evidence
+
+All seven focused Node scripts pass, including the expanded 12-scenario feedback
+test and its diagnostic case. The eight Python observer/settling tests pass.
+The complete headless Chromium suite now has ten flows (the prior nine plus
+`root_boundaries`), all passing. PR40 cold-worker, extension-reload, and session-
+switch tests pass on the same source. No command timeout occurred.
+
+Under `C:\Users\33632\AppData\Local\Temp\opencode`:
+
+| Directory | Result |
+| --- | --- |
+| `movement-evidence-rjuwhxbh` | Pre-fix real root-boundary flow fails; source matches merge 96e90ce. |
+| `movement-evidence-tjfvsxzh` | All ten final headless Chromium movement flows pass. |
+| `pr40-evidence-qaim50pm` | All three PR40 preservation flows pass. |
+
+Final background SHA256 is listed above. Executed movement-script SHA256:
+`f63fc3c11795ec6e1f4a4bd23202bb190545d0677729c988120a15e50b9186a3`.
+PR40 script SHA256 remains
+`b24cd3861190979d717a4cf6153e99d3c5c7882a8ea39f5c14107850d07a817e`.
+Evidence includes native IDs/groups/order, bookmark trees, state/event traces,
+active highlight, and source/test fingerprints. The existing CI automatically
+runs the new default browser flow and expanded Node file on the submitted head.
+
+### Separate inherited issue, explicitly deferred
+
+The quality reviewer also reported and reproduced a different `tabGroups.onRemoved`
+classifier bug on **base 2337fb1 as well as the reviewed feature source**: if the
+last existing native destination member closes during relocation, the classifier
+can flatten its folder because selected tabs are already logically assigned there
+but are not yet native members. This is not the introduced root-feedback failure.
+It was not independently re-reproduced in this correction and its classifier was
+not edited. Track it as a future issue as explicitly requested; the selected-tab
+and anchor-closure regressions do not certify this distinct last-destination-member
+case. Cross-window/pinned/whole-group/multiple-copy limits also remain unchanged.

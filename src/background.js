@@ -1610,95 +1610,61 @@ chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
         const movedTabIndex = liveTabsInOrder.findIndex(t => t.id === tabId);
         if (movedTabIndex === -1) return;
 
-        // Late feedback can arrive after the native API promises and finally.
-        // When native order AND membership already match the logical container,
-        // there is nothing to import. Replaying the anchor rule would incorrectly
-        // move a group's first member into its ungrouped predecessor's folder.
-        // This state check has no grace timer, so a genuine immediate drag still
-        // changes the projection and follows the ordinary handler below.
         const logicalById = new Map(session.logicalTabs.map(tab => [tab.logicalId, tab]));
         const movedGroupId = tabs[movedTabIndex].groupId;
-        // An unrelated native drag can change the window order while this
-        // group's delayed events are pending. Compare group members locally;
-        // such an outside drag must not pull its first member out of the folder.
-        const mappedTabs = tabs.filter(tab => logicalById.has(state.tabToLogical[tab.id]) &&
-            (movedGroupId === -1 || tab.groupId === movedGroupId));
-        const liveIds = new Set(mappedTabs.map(tab => tab.id));
-        const expectedIds = session.logicalTabs.flatMap(tab => tab.liveTabIds.filter(id => liveIds.has(id)));
-        if (mappedTabs.length === expectedIds.length && mappedTabs.every((tab, index) => {
-            const logical = logicalById.get(state.tabToLogical[tab.id]);
-            const nativeParent = tab.groupId === -1 ? null : state.liveGroupToBookmark[tab.groupId];
-            return tab.id === expectedIds[index] && nativeParent === logical.groupId;
-        })) return;
-
-        // Validation: If the index doesn't match moveInfo.toIndex (roughly), we might be stale.
-        // But with multi-selection drag, subsequent moves might shift indices.
-        // So we rely on liveTabsInOrder as the source of truth for the *current* state.
-
         const logical = logicalById.get(logicalId);
         if (!logical) return;
 
         const nativeParentId = movedGroupId === -1 ? sessionId : state.liveGroupToBookmark[movedGroupId];
-        // The group listener establishes unknown group mappings. Never infer a
-        // grouped tab's parent from a neighbour outside that native group.
+        // Group listeners establish unknown mappings. Native membership, never
+        // an adjacent tab's bookmark parent, decides where this tab belongs.
         if (!nativeParentId) return;
 
-        // Requirement: "place just below the logical tab that is linked to the live tab directly to the left"
-        // Iterate backwards from movedTabIndex - 1 to 0 to find the first live tab that has a logical counterpart
-        let anchorLogical = null;
-        for (let i = movedTabIndex - 1; i >= 0; i--) {
-            const tab = liveTabsInOrder[i];
-            const lid = state.tabToLogical[tab.id];
-            if (lid) {
-                const l = logicalById.get(lid);
-                if (l && (movedGroupId === -1 ||
-                    (tab.groupId === movedGroupId && l.groupId === nativeParentId))) {
-                    anchorLogical = l;
-                    break;
-                }
-            }
+        const children = await chrome.bookmarks.getChildren(nativeParentId);
+        const childById = new Map(children.map(child => [child.id, child]));
+        const nativeChildren = [];
+        for (const tab of liveTabsInOrder) {
+            const mounted = logicalById.get(state.tabToLogical[tab.id]);
+            if (!mounted || (movedGroupId !== -1 && tab.groupId !== movedGroupId)) continue;
+            // At the session root a native group occupies its folder boundary,
+            // not one of its child bookmarks. Inside a group only sibling tabs
+            // participate. Ignore stale/foreign anchors outside this parent.
+            const childId = movedGroupId === -1 && tab.groupId !== -1
+                ? state.liveGroupToBookmark[tab.groupId] : mounted.bookmarkId;
+            if (!childById.has(childId) && childId !== logical.bookmarkId) continue;
+            if (nativeChildren[nativeChildren.length - 1] !== childId) nativeChildren.push(childId);
         }
 
-        if (anchorLogical) {
-            // Move after anchorLogical
-            try {
-                const nodes = await chrome.bookmarks.get(anchorLogical.bookmarkId);
-                if (nodes && nodes.length > 0) {
-                    const anchorNode = nodes[0];
-                    // Move to same parent, next index
-                    await chrome.bookmarks.move(logical.bookmarkId, {
-                        parentId: anchorNode.parentId,
-                        index: anchorNode.index + 1
-                    });
-                }
-            } catch (e) {
-                console.error("Failed to move bookmark to anchor", e);
-            }
-        } else if (movedGroupId !== -1) {
-            // At a group's leading edge, insert before its next mounted member,
-            // retaining saved-only children that precede it. A delayed event can
-            // reach here after a genuine in-group reorder; the outside left
-            // neighbour must not pull the bookmark out of its native group.
-            const next = liveTabsInOrder.slice(movedTabIndex + 1).find(tab =>
-                tab.groupId === movedGroupId && logicalById.get(state.tabToLogical[tab.id])?.groupId === nativeParentId);
-            try {
-                const nextLogical = next && logicalById.get(state.tabToLogical[next.id]);
-                const nextNode = nextLogical && (await chrome.bookmarks.get(nextLogical.bookmarkId))[0];
-                await chrome.bookmarks.move(logical.bookmarkId, {
-                    parentId: nativeParentId,
-                    ...(nextNode ? { index: nextNode.index } : {})
-                });
-            } catch (e) {
-                console.error("Failed to move bookmark within native group", e);
-            }
-        } else {
-            // No left anchor (moved to start, or only untracked tabs before it)
-            // Move to the beginning of the session root
-            try {
-                await chrome.bookmarks.move(logical.bookmarkId, { parentId: sessionId, index: 0 });
-            } catch (e) {
-                console.error("Failed to move bookmark to root", e);
-            }
+        const nativeIndex = nativeChildren.indexOf(logical.bookmarkId);
+        if (nativeIndex === -1) return;
+        const previous = childById.get(nativeChildren[nativeIndex - 1]);
+        const next = childById.get(nativeChildren[nativeIndex + 1]);
+        const current = childById.get(logical.bookmarkId);
+        const mountedChildIds = new Set(nativeChildren);
+        let logicalPreviousId;
+        for (const child of children) {
+            if (child.id === logical.bookmarkId) break;
+            if (mountedChildIds.has(child.id)) logicalPreviousId = child.id;
+        }
+        // Check this bookmark's mounted predecessor, not the whole container.
+        // Unrelated drags elsewhere must not replay a satisfied placement and
+        // cross intervening saved-only siblings. Requiring the same predecessor
+        // (rather than loose index bounds) still imports genuine immediate moves.
+        if (current && logicalPreviousId === nativeChildren[nativeIndex - 1]) return;
+
+        try {
+            // Import a changed placement after its live predecessor. At the
+            // group leading edge, retain the saved-only prefix by inserting
+            // before its next live child. A genuine root-start drag keeps the
+            // existing index-zero policy; already-satisfied placements returned
+            // above retain their saved-only boundaries in either container.
+            const index = previous ? previous.index + 1 : movedGroupId === -1 ? 0 : next?.index;
+            await chrome.bookmarks.move(logical.bookmarkId, {
+                parentId: nativeParentId,
+                ...(index !== undefined ? { index } : {})
+            });
+        } catch (e) {
+            console.error("Failed to reconcile moved bookmark within native parent", tabId, nativeParentId, e);
         }
 
         // Reload session structure using helper

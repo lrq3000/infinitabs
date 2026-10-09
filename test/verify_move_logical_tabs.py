@@ -207,6 +207,17 @@ class MovementCheck(ActiveTabReloadCheck):
         response = self.send_message(request)
         assert response.get("success"), response
         record = {"request": request, "response": response, "before": before, "expected_order": list(order)}
+        self.observe_move(before, record, order, grouped, observe_ms)
+
+    def native_move(self, name, index, order, grouped=""):
+        before = self.snapshot()
+        self.sidebar.evaluate("movementEvents.length = 0")
+        request = {"tabId": self.live_ids[name], "index": index}
+        response = self.sidebar.evaluate("({tabId, index}) => chrome.tabs.move(tabId, {index})", request)
+        record = {"native_move": request, "response": response, "before": before, "expected_order": list(order)}
+        self.observe_move(before, record, order, grouped, 2500)
+
+    def observe_move(self, before, record, order, grouped, observe_ms):
         self.evidence["flows"].append(record)
         try:
             # Preserve both the minimum observation and the remote contribution's
@@ -266,7 +277,17 @@ class MovementCheck(ActiveTabReloadCheck):
     def run(self, flow):
         if flow in ("group_in", "group_out") or flow.startswith("group_entry"):
             self.group()
-        if flow == "group_entry_leading":
+        if flow == "root_boundaries":
+            self.group("C")
+            self.unmount("S")
+            self.move("A", "D", "before", "BCSAD", "C", observe_ms=2500)
+            # Real APIs exercise root-parent and saved-only boundaries. They do
+            # not force Chrome's callback delivery order; Node covers the queued
+            # old-A/immediate-D interleaving deterministically.
+            self.native_move("D", 0, "DBCSA", "C")
+            self.native_move("A", 1, "DABCS", "C")
+            self.native_move("A", len(self.live_ids), "DBCAS", "C")
+        elif flow == "group_entry_leading":
             # A/B are genuinely ungrouped before this first move, not members
             # returned to the front after an earlier successful group insertion.
             self.move("AB", "C", "before", "XABCD", "ABCD", observe_ms=2500)
@@ -310,7 +331,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts-dir", type=Path, default=Path(tempfile.gettempdir()))
     flows = ["group_in", "group_out", "forward", "backward", "saved_destination", "saved_destination_grouped",
-             "group_entry_leading", "group_entry_trailing", "group_entry_mixed"]
+             "group_entry_leading", "group_entry_trailing", "group_entry_mixed", "root_boundaries"]
     parser.add_argument("--flow", choices=["all", *flows], default="all")
     parser.add_argument("--headless", action="store_true", help="Use full Chromium without a display server")
     args = parser.parse_args()
@@ -345,7 +366,7 @@ def main():
                             for name in ("verify_move_logical_tabs.py", "verify_active_tab_reload.py")})
                     try:
                         print(f"Preparing {flow}", flush=True)
-                        names = "ABCDS" if flow.startswith("saved_destination") else "ABCDE"
+                        names = "ABCDS" if flow.startswith("saved_destination") else "ABCSD" if flow == "root_boundaries" else "ABCDE"
                         if flow.startswith("group_entry"):
                             names = "XABCD" if flow == "group_entry_trailing" else "XCDAB"
                         check.prepare(f"http://127.0.0.1:{server.server_port}/movement", names=names)

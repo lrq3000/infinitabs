@@ -95,6 +95,15 @@ async function main() {
     // its bookmark listener mutate the very children array it is iterating.
     const getChildren = chrome.bookmarks.getChildren;
     chrome.bookmarks.getChildren = async id => structuredClone(await getChildren(id));
+    // Native bookmark destinations are measured before removing a same-parent
+    // source. This matters when genuine native drags import a forward reorder.
+    const moveBookmark = chrome.bookmarks.move;
+    chrome.bookmarks.move = async (id, destination) => {
+        const [node] = await chrome.bookmarks.get(id);
+        const adjusted = { ...destination };
+        if (node.parentId === destination.parentId && node.index < destination.index) adjusted.index--;
+        return moveBookmark(id, adjusted);
+    };
     self.crypto.randomUUID = () => `feedback-${++logicalId}`;
     const browser = new GroupFeedbackBrowser(listeners);
     const queryTabs = chrome.tabs.query;
@@ -126,24 +135,30 @@ async function main() {
     };
     const root = await chrome.bookmarks.create({ title: 'InfiniTabs Sessions' });
     const fixtures = [];
-    for (const windowId of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
-        const grouped = [2, 4, 8, 9].includes(windowId);
+    for (const windowId of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) {
+        const rootBoundary = [10, 12].includes(windowId);
+        const groupBoundary = windowId === 11;
+        const grouped = [2, 4, 8, 9].includes(windowId) || groupBoundary;
         await chrome.windows.create({ id: windowId, type: 'normal' });
         const folder = await chrome.bookmarks.create({ parentId: root.id, title: `Feedback [windowId:${windowId}]` });
         const old = grouped ? await chrome.bookmarks.create({ parentId: folder.id, title: 'Source [red]' }) : null;
         if (old) browser.groups.set(windowId * 10, { id: windowId * 10, windowId, title: 'Source', color: 'red' });
         const bookmarks = {}, live = {};
-        let destination;
+        let destination = groupBoundary ? old : null;
         for (const [index, name] of [...'ABCSD'].entries()) {
-            if (name === 'S') destination = await chrome.bookmarks.create({ parentId: folder.id, title: 'Saved destination [blue]' });
-            const inOld = grouped && 'AB'.includes(name);
+            if ((name === 'S' && !rootBoundary && !groupBoundary) || (name === 'C' && rootBoundary)) {
+                destination = await chrome.bookmarks.create({ parentId: folder.id, title: 'Saved destination [blue]' });
+            }
+            const inOld = grouped && (groupBoundary || 'AB'.includes(name));
+            const inBoundary = rootBoundary && name === 'C';
+            if (inBoundary) browser.groups.set(windowId * 10, { id: windowId * 10, windowId, title: 'Saved destination', color: 'blue' });
             const url = `https://example.com/feedback/${windowId}/${name}`;
             bookmarks[name] = await chrome.bookmarks.create({
-                parentId: name === 'S' ? destination.id : inOld ? old.id : folder.id, title: name, url
+                parentId: inBoundary || (name === 'S' && !rootBoundary) ? destination.id : inOld ? old.id : folder.id, title: name, url
             });
             if (name !== 'S') live[name] = await chrome.tabs.create({
                 id: windowId * 100 + index, windowId, index: name === 'D' ? 3 : index,
-                groupId: inOld ? windowId * 10 : -1, active: name === 'A', title: name, url
+                groupId: inOld || inBoundary ? windowId * 10 : -1, active: name === 'A', title: name, url
             });
         }
         fixtures.push({ windowId, folder, destination, bookmarks, live });
@@ -163,6 +178,43 @@ async function main() {
             browser.failNextMove = windowId === 3;
             const before = await session(windowId);
             const byBookmark = new Map(before.logicalTabs.map(tab => [tab.bookmarkId, tab]));
+            if (windowId >= 10) {
+                const names = new Map(Object.entries(bookmarks).map(([name, bookmark]) => [bookmark.id, name]));
+                if (windowId !== 12) {
+                    // A is already correctly placed after saved-only S. An
+                    // unrelated D drag must not make A's queued feedback replay
+                    // anchor placement, at the root OR inside a native group.
+                    browser.deferEvents = true;
+                    const response = await send({ type: 'MOVE_LOGICAL_TABS', windowId,
+                        logicalIds: [byBookmark.get(bookmarks.A.id).logicalId],
+                        targetLogicalId: byBookmark.get(bookmarks.D.id).logicalId, position: 'before' });
+                    assert.equal(response.success, true);
+                    assert.deepEqual((await session(windowId)).logicalTabs.map(tab => names.get(tab.bookmarkId)), [...'BCSAD']);
+                    await chrome.tabs.move(live.D.id, { index: 0 });
+                    await browser.flushEvents();
+                } else {
+                    // A genuine root drag after grouped C must anchor after the
+                    // folder G, never reparent A into G from C's bookmark parent.
+                    await chrome.tabs.move(live.A.id, { index: 2 });
+                }
+                await new Promise(resolve => setTimeout(resolve, 600));
+                const after = await session(windowId);
+                const active = after.logicalTabs.find(tab => tab.bookmarkId === bookmarks.A.id);
+                assert.deepEqual({
+                    order: after.logicalTabs.map(tab => names.get(tab.bookmarkId)),
+                    parent: (await chrome.bookmarks.get(bookmarks.A.id))[0].parentId,
+                    group: (await chrome.tabs.get(live.A.id)).groupId
+                }, {
+                    order: [...(windowId === 12 ? 'BCASD' : 'DBCSA')],
+                    parent: windowId === 11 ? destination.id : fixture.folder.id,
+                    group: windowId === 11 ? windowId * 10 : -1
+                }, 'Local placement and saved-only boundary');
+                assert.equal(after.lastActiveLogicalTabId, active.logicalId);
+                assert.deepEqual((await chrome.tabs.query({ windowId })).map(tab => tab.id),
+                    [...(windowId === 12 ? 'BCAD' : 'DBCA')].map(name => live[name].id));
+                console.log(`PASS local-boundary scenario ${windowId}`);
+                continue;
+            }
             // Deliver native feedback only after the public move has replied.
             // No artificial sleep determines the ordering of this race.
             browser.deferEvents = [4, 8, 9].includes(windowId);
@@ -194,7 +246,11 @@ async function main() {
                 await new Promise(resolve => setTimeout(resolve, 250));
                 assert.equal((await chrome.bookmarks.get(bookmarks.A.id))[0].parentId, fixture.folder.id,
                     'Move feedback guard must clear on native failure');
-                assert.equal((await chrome.bookmarks.get(bookmarks.A.id))[0].index, 0);
+                assert.equal((await chrome.bookmarks.get(bookmarks.A.id))[0].index, 0,
+                    `Genuine drag to start must import: ${JSON.stringify({
+                        children: (await chrome.bookmarks.getChildren(fixture.folder.id)).map(node => ({ id: node.id, title: node.title })),
+                        native: (await chrome.tabs.query({ windowId })).map(tab => ({ id: tab.id, groupId: tab.groupId }))
+                    })}`);
                 console.log('PASS failed native move releases feedback guard');
                 continue;
             }
