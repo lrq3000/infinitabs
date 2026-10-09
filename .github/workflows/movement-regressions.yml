@@ -1,0 +1,52 @@
+name: Movement regressions
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'test/**'
+      - '.github/workflows/movement-regressions.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: movement-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node-and-chromium:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Node regressions
+        run: |
+          for test in test/test_move_logical_tabs.js test/test_move_group_feedback.js test/test_active_tab_sync.js test/test_switch_session.js test/test_add_new_tab.js test/test_history_switch.js test/test_sidebar_quick_drag.js; do
+            node "$test"
+          done
+      - name: Install documented browser runtime
+        run: |
+          python -m pip install playwright==1.59.0
+          python -m playwright install --with-deps chromium --no-shell
+      - name: Settling helper regressions
+        run: python -m unittest discover -s test -p 'test_movement_*.py'
+      - name: Chromium movement and active-state regressions
+        run: |
+          mkdir -p evidence
+          python test/verify_move_logical_tabs.py --headless --artifacts-dir evidence
+          python test/verify_active_tab_reload.py --headless --artifacts-dir evidence
+      - name: Preserve exact-source browser evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: movement-evidence
+          path: evidence/
+          if-no-files-found: ignore
+          retention-days: 14

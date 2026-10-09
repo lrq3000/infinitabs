@@ -12,7 +12,7 @@ const state = {
     windowToSession: {},  // Record<WindowId, SessionId>
     tabToLogical: {},     // Record<TabId, LogicalTabId>
     liveGroupToBookmark: {}, // Record<LiveGroupId, BookmarkId>
-    ignoreMoveEventsForTabIds: new Set(), // Set<TabId>
+    syncingLiveTabIds: new Set(), // Set<TabId>: scoped native move/group feedback, released in finally
     isCreatingGroup: false, // Flag to suppress bookmark creation during programmatic group creation
     pendingGroupCreations: {}, // Record<LiveGroupId, Promise<BookmarkId>> - Locks for group creation
     workspaceHistory: [], // Array<WorkspaceSnapshot>
@@ -262,7 +262,29 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
  * @param {Object} session - The current session object.
  */
 async function ensureLiveGroupForLogicalTab(tabId, logicalGroupId, session) {
-    if (!logicalGroupId) return;
+    // Existing mount/create callers keep their single-tab contract.
+    return ensureLiveGroupForLogicalTabs([tabId], logicalGroupId, session);
+}
+
+// A batch rejects as a whole if one tab closes between collection and dispatch.
+// Retry only when the input actually shrank; other API failures retain the
+// caller's diagnostic/cleanup path and cannot cause an unbounded retry loop.
+async function withSurvivingTabs(tabIds, operation) {
+    let ids = tabIds;
+    while (ids.length) {
+        try {
+            return await operation(ids);
+        } catch (error) {
+            const tabs = await Promise.all(ids.map(id => chrome.tabs.get(id).catch(() => null)));
+            const surviving = tabs.filter(Boolean).map(tab => tab.id);
+            if (surviving.length === ids.length) throw error;
+            ids = surviving;
+        }
+    }
+}
+
+async function ensureLiveGroupForLogicalTabs(tabIds, logicalGroupId, session) {
+    if (!logicalGroupId || tabIds.length === 0) return;
 
     // Try to resolve live group
     let liveGroupId = parseInt(Object.keys(state.liveGroupToBookmark).find(key => state.liveGroupToBookmark[key] === logicalGroupId));
@@ -279,7 +301,8 @@ async function ensureLiveGroupForLogicalTab(tabId, logicalGroupId, session) {
             // Set flag to suppress onCreated/onUpdated listeners
             state.isCreatingGroup = true;
 
-            liveGroupId = await chrome.tabs.group({ tabIds: tabId });
+            liveGroupId = await withSurvivingTabs(tabIds, ids => chrome.tabs.group({ tabIds: ids }));
+            if (liveGroupId === undefined) return; // All selected tabs closed.
             state.liveGroupToBookmark[liveGroupId] = logicalGroupId;
 
             await chrome.tabGroups.update(liveGroupId, { title: title, color: color });
@@ -291,7 +314,7 @@ async function ensureLiveGroupForLogicalTab(tabId, logicalGroupId, session) {
     } else {
         // Add to existing group
         try {
-            await chrome.tabs.group({ groupId: liveGroupId, tabIds: tabId });
+            await withSurvivingTabs(tabIds, ids => chrome.tabs.group({ groupId: liveGroupId, tabIds: ids }));
         } catch (e) {
             // Maybe group ceased to exist?
             delete state.liveGroupToBookmark[liveGroupId];
@@ -1373,8 +1396,19 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (!state.initialized) await init();
 
-    // Check if group changed
+    // Event payloads are snapshots: delayed temporary group changes must not
+    // overwrite the final native membership. Still process title/URL updates.
+    let currentGroup = true;
     if (changeInfo.groupId !== undefined) {
+        const current = await chrome.tabs.get(tabId).catch(() => null);
+        currentGroup = current && current.groupId === changeInfo.groupId;
+    }
+    // Check if group changed
+    // Individual native moves can temporarily ungroup a selected tab. While the
+    // logical move owns it, the bookmark destination is authoritative; feeding
+    // that intermediate group change back would undo the user's bookmark move.
+    // Other updates (title, URL, etc.) still follow their normal path below.
+    if (changeInfo.groupId !== undefined && currentGroup && !state.syncingLiveTabIds.has(tabId)) {
          const logicalId = state.tabToLogical[tabId];
          if (logicalId) {
              const sessionId = state.windowToSession[tab.windowId];
@@ -1416,7 +1450,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
                             if (!state.tabToLogical[tabId]) return;
 
                             // Check if tab is still ungrouped (might have been added to another group quickly?)
-                            if (currentTab.groupId !== -1) return;
+                            if (currentTab.groupId !== -1 || state.syncingLiveTabIds.has(tabId)) return;
 
                             // Now safe to move
                             try {
@@ -1550,16 +1584,13 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
 });
 
 chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
+    // Decide at event receipt, before queuing: the scoped sync may have finished
+    // by the time this mutex runs. Genuine later native drags must not be ignored.
+    if (state.syncingLiveTabIds.has(tabId)) return;
     moveMutex.run(async () => {
         if (!state.initialized) await init();
 
-        if (state.ignoreMoveEventsForTabIds.has(tabId)) {
-            state.ignoreMoveEventsForTabIds.delete(tabId);
-            return;
-        }
-
-        const logicalId = state.tabToLogical[tabId];
-        if (!logicalId) return;
+        if (!state.tabToLogical[tabId]) return;
 
         const windowId = moveInfo.windowId;
         const sessionId = state.windowToSession[windowId];
@@ -1572,57 +1603,77 @@ chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
         const session = state.sessionsById[sessionId];
         if (!session) return;
 
+        // Capture both sides of each identity pair from one session, before any
+        // browser read can yield to this drag's own group-update/reload callback.
+        // These primitive live/bookmark IDs survive logical-ID regeneration; do
+        // not resolve this snapshot through mutable state.tabToLogical afterward.
+        const bookmarkByLiveTabId = new Map();
+        for (const logical of session.logicalTabs) {
+            for (const liveTabId of logical.liveTabIds) {
+                bookmarkByLiveTabId.set(liveTabId, logical.bookmarkId);
+            }
+        }
+        const bookmarkId = bookmarkByLiveTabId.get(tabId);
+        if (!bookmarkId) return;
+
         const tabs = await chrome.tabs.query({ windowId });
         const liveTabsInOrder = tabs;
 
         const movedTabIndex = liveTabsInOrder.findIndex(t => t.id === tabId);
         if (movedTabIndex === -1) return;
 
-        // Validation: If the index doesn't match moveInfo.toIndex (roughly), we might be stale.
-        // But with multi-selection drag, subsequent moves might shift indices.
-        // So we rely on liveTabsInOrder as the source of truth for the *current* state.
+        const movedGroupId = tabs[movedTabIndex].groupId;
 
-        const logical = session.logicalTabs.find(l => l.logicalId === logicalId);
-        if (!logical) return;
+        const nativeParentId = movedGroupId === -1 ? sessionId : state.liveGroupToBookmark[movedGroupId];
+        // Group listeners establish unknown mappings. Native membership, never
+        // an adjacent tab's bookmark parent, decides where this tab belongs.
+        if (!nativeParentId) return;
 
-        // Requirement: "place just below the logical tab that is linked to the live tab directly to the left"
-        // Iterate backwards from movedTabIndex - 1 to 0 to find the first live tab that has a logical counterpart
-        let anchorLogical = null;
-        for (let i = movedTabIndex - 1; i >= 0; i--) {
-            const tab = liveTabsInOrder[i];
-            const lid = state.tabToLogical[tab.id];
-            if (lid) {
-                const l = session.logicalTabs.find(x => x.logicalId === lid);
-                if (l) {
-                    anchorLogical = l;
-                    break;
-                }
-            }
+        const children = await chrome.bookmarks.getChildren(nativeParentId);
+        const childById = new Map(children.map(child => [child.id, child]));
+        const nativeChildren = [];
+        for (const tab of liveTabsInOrder) {
+            const mountedBookmarkId = bookmarkByLiveTabId.get(tab.id);
+            if (!mountedBookmarkId || (movedGroupId !== -1 && tab.groupId !== movedGroupId)) continue;
+            // At the session root a native group occupies its folder boundary,
+            // not one of its child bookmarks. Inside a group only sibling tabs
+            // participate. Ignore stale/foreign anchors outside this parent.
+            const childId = movedGroupId === -1 && tab.groupId !== -1
+                ? state.liveGroupToBookmark[tab.groupId] : mountedBookmarkId;
+            if (!childById.has(childId) && childId !== bookmarkId) continue;
+            if (nativeChildren[nativeChildren.length - 1] !== childId) nativeChildren.push(childId);
         }
 
-        if (anchorLogical) {
-            // Move after anchorLogical
-            try {
-                const nodes = await chrome.bookmarks.get(anchorLogical.bookmarkId);
-                if (nodes && nodes.length > 0) {
-                    const anchorNode = nodes[0];
-                    // Move to same parent, next index
-                    await chrome.bookmarks.move(logical.bookmarkId, {
-                        parentId: anchorNode.parentId,
-                        index: anchorNode.index + 1
-                    });
-                }
-            } catch (e) {
-                console.error("Failed to move bookmark to anchor", e);
-            }
-        } else {
-            // No left anchor (moved to start, or only untracked tabs before it)
-            // Move to the beginning of the session root
-            try {
-                await chrome.bookmarks.move(logical.bookmarkId, { parentId: sessionId, index: 0 });
-            } catch (e) {
-                console.error("Failed to move bookmark to root", e);
-            }
+        const nativeIndex = nativeChildren.indexOf(bookmarkId);
+        if (nativeIndex === -1) return;
+        const previous = childById.get(nativeChildren[nativeIndex - 1]);
+        const next = childById.get(nativeChildren[nativeIndex + 1]);
+        const current = childById.get(bookmarkId);
+        const mountedChildIds = new Set(nativeChildren);
+        let logicalPreviousId;
+        for (const child of children) {
+            if (child.id === bookmarkId) break;
+            if (mountedChildIds.has(child.id)) logicalPreviousId = child.id;
+        }
+        // Check this bookmark's mounted predecessor, not the whole container.
+        // Unrelated drags elsewhere must not replay a satisfied placement and
+        // cross intervening saved-only siblings. Requiring the same predecessor
+        // (rather than loose index bounds) still imports genuine immediate moves.
+        if (current && logicalPreviousId === nativeChildren[nativeIndex - 1]) return;
+
+        try {
+            // Import a changed placement after its live predecessor. At the
+            // group leading edge, retain the saved-only prefix by inserting
+            // before its next live child. A genuine root-start drag keeps the
+            // existing index-zero policy; already-satisfied placements returned
+            // above retain their saved-only boundaries in either container.
+            const index = previous ? previous.index + 1 : movedGroupId === -1 ? 0 : next?.index;
+            await chrome.bookmarks.move(bookmarkId, {
+                parentId: nativeParentId,
+                ...(index !== undefined ? { index } : {})
+            });
+        } catch (e) {
+            console.error("Failed to reconcile moved bookmark within native parent", tabId, nativeParentId, e);
         }
 
         // Reload session structure using helper
@@ -2249,9 +2300,10 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
     if (!targetBookmarkId) return;
 
     // Collect bookmark IDs to move
+    const logicalTabsById = new Map(session.logicalTabs.map(tab => [tab.logicalId, tab]));
     const bookmarksToMove = [];
     for (const lid of logicalIds) {
-        const l = session.logicalTabs.find(t => t.logicalId === lid);
+        const l = logicalTabsById.get(lid);
         if (l) {
             bookmarksToMove.push(l.bookmarkId);
         } else {
@@ -2290,39 +2342,22 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
         }
     }
 
-    for (let i = 0; i < bookmarksToMove.length; i++) {
+    // Insert backwards at one boundary, then use the actual resulting index as
+    // the next boundary. Chrome adjusts bookmark indices when removing a sibling
+    // before the destination; incrementing a stale index splits forward moves.
+    for (let i = bookmarksToMove.length - 1; i >= 0; i--) {
         const bid = bookmarksToMove[i];
-        await chrome.bookmarks.move(bid, { parentId: parentId, index: index + i });
+        const moved = await chrome.bookmarks.move(bid, { parentId, index });
+        index = moved.index;
     }
 
     // Update state using helper
     const reloadedSession = await reloadSessionAndPreserveState(sessionId, windowId);
 
-    // Sync Live Groups: If we moved logical tabs INTO a group, we should group the live tabs.
-    // If we moved OUT of a group, ungroup.
-    // This is handled via 'onMoved' listener? No, we just did a bookmark move.
-    // We need to explicitly update live state.
-
-    // For each moved logical tab, check its new group status in reloadedSession
-    for (const lid of logicalIds) {
-        const logical = reloadedSession.logicalTabs.find(l => l.logicalId === lid);
-        if (logical && logical.liveTabIds.length > 0) {
-            if (logical.groupId) {
-                // Should be in a group.
-                // We assume user wants live tabs grouped if moving bookmark into a group
-                // Use the new helper
-                // Note: we iterate liveTabIds, which is array
-                for (const tid of logical.liveTabIds) {
-                    await ensureLiveGroupForLogicalTab(tid, logical.groupId, session);
-                }
-            } else {
-                // Should be ungrouped
-                try {
-                    await chrome.tabs.ungroup(logical.liveTabIds);
-                } catch(e) {}
-            }
-        }
-    }
+    // Reload generates fresh logical IDs. Bookmark identity survives the move, so
+    // resolve moved tabs once from the new snapshot instead of reusing UI IDs.
+    const movedBookmarkIds = new Set(bookmarksToMove);
+    const movedTabs = reloadedSession.logicalTabs.filter(tab => movedBookmarkIds.has(tab.bookmarkId));
 
     // Sync Live Tabs Order
     // Move corresponding live tabs to match new logical position
@@ -2334,108 +2369,106 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
     // 3. Move the live tabs of the moved logical tabs to after the anchor.
 
     // We can assume that dragging a set of tabs keeps them contiguous in the destination.
-    // logicalIds contains the IDs of the moved tabs.
+    // movedBookmarkIds contains the stable identities of the moved tabs.
     // reloadedSession has the new order.
 
     // Find the first moved tab in the new order
     let firstMovedIndex = -1;
     for (let i = 0; i < reloadedSession.logicalTabs.length; i++) {
-        if (logicalIds.includes(reloadedSession.logicalTabs[i].logicalId)) {
+        if (movedBookmarkIds.has(reloadedSession.logicalTabs[i].bookmarkId)) {
             firstMovedIndex = i;
             break;
         }
     }
 
     if (firstMovedIndex !== -1) {
-        // Find Anchor (live tab before)
-        let liveAnchorIndex = -1;
-        for (let i = firstMovedIndex - 1; i >= 0; i--) {
-            const prevLogical = reloadedSession.logicalTabs[i];
-            if (prevLogical.liveTabIds.length > 0) {
-                try {
-                    // Use the last live tab of the logical tab (if multiple, rare but possible)
-                    const lastLiveTabId = prevLogical.liveTabIds[prevLogical.liveTabIds.length - 1];
-                    const anchorTab = await chrome.tabs.get(lastLiveTabId);
-                    liveAnchorIndex = anchorTab.index;
-                    break;
-                } catch (e) { }
-            }
-        }
+        // Keep preceding candidates so a closing anchor can fall back to the
+        // nearest surviving predecessor (or the beginning of the window).
+        const anchorIds = reloadedSession.logicalTabs.slice(0, firstMovedIndex)
+            .flatMap(tab => tab.liveTabIds).reverse();
 
         // Collect all live tab IDs for the moved logical tabs (in order)
-        const liveTabsToMove = [];
-        for (let i = firstMovedIndex; i < reloadedSession.logicalTabs.length; i++) {
-            const l = reloadedSession.logicalTabs[i];
-            if (logicalIds.includes(l.logicalId)) {
-                liveTabsToMove.push(...l.liveTabIds);
-            }
-        }
+        const liveTabsToMove = movedTabs.flatMap(tab => tab.liveTabIds);
 
         if (liveTabsToMove.length > 0) {
-            // Calculate target index
-            let targetIndex = 0;
-            if (liveAnchorIndex !== -1) {
-                targetIndex = liveAnchorIndex + 1;
-            }
-
-            // Adjust target index because chrome.tabs.move counts relative to current state.
-            // If we move tabs from left to right, index is straightforward.
-            // If we move right to left, index is also straightforward if using 'index' property.
-            // However, chrome.tabs.move behaves slightly differently depending on direction and selection.
-            // But generally, providing the target index works.
-            // One caveat: if we move multiple tabs, 'index' is the index of the first tab.
-
-            // Also need to account for the fact that moving tabs effectively removes them from old position.
-            // If we move from index 5 to index 2. Target 2.
-            // If we move from index 2 to index 5. Target 5 (or 4?).
-            // Chrome API handles this if we give the destination index.
-
-            // Refinement: If moving AFTER an anchor, we might need to adjust if the moved tabs were previously BEFORE the anchor.
-            // Current indices:
             const currentLiveTabs = await Promise.all(
                 liveTabsToMove.map(tid => chrome.tabs.get(tid).catch(() => null))
             );
-            const validTabs = currentLiveTabs.filter(t => t !== null);
+            const validTabs = currentLiveTabs.filter(t => t && t.windowId === windowId);
 
-            // If we are moving past an anchor, we just need to know the anchor's index.
-            // But if the tabs to move are currently *before* the anchor, their removal shifts the anchor index down.
-            // chrome.tabs.move index is "the index the first tab should end up at".
-
-            // Let's count how many of the tabs-to-move are currently before the calculated targetIndex (which is based on current state).
-            // Actually, liveAnchorIndex is based on current state.
-            // If we move tabs that are currently at index 0, 1 to after tab at index 5.
-            // Anchor is 5. Target is 6.
-            // Tabs 0, 1 are moved to 6. Correct.
-
-            // If we move tabs that are currently at index 5, 6 to after tab at index 1.
-            // Anchor is 1. Target is 2.
-            // Tabs 5, 6 moved to 2. Correct.
-
-            // The only issue is if liveAnchorIndex itself shifts? No, we just fetched it.
-            // Wait, if we use `index` in move, it puts them there.
-            // If we move [A] to after [B].
-            // If A is before B (0, 1). Target 2? No, B becomes 0. A becomes 1.
-            // If we say move A to 2. A goes to 2. B stays 1? No B shifts to 0.
-
-            // Safe bet: Just try to move to targetIndex.
-            // But if we move multiple tabs, we pass -1? No, we can pass index.
-
-            // Important: Add to ignore set
-            validTabs.forEach(t => state.ignoreMoveEventsForTabIds.add(t.id));
-            setTimeout(() => {
-                validTabs.forEach(t => state.ignoreMoveEventsForTabIds.delete(t.id));
-            }, 2000);
+            // Suppress only these tabs' programmatic move/group feedback for the
+            // duration of native synchronization, rather than a two-second timer.
+            validTabs.forEach(t => state.syncingLiveTabIds.add(t.id));
 
             try {
-                const ids = validTabs.map(t => t.id);
-                // We prefer moving one by one to ensure order if they are not contiguous?
-                // Or allow block move.
-                // chrome.tabs.move supports array of IDs and a single index.
-                // It places them starting at index.
-                await chrome.tabs.move(ids, { index: targetIndex });
+                const relevantIds = new Set([...anchorIds, ...validTabs.map(tab => tab.id)]);
+                const survivingIds = async () => new Set((await chrome.tabs.query({ windowId }))
+                    .filter(tab => relevantIds.has(tab.id)).map(tab => tab.id));
+                let knownIds = await survivingIds();
+                // Insert backwards after the same live anchor. Unlike bookmarks,
+                // tabs.move takes a final index: removing a tab before the anchor
+                // shifts that anchor left by one. Read current indices because
+                // grouping and every preceding move can change them. Individual
+                // moves also preserve selection order for noncontiguous inputs.
+                while (true) {
+                    let anchorOffset = 0;
+                    for (let i = validTabs.length - 1; i >= 0; i--) {
+                        if (!knownIds.has(validTabs[i].id)) continue;
+                        try {
+                            const tab = await chrome.tabs.get(validTabs[i].id);
+                            if (tab.windowId !== windowId) continue;
+                            let anchor = null;
+                            while (anchorOffset < anchorIds.length) {
+                                anchor = await chrome.tabs.get(anchorIds[anchorOffset]).catch(() => null);
+                                if (anchor && anchor.windowId === windowId) break;
+                                anchor = null;
+                                anchorOffset++;
+                            }
+                            const targetIndex = anchor ? anchor.index + (tab.index < anchor.index ? 0 : 1) : 0;
+                            await chrome.tabs.move(tab.id, { index: targetIndex });
+                        } catch (e) {
+                            console.warn("Failed to move native tab", validTabs[i].id, e);
+                        }
+                    }
+                    const remainingIds = await survivingIds();
+                    const lostTab = [...knownIds].some(id => !remainingIds.has(id));
+                    knownIds = remainingIds;
+                    // An anchor can close after get() but before move(), making
+                    // even a successful move's index stale. Reapply to survivors
+                    // only on disappearance; every retry strictly loses an ID.
+                    if (!lostTab) break;
+                }
+
+                // Group only after relocation. A new group created at the old
+                // location can be split by the individual moves (Chromium then
+                // ungroups separated members). The final contiguous block can
+                // now join an existing group or recreate a saved-only group.
+                const liveTabsByGroup = new Map();
+                for (const logical of movedTabs) {
+                    const tabIds = logical.liveTabIds.filter(id => knownIds.has(id));
+                    if (!tabIds.length) continue;
+                    if (!liveTabsByGroup.has(logical.groupId)) liveTabsByGroup.set(logical.groupId, []);
+                    liveTabsByGroup.get(logical.groupId).push(...tabIds);
+                }
+                // Grouping also relocates tabs: adding leading A then B singly
+                // moves A past B to the existing group's boundary. Submit the
+                // whole destination block so Chrome preserves its native order,
+                // including a mixture of existing and newly grouped members.
+                for (const [groupId, tabIds] of liveTabsByGroup) {
+                    if (groupId) {
+                        await ensureLiveGroupForLogicalTabs(tabIds, groupId, reloadedSession);
+                    } else {
+                        try {
+                            await withSurvivingTabs(tabIds, ids => chrome.tabs.ungroup(ids));
+                        } catch(e) {
+                            console.warn("Failed to ungroup moved live tabs", tabIds, e);
+                        }
+                    }
+                }
             } catch (e) {
                 console.warn("Failed to sync live tabs order", e);
-                validTabs.forEach(t => state.ignoreMoveEventsForTabIds.delete(t.id));
+            } finally {
+                validTabs.forEach(t => state.syncingLiveTabIds.delete(t.id));
             }
         }
     }
