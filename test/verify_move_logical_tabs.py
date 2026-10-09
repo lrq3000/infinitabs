@@ -8,6 +8,7 @@ Reuses PR40's public-message, polling, console, and sidebar helpers unchanged.
 import argparse
 import faulthandler
 import hashlib
+import inspect
 import json
 import tempfile
 import time
@@ -327,10 +328,12 @@ class MovementCheck(ActiveTabReloadCheck):
         assert not errors, errors
 
 
-def main():
+def main(check_class=MovementCheck, flows=None, names_for_flow=None, evidence_prefix="movement"):
+    # Mounting checks share the same isolated browser, fixture server, settling,
+    # diagnostics and exact-source evidence rather than maintaining another runner.
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts-dir", type=Path, default=Path(tempfile.gettempdir()))
-    flows = ["group_in", "group_out", "forward", "backward", "saved_destination", "saved_destination_grouped",
+    flows = flows or ["group_in", "group_out", "forward", "backward", "saved_destination", "saved_destination_grouped",
              "group_entry_leading", "group_entry_trailing", "group_entry_mixed", "root_boundaries"]
     parser.add_argument("--flow", choices=["all", *flows], default="all")
     parser.add_argument("--headless", action="store_true", help="Use full Chromium without a display server")
@@ -338,7 +341,7 @@ def main():
     if not args.artifacts_dir.is_dir():
         parser.error("--artifacts-dir must exist")
     extension = Path(__file__).resolve().parents[1] / "src"
-    artifacts = Path(tempfile.mkdtemp(prefix="movement-evidence-", dir=args.artifacts_dir))
+    artifacts = Path(tempfile.mkdtemp(prefix=f"{evidence_prefix}-evidence-", dir=args.artifacts_dir))
     print(f"Extension: {extension}\nEvidence: {artifacts}", flush=True)
     server = ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -357,18 +360,20 @@ def main():
                         viewport={"width": 1100, "height": 800}, ignore_default_args=["--disable-extensions"],
                         args=[f"--disable-extensions-except={extension}", f"--load-extension={extension}"])
                     context.set_default_timeout(15000)
-                    check = MovementCheck(context, folder)
+                    check = check_class(context, folder)
                     check.evidence.update(extension_path=str(extension), isolated_profile=profile,
                         chromium=context.browser.version, headless=args.headless,
                         source_sha256={str(path.relative_to(extension)):
                             hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(extension.rglob("*")) if path.is_file()},
                         test_sha256={name: hashlib.sha256((extension.parent / "test" / name).read_bytes()).hexdigest()
-                            for name in ("verify_move_logical_tabs.py", "verify_active_tab_reload.py")})
+                            for name in {"verify_move_logical_tabs.py", "verify_active_tab_reload.py", Path(inspect.getfile(check_class)).name}})
                     try:
                         print(f"Preparing {flow}", flush=True)
                         names = "ABCDS" if flow.startswith("saved_destination") else "ABCSD" if flow == "root_boundaries" else "ABCDE"
                         if flow.startswith("group_entry"):
                             names = "XABCD" if flow == "group_entry_trailing" else "XCDAB"
+                        if names_for_flow:
+                            names = names_for_flow(flow)
                         check.prepare(f"http://127.0.0.1:{server.server_port}/movement", names=names)
                         print(f"Running {flow}", flush=True)
                         check.run(flow)
