@@ -54,6 +54,7 @@ node test/test_switch_session.js
 node test/test_add_new_tab.js
 node test/test_history_switch.js
 node test/test_sidebar_quick_drag.js
+python test/test_movement_observer.py
 python test/verify_move_logical_tabs.py --artifacts-dir <existing-temporary-directory>
 python test/verify_active_tab_reload.py --artifacts-dir <existing-temporary-directory>
 git diff --check
@@ -99,6 +100,7 @@ Background SHA256:
 - Initial consolidation (before quality-review correction): `e65d57a6bccbcc74895e61a9e619f02e427f5a65d2442c1a394dd3b8c0f56223`
 - After saved-only destination correction: `346004910e01d1fc4b4ad05feded204084ecd09b035507fbde4d9079a63e043a`
 - After batched-group insertion correction: `45ee0acb0b8fed3c8214b2c92284dec06f76a3982dba46640222410ff4f081ee`
+- After ungroup-warning follow-up: `7d06be4fc95319dd9b61830a8bdecb4a60332751a3bd1de56e0dad03dd88b457`
 
 The Node movement regression also failed before production edits and passed after
 the fix. Its local adapters provide deterministic IDs and actual in-memory group
@@ -195,6 +197,50 @@ approved browser cache was absent at the start of this round; it was restored wi
 temporary parent, yielding the same Chromium 147.0.7727.15. The initial missing-
 executable launch failure is not counted as a product regression. Subsequent
 browser runs completed without timeout.
+
+## PR76 follow-up: diagnostics and bounded observation
+
+Final-destination ungroup failures now log a warning containing the affected native
+tab IDs and the original error. The existing success-response/error handling
+contract remains; no retry behavior was introduced. The two focused Node movement
+scripts pass with this logging change.
+
+Movement and Live Only deletion verification no longer use a fixed sleep followed
+by a single state check. Both use the same bounded observer:
+
+- Poll the expected session, persisted bookmark tree, and native state with a
+  50 ms interval, within a fixed 15-second deadline.
+- Require the expected state to remain unchanged and the existing event trace to
+  remain quiet for at least 300 ms. This covers the production 100 ms delayed
+  ungroup callback and 50 ms move queue. Any mismatch, snapshot change, or new
+  event restarts the quiet interval, without extending the deadline.
+- Preserve the explicit 2.5-second regression observations as minimum durations
+  (`observe_ms`); a transient correct state cannot bypass either requirement.
+- Record the first and last snapshots, event trace, poll count, first expected
+  state time, elapsed/quiet durations, and last mismatch. A timeout reports the
+  mismatch and the exact evidence JSON path containing the last snapshot/events.
+- Reuse the existing native/bookmark event trace, adding removal events for the
+  deletion check. Bookmark parent/order and actual native closures are checked
+  directly as well as through the session model.
+
+Four deterministic standard-library unittest cases cover a correct transient
+state corrupted after 100 ms, an event restarting the quiet interval without a
+state change, preservation of a longer observation minimum, and continuous events
+reaching the fixed deadline. They use a simulated clock, not wall-clock sleeps.
+
+The new observer was also run against the known pre-fix saved-only source from
+`889768ec48a22c694f026081d6fbc18baba3ddf2`, temporarily restored from Git only in
+the owned worktree. A `finally` block restored the current committed production
+source, and a source diff check confirmed restoration before the current suite.
+
+| Run | Evidence directory | Result |
+| --- | --- | --- |
+| New observer with pre-fix production | `movement-evidence-50jg2faj` | Expected failure after 15 seconds: `Logical group: B`; final snapshot and 10 events retained. Source SHA256 matches the earlier saved-only failure. |
+| Current production, one full run | `movement-evidence-d8kpx2f9` | All nine Chromium flows pass, including Live Only deletion under the new observer. |
+
+No browser command timeout occurred. `python test/test_movement_observer.py` passes
+all four cases; the focused Node movement and group-feedback scripts pass. The
+current full browser suite was run once for this follow-up.
 
 ## Complexity and scope
 
