@@ -61,7 +61,8 @@ git diff --check
 
 The browser script loads `src` directly. Its portable default artifact parent is
 the OS temporary directory. `--flow group_in`, `group_out`, `forward`, `backward`,
-`saved_destination`, or `saved_destination_grouped` selects one flow. Every flow
+`saved_destination`, `saved_destination_grouped`, `group_entry_leading`,
+`group_entry_trailing`, or `group_entry_mixed` selects one flow. Every flow
 gets a disposable headed Chromium profile, a loopback
 HTTP fixture, and only this unpacked extension. It uses real extension messages
 and native APIs, with no API mocks. JSON evidence contains request/response state,
@@ -96,7 +97,8 @@ Background SHA256:
 
 - Main: `c0901bc7abe1bfab7cd59721251ac525e49ca56a94f5dae76c6f2981f14af962`
 - Initial consolidation (before quality-review correction): `e65d57a6bccbcc74895e61a9e619f02e427f5a65d2442c1a394dd3b8c0f56223`
-- After quality-review correction: `346004910e01d1fc4b4ad05feded204084ecd09b035507fbde4d9079a63e043a`
+- After saved-only destination correction: `346004910e01d1fc4b4ad05feded204084ecd09b035507fbde4d9079a63e043a`
+- After batched-group insertion correction: `45ee0acb0b8fed3c8214b2c92284dec06f76a3982dba46640222410ff4f081ee`
 
 The Node movement regression also failed before production edits and passed after
 the fix. Its local adapters provide deterministic IDs and actual in-memory group
@@ -153,13 +155,55 @@ Python stack dump per flow so future hangs can be diagnosed before external
 command termination. Failed native moves still use the existing warning/success
 response contract; retry/rollback or concurrent external edits are outside scope.
 
+## Quality-review correction: first-member insertion order
+
+The added `group_entry_leading` browser flow reproduced the second review finding
+on `7d25c2f3262c97f8b3ce7a5c5ed843df3c69719e`, before production edits:
+
+- Initial fixture order: X,G(C,D),A,B, with A/B ungrouped.
+- Public move: select A/B and insert before C.
+- Desired logical/bookmark and native order: X,G(A,B,C,D).
+- Settled native result after 2.5 seconds: X,G(B,A,C,D), despite correct logical
+  order and a successful response. The native event trace shows both relocation
+  moves, followed by an extra move of A across B during the first grouping call.
+
+Adding individual tabs to an existing group can itself move them to the group
+boundary. The handler now collects native IDs per destination logical group in a
+Map and submits each block through one `chrome.tabs.group` call after relocation.
+The batched helper shares the existing lookup/creation/title/color/error logic;
+the single-tab helper delegates to it with a one-element array so other callers
+keep their contract. Ungrouping is likewise submitted as one destination batch.
+No additional individual moves occur after grouping, and the scoped feedback
+guard and `finally` cleanup remain intact.
+
+The Node movement mock now models group-induced boundary relocation and automatic
+group membership between two existing members. Its new leading-insertion case
+failed with the same A/B reversal before the fix and passes afterward. Native API
+behavior is independently checked by Chromium, including leading/trailing entry
+and mixed already-grouped/new members. Active-tab assertions now support a fixture
+whose first/active tab is X rather than A.
+
+| Run | Evidence directory | Result |
+| --- | --- | --- |
+| Reviewed head, before batching | `movement-evidence-j27p7q8l` | Leading insertion fails: expected X,A,B,C,D; actual X,B,A,C,D. |
+| Batched grouping | `movement-evidence-qaj57wjo` | All nine movement flows pass, including saved-only/grouped-source cases, leading/trailing insertion, mixed membership, active highlight, and Live Only deletion. |
+| Shared-helper preservation | `pr40-evidence-pdo1bk9p` | Cold worker, extension reload, and session switch pass after the helper change. |
+
+All seven focused Node scripts pass (14 operations in the movement script). The
+approved browser cache was absent at the start of this round; it was restored with
+`python -m playwright install chromium --no-shell` under the existing approved
+temporary parent, yielding the same Chromium 147.0.7727.15. The initial missing-
+executable launch failure is not counted as a product regression. Subsequent
+browser runs completed without timeout.
+
 ## Complexity and scope
 
 New/changed selection bookkeeping is O(n + m + k) time and space for n logical
 tabs, m selected bookmark nodes, and k moved live tabs. It makes O(m) bookmark
 moves and O(k) native moves/queries, plus an O(n) backward anchor search. Existing
-reload matching is still O(n²), and the existing grouping helper scans group
-mappings per live tab; those broader optimizations are outside this consolidation.
+reload matching is still O(n²). The grouping helper scans native-group mappings
+once per distinct destination group during movement; optimizing that existing
+lookup is outside this consolidation.
 
 Coverage is same-window tab movement through the production message handler.
 Whole-group movement was not expanded: main's fallback only relocates the folder,

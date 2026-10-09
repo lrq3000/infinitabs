@@ -3,9 +3,10 @@
 const assert = require('node:assert/strict');
 
 class MovementCheck {
-    constructor(windowId, grouped = false) {
+    constructor(windowId, grouped = false, names = 'ABCDE') {
         this.windowId = windowId;
         this.grouped = grouped;
+        this.names = names;
         this.saved = new Map();
         this.live = new Map();
     }
@@ -15,7 +16,7 @@ class MovementCheck {
         this.folder = await chrome.bookmarks.create({
             parentId: root.id, title: `Movement [windowId:${this.windowId}]`
         });
-        for (const [index, name] of ['A', 'B', 'C', 'D', 'E'].entries()) {
+        for (const [index, name] of [...this.names].entries()) {
             if (name === 'C') {
                 this.group = await chrome.bookmarks.create({ parentId: this.folder.id, title: 'Destination [blue]' });
             }
@@ -107,7 +108,24 @@ async function main() {
     // global move mixes windows. Real event/order behavior is covered by Chromium.
     chrome.tabs.group = async ({ groupId, tabIds }) => {
         assert.ok(Number.isInteger(groupId), 'These fixtures must reuse the existing native group');
-        for (const id of [].concat(tabIds)) (await chrome.tabs.get(id)).groupId = groupId;
+        const selected = new Set([].concat(tabIds));
+        const first = await chrome.tabs.get([].concat(tabIds)[0]);
+        const tabs = (await chrome.tabs.query({ windowId: first.windowId })).sort((a, b) => a.index - b.index);
+        const groupStart = tabs.findIndex(tab => tab.groupId === groupId);
+        assert.notEqual(groupStart, -1);
+        const added = tabs.filter(tab => selected.has(tab.id) && tab.groupId !== groupId);
+        const addedIds = new Set(added.map(tab => tab.id));
+        const leading = added.filter(tab => tab.index < groupStart);
+        const trailing = added.filter(tab => tab.index >= groupStart);
+        const remaining = tabs.filter(tab => !addedIds.has(tab.id));
+        // Native grouping is also a move: new tabs to the left join the group
+        // beginning; right-side tabs join its end. A single batch preserves the
+        // native order within each side, while repeated single calls can reverse it.
+        remaining.splice(remaining.findIndex(tab => tab.groupId === groupId), 0, ...leading);
+        const groupEnd = remaining.findLastIndex(tab => tab.groupId === groupId);
+        remaining.splice(groupEnd + 1, 0, ...trailing);
+        for (const tab of added) tab.groupId = groupId;
+        remaining.forEach((tab, index) => { tab.index = index; });
         return groupId;
     };
     chrome.tabs.ungroup = async ids => {
@@ -121,6 +139,11 @@ async function main() {
         for (const id of selected) {
             const [tab] = tabs.splice(tabs.findIndex(item => item.id === id), 1);
             tabs.splice(index === -1 ? tabs.length : Math.min(index++, tabs.length), 0, tab);
+            // A tab inserted between two members automatically joins their group.
+            // Boundary insertion stays ungrouped until the explicit group API.
+            const at = tabs.indexOf(tab);
+            const leftGroup = tabs[at - 1]?.groupId ?? -1;
+            if (leftGroup !== -1 && leftGroup === tabs[at + 1]?.groupId) tab.groupId = leftGroup;
         }
         tabs.forEach((tab, i) => { tab.index = i; });
     };
@@ -130,7 +153,10 @@ async function main() {
     const ungrouping = new MovementCheck(2, true);
     const forward = new MovementCheck(3);
     const backward = new MovementCheck(4);
-    for (const check of [grouping, ungrouping, forward, backward]) {
+    const leading = new MovementCheck(5, true, 'XCDAB');
+    const trailing = new MovementCheck(6, true, 'XABCD');
+    const mixed = new MovementCheck(7, true, 'XCDAB');
+    for (const check of [grouping, ungrouping, forward, backward, leading, trailing, mixed]) {
         check.listeners = listeners;
         await check.prepare(root);
     }
@@ -154,6 +180,14 @@ async function main() {
         ['backward move then repeat selection after reload', async () => {
             await backward.move(['D', 'E'], 'B', 'before', ['A', 'D', 'E', 'B', 'C']);
             await backward.move(['D', 'E'], 'A', 'before', ['D', 'E', 'A', 'B', 'C']);
+        }],
+        ['ungrouped selection entering before first live group member', () =>
+            leading.move(['A', 'B'], 'C', 'before', [...'XABCD'], [...'ABCD'])],
+        ['ungrouped selection entering after last live group member', () =>
+            trailing.move(['A', 'B'], 'D', 'after', [...'XCDAB'], [...'CDAB'])],
+        ['mixed existing and new group members', async () => {
+            await mixed.move(['A', 'D'], 'C', 'before', [...'XADCB'], [...'ADC']);
+            await mixed.move(['B', 'C'], 'D', 'after', [...'XADBC'], [...'ADBC']);
         }]
     ];
     const failures = [];

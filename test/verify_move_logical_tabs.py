@@ -32,11 +32,12 @@ class MovementCheck(ActiveTabReloadCheck):
         self.sidebar_url = f"chrome-extension://{extension_id}/sidebar.html"
         self.open_sidebar()
         self.session()
-        self.live_ids = {"A": self.tab_id}
+        self.active_name = names[0]
+        self.live_ids = {self.active_name: self.tab_id}
         self.bookmark_ids = {}
         for name in names:
             page = self.fixture
-            if name != "A":
+            if name != self.active_name:
                 with self.context.expect_page() as opened:
                     tab = self.worker.evaluate("""windowId => chrome.tabs.create({
                         windowId, url: 'about:blank', active: false
@@ -52,7 +53,7 @@ class MovementCheck(ActiveTabReloadCheck):
                 f"saved fixture {name}")
             self.bookmark_ids[name] = saved["bookmarkId"]
         self.fixture.bring_to_front()
-        self.wait_until(lambda: self.session()["lastActiveLogicalTabId"] == self.logical("A")["logicalId"],
+        self.wait_until(lambda: self.session()["lastActiveLogicalTabId"] == self.logical(self.active_name)["logicalId"],
                         "active fixture mapping")
         # Observe real event feedback without replacing any extension API/listener.
         self.sidebar.evaluate("""() => {
@@ -177,15 +178,24 @@ class MovementCheck(ActiveTabReloadCheck):
         expected_native = [name for name in order if name in self.live_ids]
         assert native_order == expected_native, f"Native order: expected {expected_native}, got {native_order}"
         assert self.active_tab()["id"] == self.tab_id
-        active_logical_id = current[self.bookmark_ids["A"]]["logicalId"]
+        active_logical_id = current[self.bookmark_ids[self.active_name]]["logicalId"]
         assert session["lastActiveLogicalTabId"] == active_logical_id
         expect(self.sidebar.locator(".tab-item.active-live")).to_have_count(1)
         expect(self.sidebar.locator(".tab-item.active-live")).to_have_attribute("data-id", active_logical_id)
 
     def run(self, flow):
-        if flow in ("group_in", "group_out"):
+        if flow in ("group_in", "group_out") or flow.startswith("group_entry"):
             self.group()
-        if flow in ("saved_destination", "saved_destination_grouped"):
+        if flow == "group_entry_leading":
+            # A/B are genuinely ungrouped before this first move, not members
+            # returned to the front after an earlier successful group insertion.
+            self.move("AB", "C", "before", "XABCD", "ABCD", settle_ms=2500)
+        elif flow == "group_entry_trailing":
+            self.move("AB", "D", "after", "XCDAB", "CDAB", settle_ms=2500)
+        elif flow == "group_entry_mixed":
+            self.move("AD", "C", "before", "XADCB", "ADC", settle_ms=2500)
+            self.move("BC", "D", "after", "XADBC", "ADBC", settle_ms=2500)
+        elif flow in ("saved_destination", "saved_destination_grouped"):
             self.saved_destination()
             if flow == "saved_destination_grouped":
                 destination = self.group_bookmark_id
@@ -219,7 +229,8 @@ class MovementCheck(ActiveTabReloadCheck):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts-dir", type=Path, default=Path(tempfile.gettempdir()))
-    flows = ["group_in", "group_out", "forward", "backward", "saved_destination", "saved_destination_grouped"]
+    flows = ["group_in", "group_out", "forward", "backward", "saved_destination", "saved_destination_grouped",
+             "group_entry_leading", "group_entry_trailing", "group_entry_mixed"]
     parser.add_argument("--flow", choices=["all", *flows], default="all")
     args = parser.parse_args()
     if not args.artifacts_dir.is_dir():
@@ -250,8 +261,10 @@ def main():
                             hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(extension.rglob("*")) if path.is_file()})
                     try:
                         print(f"Preparing {flow}", flush=True)
-                        check.prepare(f"http://127.0.0.1:{server.server_port}/movement",
-                                      names="ABCDS" if flow.startswith("saved_destination") else "ABCDE")
+                        names = "ABCDS" if flow.startswith("saved_destination") else "ABCDE"
+                        if flow.startswith("group_entry"):
+                            names = "XABCD" if flow == "group_entry_trailing" else "XCDAB"
+                        check.prepare(f"http://127.0.0.1:{server.server_port}/movement", names=names)
                         print(f"Running {flow}", flush=True)
                         check.run(flow)
                         print(f"PASS {flow} ({check.evidence['extension_id']})", flush=True)

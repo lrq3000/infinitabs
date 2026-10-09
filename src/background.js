@@ -262,7 +262,12 @@ async function getOrCreateGroupBookmark(groupId, windowId) {
  * @param {Object} session - The current session object.
  */
 async function ensureLiveGroupForLogicalTab(tabId, logicalGroupId, session) {
-    if (!logicalGroupId) return;
+    // Existing mount/create callers keep their single-tab contract.
+    return ensureLiveGroupForLogicalTabs([tabId], logicalGroupId, session);
+}
+
+async function ensureLiveGroupForLogicalTabs(tabIds, logicalGroupId, session) {
+    if (!logicalGroupId || tabIds.length === 0) return;
 
     // Try to resolve live group
     let liveGroupId = parseInt(Object.keys(state.liveGroupToBookmark).find(key => state.liveGroupToBookmark[key] === logicalGroupId));
@@ -279,7 +284,7 @@ async function ensureLiveGroupForLogicalTab(tabId, logicalGroupId, session) {
             // Set flag to suppress onCreated/onUpdated listeners
             state.isCreatingGroup = true;
 
-            liveGroupId = await chrome.tabs.group({ tabIds: tabId });
+            liveGroupId = await chrome.tabs.group({ tabIds });
             state.liveGroupToBookmark[liveGroupId] = logicalGroupId;
 
             await chrome.tabGroups.update(liveGroupId, { title: title, color: color });
@@ -291,7 +296,7 @@ async function ensureLiveGroupForLogicalTab(tabId, logicalGroupId, session) {
     } else {
         // Add to existing group
         try {
-            await chrome.tabs.group({ groupId: liveGroupId, tabIds: tabId });
+            await chrome.tabs.group({ groupId: liveGroupId, tabIds });
         } catch (e) {
             // Maybe group ceased to exist?
             delete state.liveGroupToBookmark[liveGroupId];
@@ -2381,15 +2386,22 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
                 // location can be split by the individual moves (Chromium then
                 // ungroups separated members). The final contiguous block can
                 // now join an existing group or recreate a saved-only group.
+                const liveTabsByGroup = new Map();
                 for (const logical of movedTabs) {
                     if (!logical.liveTabIds.length) continue;
-                    if (logical.groupId) {
-                        for (const tid of logical.liveTabIds) {
-                            await ensureLiveGroupForLogicalTab(tid, logical.groupId, reloadedSession);
-                        }
+                    if (!liveTabsByGroup.has(logical.groupId)) liveTabsByGroup.set(logical.groupId, []);
+                    liveTabsByGroup.get(logical.groupId).push(...logical.liveTabIds);
+                }
+                // Grouping also relocates tabs: adding leading A then B singly
+                // moves A past B to the existing group's boundary. Submit the
+                // whole destination block so Chrome preserves its native order,
+                // including a mixture of existing and newly grouped members.
+                for (const [groupId, tabIds] of liveTabsByGroup) {
+                    if (groupId) {
+                        await ensureLiveGroupForLogicalTabs(tabIds, groupId, reloadedSession);
                     } else {
                         try {
-                            await chrome.tabs.ungroup(logical.liveTabIds);
+                            await chrome.tabs.ungroup(tabIds);
                         } catch(e) {}
                     }
                 }
