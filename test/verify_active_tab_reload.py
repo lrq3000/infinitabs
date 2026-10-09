@@ -308,6 +308,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts-dir", type=Path, default=Path(tempfile.gettempdir()))
     parser.add_argument("--flow", choices=["all", "both", "cold_worker", "extension_reload", "session_switch"], default="all")
+    parser.add_argument("--headless", action="store_true", help="Use full Chromium without a display server")
     args = parser.parse_args()
     if not args.artifacts_dir.is_dir():
         parser.error("--artifacts-dir must be an existing temporary artifact directory")
@@ -321,15 +322,16 @@ def main():
         with tempfile.TemporaryDirectory(prefix="pr40-profile-", dir=args.artifacts_dir) as profile:
             with sync_playwright() as playwright:
                 context = playwright.chromium.launch_persistent_context(
-                    profile, headless=False, viewport={"width": 1100, "height": 800},
+                    profile, headless=args.headless, channel="chromium", viewport={"width": 1100, "height": 800},
                     ignore_default_args=["--disable-extensions"],
                     args=[f"--disable-extensions-except={extension}", f"--load-extension={extension}"],
                 )
                 context.set_default_timeout(15000)
                 check = ActiveTabReloadCheck(context, artifacts)
                 check.evidence.update(extension_path=str(extension), isolated_profile=profile,
-                                      chromium=context.browser.version,
-                                      background_sha256=hashlib.sha256((extension / "background.js").read_bytes()).hexdigest())
+                                      chromium=context.browser.version, headless=args.headless,
+                                      background_sha256=hashlib.sha256((extension / "background.js").read_bytes()).hexdigest(),
+                                      test_sha256={"verify_active_tab_reload.py": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()})
                 try:
                     check.prepare(f"http://127.0.0.1:{server.server_port}/active")
                     print(f"Extension ID: {check.evidence['extension_id']}", flush=True)

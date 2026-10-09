@@ -116,7 +116,7 @@ class MovementCheck(ActiveTabReloadCheck):
             pending.extend(reversed(node.get("children", [])))
         return nodes
 
-    def observe_expected_state(self, assert_expected, record, observe_ms=0, timeout_ms=15000, quiet_ms=300):
+    def observe_expected_state(self, assert_expected, record, observe_ms=0, timeout_ms=15000, quiet_ms=500):
         # Correctness must persist through an event-free period longer than the
         # production 100ms delayed ungroup callback (and 50ms move queue). Explicit
         # long observations remain minimum durations, not substitutes for polling.
@@ -138,7 +138,7 @@ class MovementCheck(ActiveTabReloadCheck):
             record.setdefault("immediate", snapshot)
             try:
                 assert_expected(snapshot)
-            except AssertionError as error:
+            except (AssertionError, KeyError) as error:
                 observation["last_mismatch"] = str(error)
                 quiet_since = None
             else:
@@ -194,6 +194,7 @@ class MovementCheck(ActiveTabReloadCheck):
         assert self.group_bookmark_id in nodes, "Saved-only bookmark folder must survive"
         children = nodes[self.group_bookmark_id].get("children", [])
         assert [child["id"] for child in children] == [self.bookmark_ids["D"]]
+        assert not after["native_groups"], "No mounted group should remain"
 
     def move(self, names, target, position, order, grouped="", observe_ms=0):
         before = self.snapshot()
@@ -208,8 +209,11 @@ class MovementCheck(ActiveTabReloadCheck):
         record = {"request": request, "response": response, "before": before, "expected_order": list(order)}
         self.evidence["flows"].append(record)
         try:
+            # Preserve both the minimum observation and the remote contribution's
+            # stronger uninterrupted quiet interval for the long-observation cases.
             after = self.observe_expected_state(
-                lambda snapshot: self.assert_move_state(before, snapshot, order, grouped), record, observe_ms=observe_ms)
+                lambda snapshot: self.assert_move_state(before, snapshot, order, grouped), record,
+                observe_ms=observe_ms, quiet_ms=max(500, observe_ms))
         finally:
             self.sidebar.screenshot(path=str(self.artifacts / f"move-{len(self.evidence['flows'])}.png"))
         if grouped and self.group_id is None:
@@ -308,6 +312,7 @@ def main():
     flows = ["group_in", "group_out", "forward", "backward", "saved_destination", "saved_destination_grouped",
              "group_entry_leading", "group_entry_trailing", "group_entry_mixed"]
     parser.add_argument("--flow", choices=["all", *flows], default="all")
+    parser.add_argument("--headless", action="store_true", help="Use full Chromium without a display server")
     args = parser.parse_args()
     if not args.artifacts_dir.is_dir():
         parser.error("--artifacts-dir must exist")
@@ -327,14 +332,17 @@ def main():
                 folder = artifacts / flow
                 folder.mkdir()
                 with tempfile.TemporaryDirectory(prefix="movement-profile-", dir=args.artifacts_dir) as profile:
-                    context = playwright.chromium.launch_persistent_context(profile, headless=False,
+                    context = playwright.chromium.launch_persistent_context(profile, headless=args.headless, channel="chromium",
                         viewport={"width": 1100, "height": 800}, ignore_default_args=["--disable-extensions"],
                         args=[f"--disable-extensions-except={extension}", f"--load-extension={extension}"])
                     context.set_default_timeout(15000)
                     check = MovementCheck(context, folder)
                     check.evidence.update(extension_path=str(extension), isolated_profile=profile,
-                        chromium=context.browser.version, source_sha256={str(path.relative_to(extension)):
-                            hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(extension.rglob("*")) if path.is_file()})
+                        chromium=context.browser.version, headless=args.headless,
+                        source_sha256={str(path.relative_to(extension)):
+                            hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(extension.rglob("*")) if path.is_file()},
+                        test_sha256={name: hashlib.sha256((extension.parent / "test" / name).read_bytes()).hexdigest()
+                            for name in ("verify_move_logical_tabs.py", "verify_active_tab_reload.py")})
                     try:
                         print(f"Preparing {flow}", flush=True)
                         names = "ABCDS" if flow.startswith("saved_destination") else "ABCDE"

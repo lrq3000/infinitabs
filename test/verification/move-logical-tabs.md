@@ -1,5 +1,9 @@
 # Same-window logical tab movement: PR38 + PR75 consolidation
 
+Latest reconciliation: [PR76 concurrent contribution audit](pr76-reconciliation.md).
+The dated verification sections below describe their respective historical heads;
+the audit records the combined source, current observer contract, and new evidence.
+
 ## Intent and provenance
 
 Base: `2337fb152ea4e95b28ae48233dbb0ffe995b5546` (PR40 squash, fetched from
@@ -54,7 +58,7 @@ node test/test_switch_session.js
 node test/test_add_new_tab.js
 node test/test_history_switch.js
 node test/test_sidebar_quick_drag.js
-python test/test_movement_observer.py
+python -m unittest discover -s test -p 'test_movement_*.py'
 python test/verify_move_logical_tabs.py --artifacts-dir <existing-temporary-directory>
 python test/verify_active_tab_reload.py --artifacts-dir <existing-temporary-directory>
 git diff --check
@@ -254,7 +258,7 @@ lookup is outside this consolidation.
 Coverage is same-window tab movement through the production message handler.
 Whole-group movement was not expanded: main's fallback only relocates the folder,
 and adding descendant-native synchronization would introduce separate semantics.
-Cross-window behavior remains for PR59. Pinned tabs, concurrent external moves,
+Cross-window behavior remains for PR59. Pinned tabs, arbitrary concurrent external moves beyond the tested late-feedback cases,
 multiple live copies of one logical tab, and OS-level drag gestures are not covered
 by these regressions. Quick-drag caller checks and public movement-handler
 regressions pass in Node; normal `onDrop` is not directly exercised.
@@ -263,3 +267,83 @@ The PR40 browser harness is imported unchanged for polling/messages/sidebar setu
 Its active-reload suite was rerun after the quality-review listener changes and
 passed; the movement flows also assert active identity and the rendered active
 highlight after every move.
+
+## PR76 automated review follow-up (2026-10-09)
+
+Reviewed exactly `5674c370897d094b485c7fd07a25d34091baf0c9`. Seven unresolved
+threads represent five topics, not seven independent bugs:
+
+| Review comment ID | Assessment and disposition |
+| --- | --- |
+| 4225896760 (CodeRabbit), 4225914101 (Cubic) | Confirmed duplicate: ungroup failures were silent. Warn with the batch IDs and original error; regression injects a rejection and observes the diagnostic. |
+| 4225896769 (CodeRabbit), 4225914115 (Cubic) | Confirmed duplicate test limitation: fixed waits were not a convergence check. Poll expected native/logical state with a deadline, then require a continuous quiet interval reset by state changes or events. Apply to movement and Live Only deletion. |
+| 4225914090 (Cubic) | Accurate limitation of this focused mock, but the asserted missing coverage already exists in `test_move_logical_tabs.js` and the Chromium leading/trailing/mixed entry flows. Do not duplicate the second mock's grouping relocation algorithm here. Real-browser coverage remains authoritative. |
+| 4225914093 (Cubic) | Reproduced in the deterministic event model: callbacks delivered after the API response can reparent the leading group member. Added late-event, immediate unrelated-drag, and immediate in-group-reorder cases. Actual frequency/order of this delivery in Chromium is not established by the model. |
+| 4225914110 (Cubic) | Reproduced selected-tab and anchor closure during `tabs.move`, plus closure immediately before final grouping. Catching one iteration alone is insufficient: anchor closure can invalidate an otherwise successful index-based move. |
+
+The plan for this follow-up was to reproduce before changing production, retain
+stable bookmark-ID resolution, relocation-before-grouping and batched grouping,
+then run the seven focused Node scripts plus both browser suites and update each
+review thread. No history rewrite or main-branch edit is involved.
+
+### Changes and evidence
+
+- Preserve the scoped feedback Set with `finally` cleanup. Avoid a blanket grace
+  timer: import native movement only when live order/membership differs from its
+  logical container. A grouped tab's anchor must be in that native group; at the
+  leading edge, insert before the next mounted member, retaining saved-only
+  children before it. Stale group-update payloads are checked against the actual
+  current group without discarding independent title/URL updates.
+- Keep preceding anchor candidates. Skip failed/departed selected tabs, and
+  reapply relocation when a relevant tab disappears between API calls. Each
+  retry strictly reduces the participating set. Filter final grouping IDs and
+  retry a rejected group/ungroup batch only if querying proves that it shrank.
+  Other errors retain the existing best-effort warning/response contract.
+- Expand the public-handler Node feedback test from three to nine scenarios,
+  plus an ungroup-error diagnostic. Correct `getChildren` to return snapshots in
+  this adapter: a live array incorrectly changed the group-removal iteration.
+  Genuine ungrouping followed by a real move verifies guard cleanup after failure.
+- Four virtual-clock tests exercise the actual Python waiter: slow convergence,
+  late events without a state change, transient success followed by corruption,
+  and a changed snapshot resetting the quiet interval. The quiet interval is a
+  bounded observation, not proof that no arbitrarily late event can ever occur.
+- Both browser scripts accept `--headless` using full Chromium (not headless
+  shell). The movement workflow pins Playwright 1.59.0 and official GitHub
+  actions to commit SHAs, runs the seven Node scripts and four waiter tests,
+  executes both browser suites, and uploads source-hashed evidence. It uses only
+  `contents: read` permissions and does not persist checkout credentials.
+
+Before fixes, the controlled feedback model produced these failures:
+
+| Scenario | Expected | Actual before correction |
+| --- | --- | --- |
+| Late feedback after response | Logical C,S,A,B,D | C,A,S,B,D; A leaves its destination group |
+| B closes during relocation | Native C,A,D | A,C,D |
+| Anchor C closes during relocation | Native A,B,D | A,D,B |
+| Immediate outside drag while feedback is queued | Logical D,C,S,A,B | D,C,A,S,B |
+| Immediate in-group reorder while feedback is queued | Logical C,S,B,A,D | C,B,A,S,D |
+
+The two immediate-drag variants were found by an independent code review and
+reproduced before the corresponding corrections. All nine scenarios and the
+error diagnostic now pass; the reviewer found no remaining blocker in the
+stated per-tab scope. The seven focused Node scripts pass on Node 24.19.0;
+four waiter tests pass on Python 3.12.14. JavaScript/Python syntax and
+`git diff --check` pass. Expected injected-failure warnings remain visible.
+
+At the remote contributor's validation stage, local Chromium validation was
+**not complete**: installing both the initially
+available Playwright 1.63 runtime and the documented 1.59 runtime returned an
+HTML `Site Unavailable` page instead of the browser ZIP. The explicit browser
+suite launch consequently failed because the executable was absent; this is an
+environment failure, not a passing or failing product test. GitHub Actions was
+added to provide an independently runnable browser gate. Check the PR's exact
+new head and its workflow evidence before merging; earlier browser evidence on
+5674c37 does not certify these changes. The subsequent owned-worktree merge was
+validated in actual Chromium; see the reconciliation audit linked above.
+
+Ordinary reconciliation uses O(n + k) time/space for logical and live lookup
+indexes. A disappearance triggers another O(n + k) relocation pass and strictly
+reduces its participant set; worst-case repeated closures cost O(r(n + k)) for r
+such passes. Batch retries likewise strictly shrink. Cross-window drag semantics,
+pinned tabs, multiple mounted copies and whole-group native movement remain
+uncertified, as in the original scope.

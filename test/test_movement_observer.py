@@ -8,14 +8,17 @@ from verify_move_logical_tabs import MovementCheck
 
 
 class SimulatedMovement(MovementCheck):
-    def __init__(self, corrupt_at=None, event_times=()):
+    def __init__(self, corrupt_at=None, event_times=(), states=None):
         self.now = 0.0
         self.corrupt_at = corrupt_at
+        self.states = states
         self.event_times = event_times
         self.fixture = self.sidebar = self
         self.artifacts = Path("observer-test-evidence")  # Diagnostic label; never written.
 
     def snapshot(self):
+        if self.states is not None:
+            return next(state for at, state in reversed(self.states) if at <= self.now)
         return {"parent": "root" if self.corrupt_at is not None and self.now >= self.corrupt_at else "group"}
 
     def evaluate(self, expression):
@@ -25,9 +28,9 @@ class SimulatedMovement(MovementCheck):
     def wait_for_timeout(self, milliseconds):
         self.now += milliseconds / 1000
 
-    def observe(self, record, **kwargs):
+    def observe(self, record, validate=None, timeout_ms=800, **kwargs):
         with patch("verify_move_logical_tabs.time.monotonic", lambda: self.now):
-            return self.observe_expected_state(self.assert_grouped, record, timeout_ms=800, **kwargs)
+            return self.observe_expected_state(validate or self.assert_grouped, record, timeout_ms=timeout_ms, **kwargs)
 
     @staticmethod
     def assert_grouped(snapshot):
