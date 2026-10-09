@@ -2,7 +2,7 @@
 
 ## Pinned inputs and decision
 
-- Owned worktree: `C:\git\infinitabs\.worktrees\integrate-pr27-backlog`.
+- Owned worktree: `WORKTREE` (isolated checkout `.worktrees/integrate-pr27-backlog`).
 - Branch: `agent/integrate-pr27-backlog`.
 - Base and fetched `origin/main`: `69d1c527e13d6e94390656ed2df9debb4a953042`
   (PR76), following `2337fb152ea4e95b28ae48233dbb0ffe995b5546` (PR40).
@@ -211,7 +211,17 @@ check script as well as both shared helper scripts and every extension file.
 The existing CI workflow runs the new check with the same pinned runtime and
 artifact upload, without a second workflow or framework.
 
-Commands run from the owned worktree across the initial milestone and corrections:
+Location placeholders replace machine-specific paths following the matching
+CodeRabbit/Cubic portability findings:
+
+- `WORKTREE`: the isolated repository checkout described above.
+- `ARTIFACTS_DIR`: an existing evidence/profile parent outside the checkout.
+- `BROWSER_CACHE_DIR`: the installed Playwright browser cache; recorded runs used
+  the cache basename `pr40-playwright` with Playwright 1.59.0.
+
+Commands run across the initial milestone and corrections are shown below with
+portable locations. Run from `WORKTREE`, setting the PowerShell variables
+`$ARTIFACTS_DIR` and `$BROWSER_CACHE_DIR` to the corresponding local directories.
 
 ```powershell
 node test/test_move_logical_tabs.js
@@ -224,12 +234,12 @@ node test/test_sidebar_quick_drag.js
 python -B -m unittest discover -s test -p 'test_movement_*.py'
 python -B test/test_mount_oracle.py -v # Red phases: 7 URL/order failures, later 3 folder-title failures
 python -B -m unittest discover -s test -p 'test_*.py' -v # Green phases: 17, then 20 passing tests
-$env:PLAYWRIGHT_BROWSERS_PATH='C:\Users\33632\AppData\Local\Temp\opencode\pr40-playwright'
-python -B test/verify_mount_logical_tabs.py --headless --flow root_after_active_group --artifacts-dir C:\Users\33632\AppData\Local\Temp\opencode
-python -B test/verify_mount_logical_tabs.py --headless --flow saved_group_after_active_group --artifacts-dir C:\Users\33632\AppData\Local\Temp\opencode
-python -B test/verify_mount_logical_tabs.py --headless --artifacts-dir C:\Users\33632\AppData\Local\Temp\opencode
-python -B test/verify_move_logical_tabs.py --headless --artifacts-dir C:\Users\33632\AppData\Local\Temp\opencode
-python -B test/verify_active_tab_reload.py --headless --artifacts-dir C:\Users\33632\AppData\Local\Temp\opencode
+$env:PLAYWRIGHT_BROWSERS_PATH=$BROWSER_CACHE_DIR
+python -B test/verify_mount_logical_tabs.py --headless --flow root_after_active_group --artifacts-dir "$ARTIFACTS_DIR"
+python -B test/verify_mount_logical_tabs.py --headless --flow saved_group_after_active_group --artifacts-dir "$ARTIFACTS_DIR"
+python -B test/verify_mount_logical_tabs.py --headless --artifacts-dir "$ARTIFACTS_DIR"
+python -B test/verify_move_logical_tabs.py --headless --artifacts-dir "$ARTIFACTS_DIR"
+python -B test/verify_active_tab_reload.py --headless --artifacts-dir "$ARTIFACTS_DIR"
 git diff --check
 ```
 
@@ -255,7 +265,8 @@ with its original manifest. Runtime extension ID:
 
 ## Evidence and fingerprints
 
-Evidence parent: `C:\Users\33632\AppData\Local\Temp\opencode`.
+Evidence parent: `ARTIFACTS_DIR`. The recorded subdirectory basenames below are
+retained verbatim, along with their hashes, runtime and observed outcomes.
 
 | Directory | Contents |
 | --- | --- |
