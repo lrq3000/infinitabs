@@ -6,6 +6,7 @@ Reuses PR40's public-message, polling, console, and sidebar helpers unchanged.
 """
 
 import argparse
+import faulthandler
 import hashlib
 import json
 import tempfile
@@ -19,7 +20,7 @@ from verify_active_tab_reload import ActiveTabReloadCheck, FixtureHandler
 
 
 class MovementCheck(ActiveTabReloadCheck):
-    def prepare(self, fixture_url):
+    def prepare(self, fixture_url, names="ABCDE"):
         self.worker = (self.context.service_workers or [None])[0]
         if self.worker is None:
             self.worker = self.context.wait_for_event("serviceworker")
@@ -33,7 +34,7 @@ class MovementCheck(ActiveTabReloadCheck):
         self.session()
         self.live_ids = {"A": self.tab_id}
         self.bookmark_ids = {}
-        for name in "ABCDE":
+        for name in names:
             page = self.fixture
             if name != "A":
                 with self.context.expect_page() as opened:
@@ -53,20 +54,49 @@ class MovementCheck(ActiveTabReloadCheck):
         self.fixture.bring_to_front()
         self.wait_until(lambda: self.session()["lastActiveLogicalTabId"] == self.logical("A")["logicalId"],
                         "active fixture mapping")
+        # Observe real event feedback without replacing any extension API/listener.
+        self.sidebar.evaluate("""() => {
+            globalThis.movementEvents = [];
+            const record = (type, detail) => movementEvents.push({type, detail, at: Date.now()});
+            chrome.tabs.onUpdated.addListener((id, change, tab) => {
+                if (change.groupId !== undefined) record('tab-group', {id, change, tab});
+            });
+            chrome.tabs.onMoved.addListener((id, info) => record('tab-moved', {id, info}));
+            chrome.tabGroups.onCreated.addListener(group => record('group-created', group));
+            chrome.tabGroups.onRemoved.addListener(group => record('group-removed', group));
+            chrome.bookmarks.onMoved.addListener((id, info) => record('bookmark-moved', {id, info}));
+        }""")
 
     def logical(self, name):
         return next(tab for tab in self.session()["logicalTabs"] if tab["bookmarkId"] == self.bookmark_ids[name])
 
-    def group(self):
+    def group(self, names="CD"):
         self.group_id = self.sidebar.evaluate("ids => chrome.tabs.group({tabIds: ids})",
-                                             [self.live_ids[name] for name in "CD"])
-        self.wait_until(lambda: self.logical("C")["groupId"] and
-            self.logical("C")["groupId"] == self.logical("D")["groupId"], "native group bookmark mapping")
-        self.group_bookmark_id = self.logical("C")["groupId"]
+                                             [self.live_ids[name] for name in names])
+        self.wait_until(lambda: self.logical(names[0])["groupId"] and all(
+            self.logical(name)["groupId"] == self.logical(names[0])["groupId"] for name in names),
+            "native group bookmark mapping")
+        self.group_bookmark_id = self.logical(names[0])["groupId"]
+
+    def saved_destination(self):
+        self.group("S")
+        self.sidebar.evaluate("id => chrome.tabGroups.update(id, {title: 'Saved destination', color: 'blue'})", self.group_id)
+        self.wait_until(lambda: self.session()["groups"][self.group_bookmark_id]["title"] == "Saved destination [blue]",
+                        "saved group metadata")
+        self.unmount("S")
+        self.wait_until(lambda: not self.sidebar.evaluate("windowId => chrome.tabGroups.query({windowId})", self.window_id),
+                        "destination to have no native group")
+        # Fixture placement uses the existing bookmark-folder move path, leaving
+        # A/B/C/D live and S saved-only. The tested operation selects only A/B.
+        response = self.send_message({"type": "MOVE_LOGICAL_TABS", "windowId": self.window_id,
+            "logicalIds": [self.group_bookmark_id], "targetLogicalId": self.logical("D")["logicalId"], "position": "before"})
+        assert response.get("success"), response
+        self.group_id = None  # The tested move must create a new native group.
 
     def snapshot(self):
         return {"session": self.session(), "native": self.sidebar.evaluate(
             "windowId => chrome.tabs.query({windowId})", self.window_id),
+            "native_groups": self.sidebar.evaluate("windowId => chrome.tabGroups.query({windowId})", self.window_id),
             "bookmarks": self.sidebar.evaluate("id => chrome.bookmarks.getSubTree(id)", self.session()["sessionId"])}
 
     def unmount(self, name):
@@ -98,8 +128,9 @@ class MovementCheck(ActiveTabReloadCheck):
         children = self.sidebar.evaluate("id => chrome.bookmarks.getChildren(id)", self.group_bookmark_id)
         assert [child["id"] for child in children] == [self.bookmark_ids["D"]]
 
-    def move(self, names, target, position, order, grouped=""):
+    def move(self, names, target, position, order, grouped="", settle_ms=500):
         before = self.snapshot()
+        self.sidebar.evaluate("movementEvents.length = 0")
         by_bookmark = {tab["bookmarkId"]: tab for tab in before["session"]["logicalTabs"]}
         request = {"type": "MOVE_LOGICAL_TABS", "windowId": self.window_id,
             "logicalIds": [by_bookmark[self.bookmark_ids[name]]["logicalId"] for name in names],
@@ -107,11 +138,14 @@ class MovementCheck(ActiveTabReloadCheck):
                 by_bookmark[self.bookmark_ids[target]]["logicalId"], "position": position}
         response = self.send_message(request)
         assert response.get("success"), response
+        immediate = self.snapshot()
         # Let production onMoved's 50ms queue and ungroup's 100ms delayed callback
         # run before checking the durable result, not only the message response.
-        self.fixture.wait_for_timeout(500)
+        self.fixture.wait_for_timeout(settle_ms)
         after = self.snapshot()
-        record = {"request": request, "before": before, "after": after, "expected_order": list(order)}
+        record = {"request": request, "response": response, "before": before, "immediate": immediate,
+                  "after": after, "settle_ms": settle_ms, "expected_order": list(order),
+                  "events": self.sidebar.evaluate("movementEvents")}
         self.evidence["flows"].append(record)
         self.sidebar.screenshot(path=str(self.artifacts / f"move-{len(self.evidence['flows'])}.png"))
         session = after["session"]
@@ -130,6 +164,11 @@ class MovementCheck(ActiveTabReloadCheck):
         assert logical_order == list(order), f"Bookmark order: expected {order}, got {logical_order}"
         names_by_live = {value: key for key, value in self.live_ids.items()}
         native = [tab for tab in after["native"] if tab["id"] in names_by_live]
+        if grouped and self.group_id is None:
+            assert len(after["native_groups"]) == 1, "Saved-only destination must create exactly one native group"
+            group = after["native_groups"][0]
+            assert (group["title"], group["color"]) == ("Saved destination", "blue")
+            self.group_id = group["id"]
         for tab in native:
             name = names_by_live[tab["id"]]
             expected = self.group_id if name in grouped else -1
@@ -146,7 +185,17 @@ class MovementCheck(ActiveTabReloadCheck):
     def run(self, flow):
         if flow in ("group_in", "group_out"):
             self.group()
-        if flow == "group_in":
+        if flow in ("saved_destination", "saved_destination_grouped"):
+            self.saved_destination()
+            if flow == "saved_destination_grouped":
+                destination = self.group_bookmark_id
+                self.group("AB")
+                self.group_bookmark_id = destination
+                self.group_id = None
+            self.move("AB", "group", "inside", "CSABD", "SAB", settle_ms=2500)
+            if flow == "saved_destination_grouped":
+                self.move("A", "C", "before", "ACSBD", "SB", settle_ms=2500)
+        elif flow == "group_in":
             self.move("AB", "group", "inside", "CDABE", "CDAB")
             self.move("AB", "C", "before", "ABCDE", "ABCD")
             self.verify_live_only_deletion()
@@ -170,7 +219,8 @@ class MovementCheck(ActiveTabReloadCheck):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts-dir", type=Path, default=Path(tempfile.gettempdir()))
-    parser.add_argument("--flow", choices=["all", "group_in", "group_out", "forward", "backward"], default="all")
+    flows = ["group_in", "group_out", "forward", "backward", "saved_destination", "saved_destination_grouped"]
+    parser.add_argument("--flow", choices=["all", *flows], default="all")
     args = parser.parse_args()
     if not args.artifacts_dir.is_dir():
         parser.error("--artifacts-dir must exist")
@@ -183,7 +233,10 @@ def main():
     failures = []
     try:
         with sync_playwright() as playwright:
-            for flow in (["group_in", "group_out", "forward", "backward"] if args.flow == "all" else [args.flow]):
+            for flow in (flows if args.flow == "all" else [args.flow]):
+                # Capture an exact Python/Playwright stack if a flow stalls, before
+                # the external command timeout can discard its diagnostics.
+                faulthandler.dump_traceback_later(60, repeat=False)
                 folder = artifacts / flow
                 folder.mkdir()
                 with tempfile.TemporaryDirectory(prefix="movement-profile-", dir=args.artifacts_dir) as profile:
@@ -196,7 +249,10 @@ def main():
                         chromium=context.browser.version, source_sha256={str(path.relative_to(extension)):
                             hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(extension.rglob("*")) if path.is_file()})
                     try:
-                        check.prepare(f"http://127.0.0.1:{server.server_port}/movement")
+                        print(f"Preparing {flow}", flush=True)
+                        check.prepare(f"http://127.0.0.1:{server.server_port}/movement",
+                                      names="ABCDS" if flow.startswith("saved_destination") else "ABCDE")
+                        print(f"Running {flow}", flush=True)
                         check.run(flow)
                         print(f"PASS {flow} ({check.evidence['extension_id']})", flush=True)
                     except Exception as error:
@@ -206,6 +262,7 @@ def main():
                     finally:
                         (folder / "evidence.json").write_text(json.dumps(check.evidence, indent=2), encoding="utf-8")
                         context.close()
+                faulthandler.cancel_dump_traceback_later()
     finally:
         server.shutdown()
         server.server_close()

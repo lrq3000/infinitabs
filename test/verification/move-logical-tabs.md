@@ -38,8 +38,9 @@ Actual Chromium testing exposed two coupled ordering errors:
    array-move placement semantics. Overshooting the anchor could otherwise move
    tabs beyond the native group and cause listeners to ungroup their bookmarks.
 
-Existing reload preservation, native listeners, quick-drag behavior, and Live Only
-deletion logic are used unchanged. No production test hooks were added.
+Reload preservation, quick-drag behavior, and Live Only deletion logic are used
+unchanged. The quality-review correction below narrows programmatic native-event
+feedback during movement. No production test hooks were added.
 
 ## Regression commands
 
@@ -47,21 +48,25 @@ Run from this checkout with Node and Python Playwright 1.59 / bundled Chromium:
 
 ```text
 node test/test_move_logical_tabs.js
+node test/test_move_group_feedback.js
 node test/test_active_tab_sync.js
 node test/test_switch_session.js
 node test/test_add_new_tab.js
 node test/test_history_switch.js
 node test/test_sidebar_quick_drag.js
 python test/verify_move_logical_tabs.py --artifacts-dir <existing-temporary-directory>
+python test/verify_active_tab_reload.py --artifacts-dir <existing-temporary-directory>
 git diff --check
 ```
 
 The browser script loads `src` directly. Its portable default artifact parent is
-the OS temporary directory. `--flow group_in`, `group_out`, `forward`, or `backward`
-selects one flow. Every flow gets a disposable headed Chromium profile, a loopback
+the OS temporary directory. `--flow group_in`, `group_out`, `forward`, `backward`,
+`saved_destination`, or `saved_destination_grouped` selects one flow. Every flow
+gets a disposable headed Chromium profile, a loopback
 HTTP fixture, and only this unpacked extension. It uses real extension messages
 and native APIs, with no API mocks. JSON evidence contains request/response state,
-native tab IDs/group IDs/order, bookmark trees, console errors, Chromium version,
+native tab IDs/group IDs/order, bookmark trees, timestamped native/bookmark events,
+immediate and settled snapshots, console errors, Chromium version,
 extension ID, and SHA256 of every extension source file. Screenshots are captured
 after movement; profiles are removed at exit.
 
@@ -90,7 +95,8 @@ Chromium: `147.0.7727.15`.
 Background SHA256:
 
 - Main: `c0901bc7abe1bfab7cd59721251ac525e49ca56a94f5dae76c6f2981f14af962`
-- Fixed: `e65d57a6bccbcc74895e61a9e619f02e427f5a65d2442c1a394dd3b8c0f56223`
+- Initial consolidation (before quality-review correction): `e65d57a6bccbcc74895e61a9e619f02e427f5a65d2442c1a394dd3b8c0f56223`
+- After quality-review correction: `346004910e01d1fc4b4ad05feded204084ecd09b035507fbde4d9079a63e043a`
 
 The Node movement regression also failed before production edits and passed after
 the fix. Its local adapters provide deterministic IDs and actual in-memory group
@@ -99,6 +105,53 @@ the local adapter corrects that difference. Browser evidence is the authority fo
 native index semantics and event feedback. The five existing Node suites pass
 before and after the production change. Node emits its pre-existing
 `MODULE_TYPELESS_PACKAGE_JSON` warning; package configuration was not changed.
+
+## Quality-review correction: saved-only destination feedback
+
+The earlier browser fixture only targeted an already-live group. At reviewed head
+`889768ec48a22c694f026081d6fbc18baba3ddf2`, the added `saved_destination` flow
+reproduced the reported regression in real Chromium before production changes:
+
+- Initial bookmarks: A,B,C,G(S saved-only),D; native fixture tabs: A,B,C,D.
+- Send public `MOVE_LOGICAL_TABS` for A/B inside G.
+- Expected: bookmarks C,G(S,A,B),D and native C,[A,B in G],D.
+- Actual after 2.5 seconds: bookmarks C,G(S,A),D,B and native C,[A in G],B,D.
+  The handler had returned success. The extension-page bridge is also present in
+  the raw trees/native arrays; the sequences above describe only fixture tabs.
+- Event evidence records B joining the newly created group, then becoming
+  ungrouped during its separate relocation. Its bookmark is moved to the root
+  about 118 ms later by the inherited delayed group-change listener.
+
+The correction relocates the selected live tabs first, then assigns their final
+group membership from the refreshed session. This prevents creating and then
+splitting a new destination group at the old native position. A scoped Set of
+selected native tab IDs also prevents intermediate move/group events from
+rewriting bookmarks, including when the selected tabs started in another group.
+Move events are classified at receipt, before the move mutex can defer them past
+the end of synchronization. The Set replaces the previous consumable/timed move
+suppression and is cleared in `finally`, including failed native moves. Title/URL
+updates and later genuine native events still use their normal listeners.
+
+| Run | Evidence directory | Result |
+| --- | --- | --- |
+| Reviewed head, before correction | `movement-evidence-a0aoch24` | Saved-only destination fails with settled logical group B missing, matching the native and bookmark event trace. |
+| Corrected source | `movement-evidence-c28yr_h2` | Existing four flows and saved-only destination pass, including Live Only deletion and active highlight. |
+| Grouped source | `movement-evidence-vtto0n0z` | Previously grouped A/B move into the saved-only destination; a repeated partial move out also passes after 2.5-second settling. |
+| PR40 preservation | `pr40-evidence-29sqb6gs` | Cold worker, full extension reload, and session switch all pass. |
+
+`test_move_group_feedback.js` independently reproduced the settled bookmark-order
+failure before the correction. Its focused event model invokes the real message
+handler and delayed group-change listener. It now passes for ungrouped input,
+grouped input with native moves deliberately delayed 150 ms (longer than the
+100 ms callback), and an injected native move failure followed by genuine native
+group/move changes. The failure case intentionally emits the production warning;
+the subsequent assertions verify both feedback guards were released.
+
+All seven focused Node scripts pass. Browser runs in this correction completed
+without timeout. The movement harness now emits progress and schedules a timed
+Python stack dump per flow so future hangs can be diagnosed before external
+command termination. Failed native moves still use the existing warning/success
+response contract; retry/rollback or concurrent external edits are outside scope.
 
 ## Complexity and scope
 
@@ -117,6 +170,6 @@ by these regressions. Quick-drag caller checks and public movement-handler
 regressions pass in Node; normal `onDrop` is not directly exercised.
 
 The PR40 browser harness is imported unchanged for polling/messages/sidebar setup.
-Its active-reload suite was not repeated because shared helpers and active-reload
-logic were not edited; the movement flows independently assert active identity and
-the rendered active highlight after every move.
+Its active-reload suite was rerun after the quality-review listener changes and
+passed; the movement flows also assert active identity and the rendered active
+highlight after every move.
