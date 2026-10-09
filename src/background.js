@@ -2402,7 +2402,9 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
                     } else {
                         try {
                             await chrome.tabs.ungroup(tabIds);
-                        } catch(e) {}
+                        } catch(e) {
+                            console.warn("Failed to ungroup moved live tabs", tabIds, e);
+                        }
                     }
                 }
             } catch (e) {
