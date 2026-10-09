@@ -21,7 +21,7 @@ Its later movement suppression depends on the obsolete timed
 **The reported defect did not reproduce on this base.** All nine real-browser
 mounting cases below pass with unchanged production source, including the two
 group-edge fixtures corrected after controller/spec review and the URL/order
-oracle strengthened after quality review. The user decision is
+and folder-title oracle strengthened after quality/GitHub review. The user decision is
 to merge coverage only and keep PR27 open; publication remains with the controller.
 Following the task's reproduction gate, this branch contains verification only,
 not a mounting fix or a claim that every historical PR27 scenario is resolved. No failing Node model
@@ -45,6 +45,8 @@ Every poll also requires the new native tab's URL and its current logical URL to
 equal the canonical **pre-mount bookmark URL**, plus equality of the ordered
 before/after logical bookmark-ID lists (including multiplicity). Logical IDs may
 regenerate; bookmark identities and their order must remain stable.
+Folder bookmark titles, including encoded group colors, also remain canonical;
+URL-bearing tab bookmark titles may change as their pages finish navigating.
 
 The fixture uses real native tabs with unique local HTTP URLs, saves them through
 the extension, builds real groups, and uses `UNMOUNT_LOGICAL_TAB` to leave saved
@@ -169,6 +171,36 @@ Red/green proof:
 The correction touches the oracle, its deterministic tests, CI discovery and
 this report. It makes no production changes and does not close PR27.
 
+### PR77 review correction: preserve persisted folder names and colors
+
+Cubic's review of published head `42c9f93` identified that `structure()` omitted
+all bookmark titles, so a saved folder name/color rewrite could pass even while
+native and in-memory group metadata remained correct. Actual Chrome evidence
+shows folder nodes without `url` and tab bookmarks with `url`; the repository's
+Node mock additionally gives URL-bearing tabs `children: []`. The oracle now
+compares titles for nodes **without `url`**, preserving empty-folder metadata
+while still allowing navigation-sensitive tab-title updates in either shape.
+
+Three new unittest methods cover group-name/color mutations, an empty saved
+folder title mutation, and allowed tab-title updates with/without `children`.
+Each negative mutates only persisted title data after its complete fixture passes
+the actual mount oracle, leaving native/session group metadata intact.
+
+- Red: with the new tests but the old oracle, **12 oracle tests ran with 3
+  expected failures**: the empty-folder case and both group-name/color subcases
+  reported `AssertionError not raised`. The tab-title positive control and all
+  nine previous oracle tests passed.
+- Green: unchanged CI discovery (`test_*.py`) ran **20 tests, all passing**:
+  12 oracle tests plus 8 observer/settling tests.
+- All **9 real Chromium mounting flows passed once** with folder-title
+  preservation enabled, in `mounting-evidence-w0i4bim_`.
+- Production source, CI and shared movement/active harnesses remain unchanged;
+  no extra browser suites or arbitrary waits were added.
+
+The controller reported exact-head PR77 CI success for published `42c9f93`.
+The follow-up above is locally verified; its publication and CI remain with the
+controller. No GitHub operation was performed during this correction.
+
 ## Verification changes and checks
 
 `verify_mount_logical_tabs.py` subclasses `MovementCheck`, reusing its snapshot,
@@ -190,8 +222,8 @@ node test/test_add_new_tab.js
 node test/test_history_switch.js
 node test/test_sidebar_quick_drag.js
 python -B -m unittest discover -s test -p 'test_movement_*.py'
-python -B test/test_mount_oracle.py -v # Red phase: 7 expected failures before the oracle fix
-python -B -m unittest discover -s test -p 'test_*.py' -v # Green phase: 17 passing tests
+python -B test/test_mount_oracle.py -v # Red phases: 7 URL/order failures, later 3 folder-title failures
+python -B -m unittest discover -s test -p 'test_*.py' -v # Green phases: 17, then 20 passing tests
 $env:PLAYWRIGHT_BROWSERS_PATH='C:\Users\33632\AppData\Local\Temp\opencode\pr40-playwright'
 python -B test/verify_mount_logical_tabs.py --headless --flow root_after_active_group --artifacts-dir C:\Users\33632\AppData\Local\Temp\opencode
 python -B test/verify_mount_logical_tabs.py --headless --flow saved_group_after_active_group --artifacts-dir C:\Users\33632\AppData\Local\Temp\opencode
@@ -205,8 +237,8 @@ git diff --check
   Expected injected failure diagnostics and pre-existing module-type warnings
   remained visible. These unchanged suites were not rerun for the fixture correction.
 - Eight movement-observer/settling Python tests passed at the initial milestone
-  and again with the nine new oracle tests (17 total) during the quality correction.
-- All nine mounting flows pass after both review corrections. The edge-fixture correction followed two
+  and with the oracle tests during both corrections (17 total, then 20).
+- All nine mounting flows pass after the latest folder-title correction. The edge-fixture correction followed two
   passing targeted edge checks. An earlier seven-flow run also passed; the old
   nine-flow run's two nominal edge checks are superseded by the correction above.
 - All ten existing browser movement flows passed at the initial milestone: `group_in`, `group_out`,
@@ -232,7 +264,8 @@ Evidence parent: `C:\Users\33632\AppData\Local\Temp\opencode`.
 | `mounting-evidence-fk97tvyq` | Corrected targeted `root_after_active_group`, including settled setup and explicit boundary proof. |
 | `mounting-evidence-4k0nh6eh` | Corrected targeted `saved_group_after_active_group`, including settled setup and explicit boundary proof. |
 | `mounting-evidence-z7p28pse` | Nine-flow run after edge correction, before the stricter URL/order oracle. |
-| `mounting-evidence-lj3ofi7b` | Current nine-flow run with per-poll native/logical URL and ordered bookmark-identity assertions; snapshots, events, screenshots and exact hashes. |
+| `mounting-evidence-lj3ofi7b` | Nine-flow run with URL/order assertions, before folder-title preservation. |
+| `mounting-evidence-w0i4bim_` | Current nine-flow run including folder-title preservation; snapshots, events, screenshots and exact source/script hashes. |
 | `movement-evidence-z823_zj2` | Ten movement flows using the shared runner adjustment. |
 | `pr40-evidence-1wst6qod` | Three active-state flows on the identical production source. |
 
@@ -242,7 +275,7 @@ Final tested byte SHA256 values (all source file hashes are in the evidence):
 src/background.js
 9d632f1c181d37a1dcb76723f39e7d73ef6cede37a22f3aad97278cad2944df1
 test/verify_mount_logical_tabs.py
-e89aaa1d897fa67a9cfe489aac6741fafb4af2e51442ac370c2064a6919b324e
+42a169695b52098367961f5c32266d6fbcc722b0ddec0c1b18d532baaed331f5
 test/verify_move_logical_tabs.py
 d72edaa52c90b65ab61bdfc1755309b5024f65a249856ee6203d91646360f29b
 test/verify_active_tab_reload.py

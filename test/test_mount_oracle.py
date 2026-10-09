@@ -44,6 +44,23 @@ class MountOracleFixture(MountingCheck):
     def validate(self, snapshot=None):
         self.assert_mount(self.before, self.after if snapshot is None else snapshot, "B")
 
+    def group_saved_tabs(self):
+        # Keep native/session group metadata consistent while tests independently
+        # corrupt only its persisted folder name or color-encoded title.
+        for snapshot in (self.before, self.after):
+            root = snapshot["bookmarks"][0]
+            children = root["children"]
+            for child in children:
+                child["parentId"] = "g"
+            root["children"] = [{"id": "g", "parentId": "s", "index": 0,
+                                 "title": "Reading [blue]", "children": children}]
+            snapshot["session"]["groups"] = {"g": {"groupId": "g", "title": "Reading [blue]"}}
+            for tab in snapshot["session"]["logicalTabs"]:
+                tab["groupId"] = "g"
+            for tab in snapshot["native"]:
+                tab["groupId"] = 700
+            snapshot["native_groups"] = [{"id": 700, "windowId": 1, "title": "Reading", "color": "blue"}]
+
 
 class MountOracleTests(unittest.TestCase):
     def setUp(self):
@@ -64,6 +81,39 @@ class MountOracleTests(unittest.TestCase):
             tab["logicalId"] += "-reloaded"
         self.fixture.after["session"]["lastActiveLogicalTabId"] = "logical-b-reloaded"
         self.fixture.validate()
+
+    def test_rejects_persisted_group_name_or_color_rewrite(self):
+        for title in ("Renamed [blue]", "Reading [red]"):
+            with self.subTest(title=title):
+                self.fixture = MountOracleFixture()
+                self.fixture.group_saved_tabs()
+                self.fixture.validate()
+                self.fixture.after["bookmarks"][0]["children"][0]["title"] = title
+                self.assert_rejected("Mount rewrote canonical bookmark structure")
+
+    def test_rejects_empty_saved_folder_title_rewrite(self):
+        for snapshot in (self.fixture.before, self.fixture.after):
+            snapshot["bookmarks"][0]["children"].append(
+                {"id": "empty", "parentId": "s", "index": 2, "title": "Empty [blue]", "children": []})
+            snapshot["session"]["groups"]["empty"] = {"groupId": "empty", "title": "Empty [blue]"}
+        self.fixture.validate()
+        self.fixture.after["bookmarks"][0]["children"][2]["title"] = "Changed [blue]"
+        self.assert_rejected("Mount rewrote canonical bookmark structure")
+
+    def test_tab_titles_may_update_with_or_without_children_field(self):
+        # Chrome omits children on URL bookmarks; mock_chrome.js includes an
+        # empty array. Neither representation makes a tab bookmark a folder.
+        for with_children in (False, True):
+            with self.subTest(with_children=with_children):
+                fixture = MountOracleFixture()
+                if with_children:
+                    for snapshot in (fixture.before, fixture.after):
+                        for node in snapshot["bookmarks"][0]["children"]:
+                            node["children"] = []
+                fixture.validate()
+                for node in fixture.after["bookmarks"][0]["children"]:
+                    node["title"] = "Updated page " + node["id"]
+                fixture.validate()
 
     def test_rejects_wrong_native_url_before_bookmark_save(self):
         self.fixture.after["native"][1]["url"] = "https://example.test/wrong-native"

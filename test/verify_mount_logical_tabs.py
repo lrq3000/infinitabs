@@ -11,9 +11,11 @@ from verify_move_logical_tabs import MovementCheck, main
 class MountingCheck(MovementCheck):
     @staticmethod
     def structure(snapshot):
-        # Dates/titles may settle after navigation; mounting must never edit the
-        # canonical bookmark parent/order, URL, or the set of saved identities.
+        # Dates and tab titles may settle after navigation; folder titles encode
+        # saved group names/colors and must remain canonical. Chrome identifies
+        # folders by the absence of URL, not children (mocks give tabs children: []).
         return {key: (node.get("parentId"), node.get("index"), node.get("url"),
+                      node.get("title") if "url" not in node else None,
                       [child["id"] for child in node.get("children", [])])
                 for key, node in MovementCheck.bookmark_nodes(snapshot).items()}
 
