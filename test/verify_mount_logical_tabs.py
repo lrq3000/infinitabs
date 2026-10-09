@@ -19,9 +19,13 @@ class MountingCheck(MovementCheck):
 
     def assert_mount(self, before, after, name):
         assert self.structure(after) == self.structure(before), "Mount rewrote canonical bookmark structure"
+        # A lookup dictionary erases duplicate identities and order. Compare the
+        # ordered saved identities first, while allowing logical IDs to regenerate.
+        assert [tab["bookmarkId"] for tab in after["session"]["logicalTabs"]] == [
+            tab["bookmarkId"] for tab in before["session"]["logicalTabs"]
+        ], "Mount changed logical bookmark order or multiplicity"
         old = {tab["bookmarkId"]: tab for tab in before["session"]["logicalTabs"]}
         current = {tab["bookmarkId"]: tab for tab in after["session"]["logicalTabs"]}
-        assert set(old) == set(current), "Mount duplicated/lost a saved identity"
         target = current[self.bookmark_ids[name]]
         assert len(target["liveTabIds"]) == 1, "Saved tab must have exactly one native instance"
         mounted_id = target["liveTabIds"][0]
@@ -33,6 +37,12 @@ class MountingCheck(MovementCheck):
                         for live_id in ([mounted_id] if tab["bookmarkId"] == target["bookmarkId"] else tab["liveTabIds"])]
         assert [tab["id"] for tab in after["native"]] == expected_ids, "Native order differs from saved order"
         native = {tab["id"]: tab for tab in after["native"]}
+        # Bookmark writes lag navigation by 2s. Validate both live representations
+        # on every poll against the PRE-mount saved URL, not a still-correct bookmark
+        # or two equally incorrect native/logical URLs. No extra sleep is needed.
+        expected_url = self.bookmark_nodes(before)[target["bookmarkId"]]["url"]
+        assert native[mounted_id]["url"] == expected_url, "Mounted native URL differs from saved bookmark"
+        assert target["url"] == expected_url, "Mounted logical URL differs from saved bookmark"
         old_groups = {group["id"]: group for group in before["native_groups"]}
         new_groups = {group["id"]: group for group in after["native_groups"]}
         for group_id, group in old_groups.items():

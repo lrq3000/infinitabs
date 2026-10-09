@@ -20,11 +20,11 @@ Its later movement suppression depends on the obsolete timed
 
 **The reported defect did not reproduce on this base.** All nine real-browser
 mounting cases below pass with unchanged production source, including the two
-group-edge fixtures corrected after controller/spec review. The user decision is
+group-edge fixtures corrected after controller/spec review and the URL/order
+oracle strengthened after quality review. The user decision is
 to merge coverage only and keep PR27 open; publication remains with the controller.
 Following the task's reproduction gate, this branch contains verification only,
-not a mounting fix or
-a claim that every historical PR27 scenario is resolved. No failing Node model
+not a mounting fix or a claim that every historical PR27 scenario is resolved. No failing Node model
 was invented in the absence of a demonstrated production failure.
 
 ## Current implementation and invariant
@@ -41,6 +41,10 @@ bookmark-derived native order and group membership, preserved canonical bookmark
 IDs/parents/indices/child order/URLs, unchanged unrelated live IDs and native
 group metadata, and the mounted tab active in both Chrome and the shipped sidebar.
 A saved-only folder must acquire a new native group with its saved title/color.
+Every poll also requires the new native tab's URL and its current logical URL to
+equal the canonical **pre-mount bookmark URL**, plus equality of the ordered
+before/after logical bookmark-ID lists (including multiplicity). Logical IDs may
+regenerate; bookmark identities and their order must remain stable.
 
 The fixture uses real native tabs with unique local HTTP URLs, saves them through
 the extension, builds real groups, and uses `UNMOUNT_LOGICAL_TAB` to leave saved
@@ -113,15 +117,57 @@ Before sending `FOCUS_OR_MOUNT_TAB`, both edge cases now require:
 These preconditions must remain quiet for 500 ms and are asserted again against
 the settled `before` snapshot immediately before dispatch. Evidence records the
 boundary indices and predecessor identities in `boundary_precondition`.
-In the final full run, setup quiet periods were 524 ms (root) and 526 ms
+In the edge-correction run `mounting-evidence-z7p28pse`, setup quiet periods were 524 ms (root) and 526 ms
 (saved group); post-mount quiet periods were 511 ms and 518 ms respectively.
 Both targets mounted at index 2, preserving the active group's identity and
 metadata; the root target remained ungrouped and the saved-group target acquired
 its own restored group. Both targeted reruns passed first, then all nine passed.
 
-Only the mounting script and this report changed for the correction. The shared
+Only the mounting script and this report changed for that edge correction. The shared
 runner, other seven case assertions, CI and production code are unchanged, so
 their earlier preservation checks below remain applicable.
+
+### Quality correction: reject URL corruption and logical order/duplicates
+
+Quality review of `f49b307` identified two oracle gaps, not a production failure:
+
+- Persisted bookmark URLs can remain correct during the two-second write
+  debounce while the newly mounted native and logical URLs are already wrong.
+  A 500 ms quiet observation alone could accept that state.
+- Converting logical records to dictionaries erased their order and silently
+  collapsed duplicate bookmark identities.
+
+The recorded real URLs were correct, so the bounded non-reproduction result
+stands. The current oracle now rejects both gaps on **every poll**, without an
+extra two-second sleep: URL expectations come from the pre-mount bookmark tree,
+and ordered bookmark-ID lists are compared before constructing lookup maps.
+The previous bookmark, native order/group, identity and highlight checks remain.
+
+`test/test_mount_oracle.py` runs the actual browser-check assertion against
+minimal valid snapshots. Its positive controls include saved blank/HTTP mounts
+and regenerated logical IDs. Single-property negative cases cover wrong native
+URL, wrong logical URL, stale pre-mount logical URL versus the authoritative
+bookmark, reordered records, and a duplicate unrelated bookmark with a distinct
+logical ID. Each negative starts with a passing snapshot and checks the intended
+assertion reason, not an unrelated malformed-fixture error. Two virtual-clock
+cases reuse `SimulatedMovement` to check rejection before a two-second bookmark
+write and URL corruption on a later poll within the normal quiet interval.
+
+Red/green proof:
+
+- With only the new deterministic tests added to `f49b307`, **9 tests ran: 2
+  positive controls passed and 7 negative tests failed with `AssertionError not
+  raised`**. The old oracle accepted exactly the corrupted states under test.
+- After strengthening the oracle, discovery ran **17 tests, all passing**: the
+  same 9 oracle tests plus all 8 existing observer/settling tests.
+- The existing CI helper step now discovers `test_*.py`, including all three
+  unittest modules rather than only `test_movement_*.py`.
+- All **9 actual mounting flows passed once** with the stricter assertions in
+  `mounting-evidence-lj3ofi7b`. Source and shared movement/PR40 scripts are
+  unchanged; their browser suites were not repeated for this correction.
+
+The correction touches the oracle, its deterministic tests, CI discovery and
+this report. It makes no production changes and does not close PR27.
 
 ## Verification changes and checks
 
@@ -133,7 +179,7 @@ check script as well as both shared helper scripts and every extension file.
 The existing CI workflow runs the new check with the same pinned runtime and
 artifact upload, without a second workflow or framework.
 
-Commands run from the owned worktree across the initial milestone and correction:
+Commands run from the owned worktree across the initial milestone and corrections:
 
 ```powershell
 node test/test_move_logical_tabs.js
@@ -144,6 +190,8 @@ node test/test_add_new_tab.js
 node test/test_history_switch.js
 node test/test_sidebar_quick_drag.js
 python -B -m unittest discover -s test -p 'test_movement_*.py'
+python -B test/test_mount_oracle.py -v # Red phase: 7 expected failures before the oracle fix
+python -B -m unittest discover -s test -p 'test_*.py' -v # Green phase: 17 passing tests
 $env:PLAYWRIGHT_BROWSERS_PATH='C:\Users\33632\AppData\Local\Temp\opencode\pr40-playwright'
 python -B test/verify_mount_logical_tabs.py --headless --flow root_after_active_group --artifacts-dir C:\Users\33632\AppData\Local\Temp\opencode
 python -B test/verify_mount_logical_tabs.py --headless --flow saved_group_after_active_group --artifacts-dir C:\Users\33632\AppData\Local\Temp\opencode
@@ -156,8 +204,9 @@ git diff --check
 - At the initial coverage milestone, all seven Node baseline scripts passed.
   Expected injected failure diagnostics and pre-existing module-type warnings
   remained visible. These unchanged suites were not rerun for the fixture correction.
-- Eight movement-observer/settling Python tests passed at the initial milestone.
-- All nine mounting flows pass after the edge-fixture correction, following two
+- Eight movement-observer/settling Python tests passed at the initial milestone
+  and again with the nine new oracle tests (17 total) during the quality correction.
+- All nine mounting flows pass after both review corrections. The edge-fixture correction followed two
   passing targeted edge checks. An earlier seven-flow run also passed; the old
   nine-flow run's two nominal edge checks are superseded by the correction above.
 - All ten existing browser movement flows passed at the initial milestone: `group_in`, `group_out`,
@@ -182,7 +231,8 @@ Evidence parent: `C:\Users\33632\AppData\Local\Temp\opencode`.
 | `mounting-evidence-ih_ujaqz` | Historical nine-flow run; its two claimed edge cases did not establish adjacency and are superseded. |
 | `mounting-evidence-fk97tvyq` | Corrected targeted `root_after_active_group`, including settled setup and explicit boundary proof. |
 | `mounting-evidence-4k0nh6eh` | Corrected targeted `saved_group_after_active_group`, including settled setup and explicit boundary proof. |
-| `mounting-evidence-z7p28pse` | Final corrected nine-flow run; per-flow snapshots, events, screenshots, exact source/script hashes. |
+| `mounting-evidence-z7p28pse` | Nine-flow run after edge correction, before the stricter URL/order oracle. |
+| `mounting-evidence-lj3ofi7b` | Current nine-flow run with per-poll native/logical URL and ordered bookmark-identity assertions; snapshots, events, screenshots and exact hashes. |
 | `movement-evidence-z823_zj2` | Ten movement flows using the shared runner adjustment. |
 | `pr40-evidence-1wst6qod` | Three active-state flows on the identical production source. |
 
@@ -192,7 +242,7 @@ Final tested byte SHA256 values (all source file hashes are in the evidence):
 src/background.js
 9d632f1c181d37a1dcb76723f39e7d73ef6cede37a22f3aad97278cad2944df1
 test/verify_mount_logical_tabs.py
-eceb31f7ce5494958233efbb2d4e72c530a33dd4c93744fdfbd8f75073ac55fe
+e89aaa1d897fa67a9cfe489aac6741fafb4af2e51442ac370c2064a6919b324e
 test/verify_move_logical_tabs.py
 d72edaa52c90b65ab61bdfc1755309b5024f65a249856ee6203d91646360f29b
 test/verify_active_tab_reload.py
