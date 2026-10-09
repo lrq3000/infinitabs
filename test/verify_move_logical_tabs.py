@@ -212,7 +212,7 @@ class MovementCheck(ActiveTabReloadCheck):
         assert logical_order == list(order), f"Bookmark order: expected {order}, got {logical_order}"
         names_by_live = {value: key for key, value in self.live_ids.items()}
         native = [tab for tab in after["native"] if tab["id"] in names_by_live]
-        group_id = self.group_id
+        group_id = self.group_id if grouped else None
         if grouped and group_id is None:
             assert len(after["native_groups"]) == 1, "Saved-only destination must create exactly one native group"
             group = after["native_groups"][0]
