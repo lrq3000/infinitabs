@@ -113,7 +113,8 @@ Whole-group movement was not expanded: main's fallback only relocates the folder
 and adding descendant-native synchronization would introduce separate semantics.
 Cross-window behavior remains for PR59. Pinned tabs, concurrent external moves,
 multiple live copies of one logical tab, and OS-level drag gestures are not covered
-by these regressions. Existing quick-drag/normal-drop caller checks pass in Node.
+by these regressions. Quick-drag caller checks and public movement-handler
+regressions pass in Node; normal `onDrop` is not directly exercised.
 
 The PR40 browser harness is imported unchanged for polling/messages/sidebar setup.
 Its active-reload suite was not repeated because shared helpers and active-reload
