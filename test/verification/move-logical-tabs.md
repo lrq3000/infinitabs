@@ -2,8 +2,8 @@
 
 Latest reconciliation: [PR76 concurrent contribution audit](pr76-reconciliation.md).
 The dated verification sections below describe their respective historical heads;
-the audit records the combined source and observer contract. The root-parent
-follow-up below records the subsequent correction and latest source evidence.
+the audit records the combined source and observer contract. The root-parent and
+snapshot-coherence follow-ups below record subsequent corrections and evidence.
 
 ## Intent and provenance
 
@@ -107,6 +107,7 @@ Background SHA256:
 - After batched-group insertion correction: `45ee0acb0b8fed3c8214b2c92284dec06f76a3982dba46640222410ff4f081ee`
 - After ungroup-warning follow-up: `7d06be4fc95319dd9b61830a8bdecb4a60332751a3bd1de56e0dad03dd88b457`
 - After root-parent/local-predecessor correction: `0ed4456a0e28ccf1697e3980492804ed4076df6c3c364250cdcc6d9e31e2e265`
+- After snapshot-coherence correction: `9d632f1c181d37a1dcb76723f39e7d73ef6cede37a22f3aad97278cad2944df1`
 
 The Node movement regression also failed before production edits and passed after
 the fix. Its local adapters provide deterministic IDs and actual in-memory group
@@ -429,3 +430,47 @@ It was not independently re-reproduced in this correction and its classifier was
 not edited. Track it as a future issue as explicitly requested; the selected-tab
 and anchor-closure regressions do not certify this distinct last-destination-member
 case. Cross-window/pinned/whole-group/multiple-copy limits also remain unchanged.
+
+## Snapshot-coherence correction after root-parent review
+
+The thirteenth controlled feedback scenario reproduces the finding on
+`9baa6d56cd9df21e054a299a95ea03a1bbf43dd1` before production changes:
+
+- Initial bookmarks/native tabs: X,G[C,D],A,B.
+- Native A moves between C/D and automatically joins G.
+- The test delivers that drag's own production `onUpdated(groupId)` callback
+  during the movement listener's awaited `bookmarks.getChildren` read.
+- That callback appends A to G and reloads the session; the test explicitly checks
+  that every logical ID changed during the read.
+- Old production then retains X,G[C,D,A],B despite native X,G[C,A,D],B. Its old
+  logical-ID lookup was queried with the new global reverse-map IDs, skipping the
+  native members instead of importing their order. All previous 12 cases passed.
+
+The listener now synchronously captures primitive live-tab-ID to bookmark-ID
+pairs from one session before its asynchronous native/bookmark reads. Both the
+moved tab and neighboring tabs are resolved through that same stable Map. No
+logical ID captured before an await is combined with a later mutable reverse map.
+A session reload changes logical IDs, but cannot change the copied live/bookmark
+identity pairs. This fixes identity coherence without claiming that all browser
+state is globally atomic or changing the parent/predecessor placement policy.
+
+The new scenario now passes and checks the actual bookmark children C,A,D, full
+logical/native X,C,A,D,B order, mounted identity, group parent and active identity.
+All seven focused Node scripts pass (13 feedback scenarios plus diagnostics and
+14 movement operations), along with all eight Python observer tests. Bookkeeping
+remains linear in logical tabs, captured live associations, native tabs and parent
+children; lookup is O(1) per live tab. No new transaction or retry mechanism exists.
+
+Actual isolated headless Chromium was rerun on the corrected source:
+
+| Evidence under the approved temporary parent | Result |
+| --- | --- |
+| `movement-evidence-_uwdh95m` | All ten movement flows pass. |
+| `pr40-evidence-uaxi116x` | Cold worker, extension reload and session switch pass. |
+
+Both runs record background SHA256
+`9d632f1c181d37a1dcb76723f39e7d73ef6cede37a22f3aad97278cad2944df1`.
+The browser-script hashes remain the preceding root-parent run's recorded hashes.
+The precise reload-during-read interleaving is controlled by the Node model, not
+claimed as forced Chrome scheduling. No command timeout occurred. The separately
+documented inherited group-removal classifier issue and other scope limits remain.

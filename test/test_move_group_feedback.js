@@ -94,7 +94,15 @@ async function main() {
     // Chrome returns snapshots. Otherwise removing the final native group makes
     // its bookmark listener mutate the very children array it is iterating.
     const getChildren = chrome.bookmarks.getChildren;
-    chrome.bookmarks.getChildren = async id => structuredClone(await getChildren(id));
+    let beforeChildren = null;
+    chrome.bookmarks.getChildren = async id => {
+        if (beforeChildren) {
+            const hook = beforeChildren;
+            beforeChildren = null;
+            await hook(id);
+        }
+        return structuredClone(await getChildren(id));
+    };
     // Native bookmark destinations are measured before removing a same-parent
     // source. This matters when genuine native drags import a forward reorder.
     const moveBookmark = chrome.bookmarks.move;
@@ -135,8 +143,9 @@ async function main() {
     };
     const root = await chrome.bookmarks.create({ title: 'InfiniTabs Sessions' });
     const fixtures = [];
-    for (const windowId of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) {
-        const rootBoundary = [10, 12].includes(windowId);
+    for (const windowId of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]) {
+        const coherence = windowId === 13;
+        const rootBoundary = [10, 12, 13].includes(windowId);
         const groupBoundary = windowId === 11;
         const grouped = [2, 4, 8, 9].includes(windowId) || groupBoundary;
         await chrome.windows.create({ id: windowId, type: 'normal' });
@@ -145,19 +154,19 @@ async function main() {
         if (old) browser.groups.set(windowId * 10, { id: windowId * 10, windowId, title: 'Source', color: 'red' });
         const bookmarks = {}, live = {};
         let destination = groupBoundary ? old : null;
-        for (const [index, name] of [...'ABCSD'].entries()) {
+        for (const [index, name] of [...(coherence ? 'XCDAB' : 'ABCSD')].entries()) {
             if ((name === 'S' && !rootBoundary && !groupBoundary) || (name === 'C' && rootBoundary)) {
                 destination = await chrome.bookmarks.create({ parentId: folder.id, title: 'Saved destination [blue]' });
             }
             const inOld = grouped && (groupBoundary || 'AB'.includes(name));
-            const inBoundary = rootBoundary && name === 'C';
+            const inBoundary = rootBoundary && (name === 'C' || (coherence && name === 'D'));
             if (inBoundary) browser.groups.set(windowId * 10, { id: windowId * 10, windowId, title: 'Saved destination', color: 'blue' });
             const url = `https://example.com/feedback/${windowId}/${name}`;
             bookmarks[name] = await chrome.bookmarks.create({
                 parentId: inBoundary || (name === 'S' && !rootBoundary) ? destination.id : inOld ? old.id : folder.id, title: name, url
             });
             if (name !== 'S') live[name] = await chrome.tabs.create({
-                id: windowId * 100 + index, windowId, index: name === 'D' ? 3 : index,
+                id: windowId * 100 + index, windowId, index: !coherence && name === 'D' ? 3 : index,
                 groupId: inOld || inBoundary ? windowId * 10 : -1, active: name === 'A', title: name, url
             });
         }
@@ -178,6 +187,44 @@ async function main() {
             browser.failNextMove = windowId === 3;
             const before = await session(windowId);
             const byBookmark = new Map(before.logicalTabs.map(tab => [tab.bookmarkId, tab]));
+            if (windowId === 13) {
+                // One native drag automatically groups A between C and D. Its
+                // own group callback reloads every logical ID during onMoved's
+                // awaited children read; no unrelated external edit is involved.
+                browser.deferEvents = true;
+                await chrome.tabs.move(live.A.id, { index: 2 });
+                const moved = browser.events.find(([name]) => name === 'tabs.onMoved');
+                const updated = browser.events.find(([name]) => name === 'tabs.onUpdated');
+                assert.ok(moved && updated, 'Native move must produce both callbacks');
+                browser.events = [];
+                browser.deferEvents = false;
+                let reloadedDuringRead;
+                // emit expects event arguments unpacked, not the stored array.
+                beforeChildren = async parentId => {
+                    assert.equal(parentId, destination.id);
+                    await browser.emit(updated[0], ...updated[1]);
+                    reloadedDuringRead = await session(windowId);
+                };
+                await browser.emit(moved[0], ...moved[1]);
+                await new Promise(resolve => setTimeout(resolve, 250));
+                assert.ok(reloadedDuringRead, 'Controlled callback must run during getChildren');
+                for (const tab of reloadedDuringRead.logicalTabs) {
+                    assert.notEqual(tab.logicalId, byBookmark.get(tab.bookmarkId).logicalId,
+                        'Own group callback must regenerate logical IDs');
+                }
+                const after = await session(windowId);
+                const names = new Map(Object.entries(bookmarks).map(([name, bookmark]) => [bookmark.id, name]));
+                assert.deepEqual(after.logicalTabs.map(tab => names.get(tab.bookmarkId)), [...'XCADB'],
+                    'Native/logical order must agree after identity reload during children read');
+                assert.deepEqual((await chrome.bookmarks.getChildren(destination.id)).map(node => names.get(node.id)), [...'CAD']);
+                assert.deepEqual((await chrome.tabs.query({ windowId })).map(tab => tab.id), [...'XCADB'].map(name => live[name].id));
+                const active = after.logicalTabs.find(tab => tab.bookmarkId === bookmarks.A.id);
+                assert.equal(active.groupId, destination.id);
+                assert.deepEqual(active.liveTabIds, [live.A.id]);
+                assert.equal(after.lastActiveLogicalTabId, active.logicalId);
+                console.log('PASS own group callback reloads identities during native move reconciliation');
+                continue;
+            }
             if (windowId >= 10) {
                 const names = new Map(Object.entries(bookmarks).map(([name, bookmark]) => [bookmark.id, name]));
                 if (windowId !== 12) {

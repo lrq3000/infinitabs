@@ -1590,8 +1590,7 @@ chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
     moveMutex.run(async () => {
         if (!state.initialized) await init();
 
-        const logicalId = state.tabToLogical[tabId];
-        if (!logicalId) return;
+        if (!state.tabToLogical[tabId]) return;
 
         const windowId = moveInfo.windowId;
         const sessionId = state.windowToSession[windowId];
@@ -1604,16 +1603,26 @@ chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
         const session = state.sessionsById[sessionId];
         if (!session) return;
 
+        // Capture both sides of each identity pair from one session, before any
+        // browser read can yield to this drag's own group-update/reload callback.
+        // These primitive live/bookmark IDs survive logical-ID regeneration; do
+        // not resolve this snapshot through mutable state.tabToLogical afterward.
+        const bookmarkByLiveTabId = new Map();
+        for (const logical of session.logicalTabs) {
+            for (const liveTabId of logical.liveTabIds) {
+                bookmarkByLiveTabId.set(liveTabId, logical.bookmarkId);
+            }
+        }
+        const bookmarkId = bookmarkByLiveTabId.get(tabId);
+        if (!bookmarkId) return;
+
         const tabs = await chrome.tabs.query({ windowId });
         const liveTabsInOrder = tabs;
 
         const movedTabIndex = liveTabsInOrder.findIndex(t => t.id === tabId);
         if (movedTabIndex === -1) return;
 
-        const logicalById = new Map(session.logicalTabs.map(tab => [tab.logicalId, tab]));
         const movedGroupId = tabs[movedTabIndex].groupId;
-        const logical = logicalById.get(logicalId);
-        if (!logical) return;
 
         const nativeParentId = movedGroupId === -1 ? sessionId : state.liveGroupToBookmark[movedGroupId];
         // Group listeners establish unknown mappings. Native membership, never
@@ -1624,26 +1633,26 @@ chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
         const childById = new Map(children.map(child => [child.id, child]));
         const nativeChildren = [];
         for (const tab of liveTabsInOrder) {
-            const mounted = logicalById.get(state.tabToLogical[tab.id]);
-            if (!mounted || (movedGroupId !== -1 && tab.groupId !== movedGroupId)) continue;
+            const mountedBookmarkId = bookmarkByLiveTabId.get(tab.id);
+            if (!mountedBookmarkId || (movedGroupId !== -1 && tab.groupId !== movedGroupId)) continue;
             // At the session root a native group occupies its folder boundary,
             // not one of its child bookmarks. Inside a group only sibling tabs
             // participate. Ignore stale/foreign anchors outside this parent.
             const childId = movedGroupId === -1 && tab.groupId !== -1
-                ? state.liveGroupToBookmark[tab.groupId] : mounted.bookmarkId;
-            if (!childById.has(childId) && childId !== logical.bookmarkId) continue;
+                ? state.liveGroupToBookmark[tab.groupId] : mountedBookmarkId;
+            if (!childById.has(childId) && childId !== bookmarkId) continue;
             if (nativeChildren[nativeChildren.length - 1] !== childId) nativeChildren.push(childId);
         }
 
-        const nativeIndex = nativeChildren.indexOf(logical.bookmarkId);
+        const nativeIndex = nativeChildren.indexOf(bookmarkId);
         if (nativeIndex === -1) return;
         const previous = childById.get(nativeChildren[nativeIndex - 1]);
         const next = childById.get(nativeChildren[nativeIndex + 1]);
-        const current = childById.get(logical.bookmarkId);
+        const current = childById.get(bookmarkId);
         const mountedChildIds = new Set(nativeChildren);
         let logicalPreviousId;
         for (const child of children) {
-            if (child.id === logical.bookmarkId) break;
+            if (child.id === bookmarkId) break;
             if (mountedChildIds.has(child.id)) logicalPreviousId = child.id;
         }
         // Check this bookmark's mounted predecessor, not the whole container.
@@ -1659,7 +1668,7 @@ chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
             // existing index-zero policy; already-satisfied placements returned
             // above retain their saved-only boundaries in either container.
             const index = previous ? previous.index + 1 : movedGroupId === -1 ? 0 : next?.index;
-            await chrome.bookmarks.move(logical.bookmarkId, {
+            await chrome.bookmarks.move(bookmarkId, {
                 parentId: nativeParentId,
                 ...(index !== undefined ? { index } : {})
             });
