@@ -10,6 +10,7 @@ import faulthandler
 import hashlib
 import json
 import tempfile
+import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
@@ -107,6 +108,39 @@ class MovementCheck(ActiveTabReloadCheck):
         self.wait_until(lambda: not self.logical(name)["liveTabIds"], f"unmount {name}")
         del self.live_ids[name]
 
+    def wait_for_settled(self, validate, description, quiet_ms=500, timeout_ms=15000):
+        """Require the expected state AND an uninterrupted quiet observation.
+
+        Polling is bounded; any native/bookmark event or snapshot change resets
+        the quiet interval. A finite observation cannot prove arbitrary future
+        silence, so timeout evidence records the last state and assertion.
+        """
+        deadline = time.monotonic() + timeout_ms / 1000
+        quiet_since = None
+        previous = None
+        last_error = None
+        while time.monotonic() < deadline:
+            snapshot = self.snapshot()
+            events = self.sidebar.evaluate("movementEvents")
+            signature = json.dumps([snapshot, events], sort_keys=True)
+            try:
+                validate(snapshot)
+            except (AssertionError, KeyError) as error:
+                last_error = str(error)
+                quiet_since = None
+            else:
+                if quiet_since is None or signature != previous:
+                    quiet_since = time.monotonic()
+                if time.monotonic() - quiet_since >= quiet_ms / 1000:
+                    return snapshot
+            previous = signature
+            self.fixture.wait_for_timeout(50)  # Poll cadence, not a success criterion.
+        self.evidence["settling_timeout"] = {
+            "description": description, "last_error": last_error,
+            "snapshot": snapshot, "events": events,
+        }
+        raise AssertionError(f"Timed out waiting for {description}: {last_error}")
+
     def verify_live_only_deletion(self):
         # The existing group-removal listener preserves saved-only children. Check
         # that native move events did not leave stale mappings that defeat it.
@@ -116,9 +150,10 @@ class MovementCheck(ActiveTabReloadCheck):
                                       "groupId": self.group_bookmark_id})
         assert response.get("success"), response
         self.fixture = self.sidebar  # A was active and is now intentionally deleted.
-        self.fixture.wait_for_timeout(500)
-        after = self.snapshot()
+        after = self.wait_for_settled(self.assert_live_only_deletion, "Live Only deletion")
         self.evidence["flows"].append({"flow": "live_only_deletion_after_move", "before": before, "after": after})
+
+    def assert_live_only_deletion(self, after):
         retained = {tab["bookmarkId"]: tab for tab in after["session"]["logicalTabs"]}
         for name in "ABC":
             assert self.bookmark_ids[name] not in retained, f"Mounted bookmark {name} not deleted"
@@ -126,10 +161,14 @@ class MovementCheck(ActiveTabReloadCheck):
         assert retained[self.bookmark_ids["D"]]["liveTabIds"] == []
         assert self.bookmark_ids["E"] in retained
         assert self.group_bookmark_id in after["session"]["groups"], "Saved-only group must survive native removal"
-        children = self.sidebar.evaluate("id => chrome.bookmarks.getChildren(id)", self.group_bookmark_id)
+        children = next(node["children"] for node in after["bookmarks"][0]["children"]
+                        if node["id"] == self.group_bookmark_id)
         assert [child["id"] for child in children] == [self.bookmark_ids["D"]]
+        removed = {self.live_ids[name] for name in "ABC"}
+        assert not removed.intersection(tab["id"] for tab in after["native"])
+        assert not after["native_groups"], "No mounted group should remain"
 
-    def move(self, names, target, position, order, grouped="", settle_ms=500):
+    def move(self, names, target, position, order, grouped="", quiet_ms=500):
         before = self.snapshot()
         self.sidebar.evaluate("movementEvents.length = 0")
         by_bookmark = {tab["bookmarkId"]: tab for tab in before["session"]["logicalTabs"]}
@@ -140,15 +179,23 @@ class MovementCheck(ActiveTabReloadCheck):
         response = self.send_message(request)
         assert response.get("success"), response
         immediate = self.snapshot()
-        # Let production onMoved's 50ms queue and ungroup's 100ms delayed callback
-        # run before checking the durable result, not only the message response.
-        self.fixture.wait_for_timeout(settle_ms)
-        after = self.snapshot()
+        after = self.wait_for_settled(
+            lambda snapshot: self.assert_move_state(snapshot, before, order, grouped),
+            f"move {names} {position} {target}", quiet_ms=quiet_ms)
         record = {"request": request, "response": response, "before": before, "immediate": immediate,
-                  "after": after, "settle_ms": settle_ms, "expected_order": list(order),
+                  "after": after, "quiet_ms": quiet_ms, "expected_order": list(order),
                   "events": self.sidebar.evaluate("movementEvents")}
         self.evidence["flows"].append(record)
         self.sidebar.screenshot(path=str(self.artifacts / f"move-{len(self.evidence['flows'])}.png"))
+        if grouped and self.group_id is None:
+            self.group_id = after["native_groups"][0]["id"]
+        active_logical_id = next(tab["logicalId"] for tab in after["session"]["logicalTabs"]
+                                if tab["bookmarkId"] == self.bookmark_ids[self.active_name])
+        expect(self.sidebar.locator(".tab-item.active-live")).to_have_count(1)
+        expect(self.sidebar.locator(".tab-item.active-live")).to_have_attribute("data-id", active_logical_id)
+
+    def assert_move_state(self, after, before, order, grouped):
+        by_bookmark = {tab["bookmarkId"]: tab for tab in before["session"]["logicalTabs"]}
         session = after["session"]
         assert session["sessionId"] == before["session"]["sessionId"]
         assert set(session["groups"]) == set(before["session"]["groups"]), "Retain group folders, including empty ones"
@@ -165,23 +212,22 @@ class MovementCheck(ActiveTabReloadCheck):
         assert logical_order == list(order), f"Bookmark order: expected {order}, got {logical_order}"
         names_by_live = {value: key for key, value in self.live_ids.items()}
         native = [tab for tab in after["native"] if tab["id"] in names_by_live]
-        if grouped and self.group_id is None:
+        group_id = self.group_id
+        if grouped and group_id is None:
             assert len(after["native_groups"]) == 1, "Saved-only destination must create exactly one native group"
             group = after["native_groups"][0]
             assert (group["title"], group["color"]) == ("Saved destination", "blue")
-            self.group_id = group["id"]
+            group_id = group["id"]
         for tab in native:
             name = names_by_live[tab["id"]]
-            expected = self.group_id if name in grouped else -1
+            expected = group_id if name in grouped else -1
             assert tab["groupId"] == expected, f"Native group {name}: expected {expected}, got {tab['groupId']}"
         native_order = [names_by_live[tab["id"]] for tab in native]
         expected_native = [name for name in order if name in self.live_ids]
         assert native_order == expected_native, f"Native order: expected {expected_native}, got {native_order}"
-        assert self.active_tab()["id"] == self.tab_id
+        assert [tab["id"] for tab in after["native"] if tab["active"]] == [self.tab_id]
         active_logical_id = current[self.bookmark_ids[self.active_name]]["logicalId"]
         assert session["lastActiveLogicalTabId"] == active_logical_id
-        expect(self.sidebar.locator(".tab-item.active-live")).to_have_count(1)
-        expect(self.sidebar.locator(".tab-item.active-live")).to_have_attribute("data-id", active_logical_id)
 
     def run(self, flow):
         if flow in ("group_in", "group_out") or flow.startswith("group_entry"):
@@ -189,12 +235,12 @@ class MovementCheck(ActiveTabReloadCheck):
         if flow == "group_entry_leading":
             # A/B are genuinely ungrouped before this first move, not members
             # returned to the front after an earlier successful group insertion.
-            self.move("AB", "C", "before", "XABCD", "ABCD", settle_ms=2500)
+            self.move("AB", "C", "before", "XABCD", "ABCD", quiet_ms=2500)
         elif flow == "group_entry_trailing":
-            self.move("AB", "D", "after", "XCDAB", "CDAB", settle_ms=2500)
+            self.move("AB", "D", "after", "XCDAB", "CDAB", quiet_ms=2500)
         elif flow == "group_entry_mixed":
-            self.move("AD", "C", "before", "XADCB", "ADC", settle_ms=2500)
-            self.move("BC", "D", "after", "XADBC", "ADBC", settle_ms=2500)
+            self.move("AD", "C", "before", "XADCB", "ADC", quiet_ms=2500)
+            self.move("BC", "D", "after", "XADBC", "ADBC", quiet_ms=2500)
         elif flow in ("saved_destination", "saved_destination_grouped"):
             self.saved_destination()
             if flow == "saved_destination_grouped":
@@ -202,9 +248,9 @@ class MovementCheck(ActiveTabReloadCheck):
                 self.group("AB")
                 self.group_bookmark_id = destination
                 self.group_id = None
-            self.move("AB", "group", "inside", "CSABD", "SAB", settle_ms=2500)
+            self.move("AB", "group", "inside", "CSABD", "SAB", quiet_ms=2500)
             if flow == "saved_destination_grouped":
-                self.move("A", "C", "before", "ACSBD", "SB", settle_ms=2500)
+                self.move("A", "C", "before", "ACSBD", "SB", quiet_ms=2500)
         elif flow == "group_in":
             self.move("AB", "group", "inside", "CDABE", "CDAB")
             self.move("AB", "C", "before", "ABCDE", "ABCD")
@@ -232,6 +278,7 @@ def main():
     flows = ["group_in", "group_out", "forward", "backward", "saved_destination", "saved_destination_grouped",
              "group_entry_leading", "group_entry_trailing", "group_entry_mixed"]
     parser.add_argument("--flow", choices=["all", *flows], default="all")
+    parser.add_argument("--headless", action="store_true", help="Use full Chromium without a display server")
     args = parser.parse_args()
     if not args.artifacts_dir.is_dir():
         parser.error("--artifacts-dir must exist")
@@ -251,7 +298,7 @@ def main():
                 folder = artifacts / flow
                 folder.mkdir()
                 with tempfile.TemporaryDirectory(prefix="movement-profile-", dir=args.artifacts_dir) as profile:
-                    context = playwright.chromium.launch_persistent_context(profile, headless=False,
+                    context = playwright.chromium.launch_persistent_context(profile, headless=args.headless, channel="chromium",
                         viewport={"width": 1100, "height": 800}, ignore_default_args=["--disable-extensions"],
                         args=[f"--disable-extensions-except={extension}", f"--load-extension={extension}"])
                     context.set_default_timeout(15000)

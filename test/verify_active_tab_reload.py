@@ -308,6 +308,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts-dir", type=Path, default=Path(tempfile.gettempdir()))
     parser.add_argument("--flow", choices=["all", "both", "cold_worker", "extension_reload", "session_switch"], default="all")
+    parser.add_argument("--headless", action="store_true", help="Use full Chromium without a display server")
     args = parser.parse_args()
     if not args.artifacts_dir.is_dir():
         parser.error("--artifacts-dir must be an existing temporary artifact directory")
@@ -321,7 +322,7 @@ def main():
         with tempfile.TemporaryDirectory(prefix="pr40-profile-", dir=args.artifacts_dir) as profile:
             with sync_playwright() as playwright:
                 context = playwright.chromium.launch_persistent_context(
-                    profile, headless=False, viewport={"width": 1100, "height": 800},
+                    profile, headless=args.headless, channel="chromium", viewport={"width": 1100, "height": 800},
                     ignore_default_args=["--disable-extensions"],
                     args=[f"--disable-extensions-except={extension}", f"--load-extension={extension}"],
                 )

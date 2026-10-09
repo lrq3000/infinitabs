@@ -10,13 +10,27 @@ class GroupFeedbackBrowser {
         this.nextGroupId = 1000;
         this.delay = 0;
         this.failNextMove = false;
+        this.deferEvents = false;
+        this.events = [];
+        this.beforeMove = null;
+        this.beforeGroup = null;
+    }
+
+    async emit(name, ...args) {
+        if (this.deferEvents) this.events.push([name, structuredClone(args)]);
+        else await this.listeners[name](...args);
+    }
+
+    async flushEvents() {
+        this.deferEvents = false;
+        for (const [name, args] of this.events.splice(0)) await this.emit(name, ...args);
     }
 
     async setGroup(tab, groupId) {
         const oldGroupId = tab.groupId;
         if (oldGroupId === groupId) return;
         tab.groupId = groupId;
-        await this.listeners['tabs.onUpdated'](tab.id, { groupId }, structuredClone(tab));
+        await this.emit('tabs.onUpdated', tab.id, { groupId }, structuredClone(tab));
         if (oldGroupId !== -1 && !(await chrome.tabs.query({ windowId: tab.windowId })).some(t => t.groupId === oldGroupId)) {
             const old = this.groups.get(oldGroupId);
             this.groups.delete(oldGroupId);
@@ -25,6 +39,11 @@ class GroupFeedbackBrowser {
     }
 
     async group({ tabIds, groupId }) {
+        if (this.beforeGroup) {
+            const hook = this.beforeGroup;
+            this.beforeGroup = null;
+            await hook([].concat(tabIds));
+        }
         const tabs = await Promise.all([].concat(tabIds).map(id => chrome.tabs.get(id)));
         if (groupId === undefined) {
             groupId = this.nextGroupId++;
@@ -37,6 +56,11 @@ class GroupFeedbackBrowser {
     }
 
     async move(id, { index }) {
+        if (this.beforeMove) {
+            const hook = this.beforeMove;
+            this.beforeMove = null;
+            await hook(id);
+        }
         if (this.failNextMove) {
             this.failNextMove = false;
             throw new Error('Injected native move failure');
@@ -55,7 +79,7 @@ class GroupFeedbackBrowser {
         // ungroups it; the last remaining member carries its group when moved.
         const groupId = left !== -1 && left === right ? left :
             tab.groupId !== -1 && (members === 1 || left === tab.groupId || right === tab.groupId) ? tab.groupId : -1;
-        this.listeners['tabs.onMoved'](id, { windowId: tab.windowId, fromIndex: oldIndex, toIndex: tab.index });
+        await this.emit('tabs.onMoved', id, { windowId: tab.windowId, fromIndex: oldIndex, toIndex: tab.index });
         await this.setGroup(tab, groupId);
         if (this.delay) await new Promise(resolve => setTimeout(resolve, this.delay));
         return structuredClone(tab);
@@ -67,8 +91,27 @@ async function main() {
     let bookmarkId = 0, logicalId = 0;
     const createBookmark = chrome.bookmarks.create;
     chrome.bookmarks.create = data => createBookmark({ ...data, id: String(++bookmarkId) });
+    // Chrome returns snapshots. Otherwise removing the final native group makes
+    // its bookmark listener mutate the very children array it is iterating.
+    const getChildren = chrome.bookmarks.getChildren;
+    chrome.bookmarks.getChildren = async id => structuredClone(await getChildren(id));
     self.crypto.randomUUID = () => `feedback-${++logicalId}`;
     const browser = new GroupFeedbackBrowser(listeners);
+    const queryTabs = chrome.tabs.query;
+    chrome.tabs.query = async query => (await queryTabs(query)).sort((a, b) => a.index - b.index);
+    const getTab = chrome.tabs.get;
+    chrome.tabs.get = async id => {
+        const tab = await getTab(id);
+        if (!tab) throw new Error(`No tab with id: ${id}`);
+        return tab;
+    };
+    const removeTabs = chrome.tabs.remove;
+    const close = async id => {
+        const tab = await chrome.tabs.get(id);
+        await removeTabs(id);
+        (await chrome.tabs.query({ windowId: tab.windowId })).forEach((t, index) => { t.index = index; });
+        await listeners['tabs.onRemoved'](id, { windowId: tab.windowId, isWindowClosing: false });
+    };
     chrome.tabs.group = options => browser.group(options);
     chrome.tabs.ungroup = async ids => {
         for (const id of [].concat(ids)) await browser.setGroup(await chrome.tabs.get(id), -1);
@@ -83,12 +126,12 @@ async function main() {
     };
     const root = await chrome.bookmarks.create({ title: 'InfiniTabs Sessions' });
     const fixtures = [];
-    for (const windowId of [1, 2, 3]) {
-        const grouped = windowId === 2;
+    for (const windowId of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
+        const grouped = [2, 4, 8, 9].includes(windowId);
         await chrome.windows.create({ id: windowId, type: 'normal' });
         const folder = await chrome.bookmarks.create({ parentId: root.id, title: `Feedback [windowId:${windowId}]` });
         const old = grouped ? await chrome.bookmarks.create({ parentId: folder.id, title: 'Source [red]' }) : null;
-        if (old) browser.groups.set(20, { id: 20, windowId, title: 'Source', color: 'red' });
+        if (old) browser.groups.set(windowId * 10, { id: windowId * 10, windowId, title: 'Source', color: 'red' });
         const bookmarks = {}, live = {};
         let destination;
         for (const [index, name] of [...'ABCSD'].entries()) {
@@ -100,7 +143,7 @@ async function main() {
             });
             if (name !== 'S') live[name] = await chrome.tabs.create({
                 id: windowId * 100 + index, windowId, index: name === 'D' ? 3 : index,
-                groupId: inOld ? 20 : -1, active: name === 'A', title: name, url
+                groupId: inOld ? windowId * 10 : -1, active: name === 'A', title: name, url
             });
         }
         fixtures.push({ windowId, folder, destination, bookmarks, live });
@@ -120,11 +163,20 @@ async function main() {
             browser.failNextMove = windowId === 3;
             const before = await session(windowId);
             const byBookmark = new Map(before.logicalTabs.map(tab => [tab.bookmarkId, tab]));
+            // Deliver native feedback only after the public move has replied.
+            // No artificial sleep determines the ordering of this race.
+            browser.deferEvents = [4, 8, 9].includes(windowId);
+            if (windowId === 5) browser.beforeMove = id => close(id);
+            if (windowId === 6) browser.beforeMove = () => close(live.C.id);
+            if (windowId === 7) browser.beforeGroup = () => close(live.B.id);
             const response = await send({ type: 'MOVE_LOGICAL_TABS', windowId,
                 logicalIds: [...'AB'].map(name => byBookmark.get(bookmarks[name].id).logicalId),
                 targetLogicalId: destination.id, position: 'inside' });
             assert.equal(response.success, true);
-            await new Promise(resolve => setTimeout(resolve, 250));
+            if (windowId === 8) await chrome.tabs.move(live.D.id, { index: 0 });
+            if (windowId === 9) await chrome.tabs.move(live.A.id, { index: 2 });
+            await browser.flushEvents();
+            await new Promise(resolve => setTimeout(resolve, windowId >= 8 ? 600 : 250));
             if (windowId === 3) {
                 // A later genuine browser change must not be swallowed by a guard
                 // left behind by the failed MOVE_LOGICAL_TABS operation.
@@ -134,21 +186,29 @@ async function main() {
                 const tab = after.logicalTabs.find(tab => tab.bookmarkId === bookmarks.B.id);
                 assert.notEqual(tab.groupId, destination.id, 'Group feedback guard must clear on native failure');
                 assert.equal((await chrome.tabs.get(live.B.id)).groupId, external);
-                await chrome.tabs.move(live.A.id, { index: 2 });
+                // Explicitly leave the remaining one-member group: moving that
+                // group preserves membership in Chromium and is not ungrouping.
+                await chrome.tabs.ungroup(live.A.id);
+                await new Promise(resolve => setTimeout(resolve, 250));
+                await chrome.tabs.move(live.A.id, { index: 0 });
                 await new Promise(resolve => setTimeout(resolve, 250));
                 assert.equal((await chrome.bookmarks.get(bookmarks.A.id))[0].parentId, fixture.folder.id,
                     'Move feedback guard must clear on native failure');
+                assert.equal((await chrome.bookmarks.get(bookmarks.A.id))[0].index, 0);
                 console.log('PASS failed native move releases feedback guard');
                 continue;
             }
             const after = await session(windowId);
             const names = new Map(Object.entries(bookmarks).map(([name, bookmark]) => [bookmark.id, name]));
-            assert.deepEqual(after.logicalTabs.map(tab => names.get(tab.bookmarkId)), [...'CSABD'], 'Settled bookmark order');
+            assert.deepEqual(after.logicalTabs.map(tab => names.get(tab.bookmarkId)),
+                [...(windowId === 8 ? 'DCSAB' : windowId === 9 ? 'CSBAD' : 'CSABD')], 'Settled bookmark order');
             const native = (await chrome.tabs.query({ windowId })).sort((a, b) => a.index - b.index);
-            assert.deepEqual(native.map(tab => tab.id), [...'CABD'].map(name => live[name].id), 'Native order');
+            const expectedNative = [5, 7].includes(windowId) ? 'CAD' : windowId === 6 ? 'ABD' :
+                windowId === 8 ? 'DCAB' : windowId === 9 ? 'CBAD' : 'CABD';
+            assert.deepEqual(native.map(tab => tab.id), [...expectedNative].map(name => live[name].id), 'Native order');
             const groupId = (await chrome.tabs.get(live.A.id)).groupId;
             assert.notEqual(groupId, -1);
-            assert.equal((await chrome.tabs.get(live.B.id)).groupId, groupId, 'Both moved tabs must retain the destination group');
+            if (![5, 7].includes(windowId)) assert.equal((await chrome.tabs.get(live.B.id)).groupId, groupId, 'Both moved tabs must retain the destination group');
             assert.equal(browser.groups.get(groupId).title, 'Saved destination');
             assert.equal(browser.groups.get(groupId).color, 'blue');
             for (const name of 'SAB') {
@@ -158,8 +218,54 @@ async function main() {
             }
             const active = after.logicalTabs.find(tab => tab.bookmarkId === bookmarks.A.id);
             assert.equal(after.lastActiveLogicalTabId, active.logicalId);
-            console.log(`PASS saved-only destination (${windowId === 2 ? 'grouped source, slow native APIs' : 'ungrouped source'})`);
+            if ([5, 6, 7].includes(windowId)) {
+                const closed = windowId === 6 ? 'C' : 'B';
+                assert.deepEqual(after.logicalTabs.find(tab => tab.bookmarkId === bookmarks[closed].id).liveTabIds, [],
+                    'Closed tab keeps its bookmark and loses only its live identity');
+            }
+            if (windowId === 4) {
+                // A real drag immediately after delayed feedback must remain
+                // effective; a blanket grace timer would silently discard it.
+                await chrome.tabs.move(live.B.id, { index: 3 });
+                await new Promise(resolve => setTimeout(resolve, 250));
+                assert.equal((await chrome.bookmarks.get(bookmarks.B.id))[0].parentId, fixture.folder.id);
+                const nativeIds = (await chrome.tabs.query({ windowId })).map(tab => tab.id);
+                assert.deepEqual(nativeIds, [...'CADB'].map(name => live[name].id));
+                // A stale group payload must not recreate its already-removed
+                // native group, but its independent title update still applies.
+                await listeners['tabs.onUpdated'](live.B.id, { groupId, title: 'Updated B' },
+                    { ...(await chrome.tabs.get(live.B.id)), groupId });
+                const updated = (await session(windowId)).logicalTabs.find(tab => tab.bookmarkId === bookmarks.B.id);
+                assert.equal(updated.title, 'Updated B');
+                assert.equal(updated.groupId, null);
+            }
+            console.log(`PASS feedback scenario ${windowId}`);
         } catch (error) { failures.push(`window ${windowId}: ${error.message}`); }
+    }
+    // A failed final ungroup must be observable, with its affected IDs, even
+    // though MOVE_LOGICAL_TABS retains its existing best-effort response contract.
+    const fixture = fixtures[0];
+    const before = await session(fixture.windowId);
+    const byBookmark = new Map(before.logicalTabs.map(tab => [tab.bookmarkId, tab]));
+    const ungroup = chrome.tabs.ungroup;
+    const warn = console.warn;
+    const warnings = [];
+    const failure = new Error('Injected native ungroup failure');
+    try {
+        chrome.tabs.ungroup = async () => { throw failure; };
+        console.warn = (...args) => { warnings.push(args); warn(...args); };
+        await send({ type: 'MOVE_LOGICAL_TABS', windowId: fixture.windowId,
+            logicalIds: [...'AB'].map(name => byBookmark.get(fixture.bookmarks[name].id).logicalId),
+            targetLogicalId: byBookmark.get(fixture.bookmarks.D.id).logicalId, position: 'before' });
+        assert.ok(warnings.some(args => args.includes(failure) && args.some(value =>
+            Array.isArray(value) && value.includes(fixture.live.A.id) && value.includes(fixture.live.B.id))),
+            'Ungroup failure must report the error and affected native IDs');
+        console.log('PASS native ungroup failure diagnostic');
+    } catch (error) {
+        failures.push(`ungroup diagnostic: ${error.message}`);
+    } finally {
+        chrome.tabs.ungroup = ungroup;
+        console.warn = warn;
     }
     assert.deepEqual(failures, [], 'Native group feedback regressions');
 }
