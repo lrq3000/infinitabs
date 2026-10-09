@@ -19,8 +19,11 @@ Its later movement suppression depends on the obsolete timed
 `ignoreMoveEventsForTabIds` mechanism. No original code was merged or ported.
 
 **The reported defect did not reproduce on this base.** All nine real-browser
-mounting cases below pass with unchanged production source. Following the task's
-reproduction gate, this branch contains verification only, not a mounting fix or
+mounting cases below pass with unchanged production source, including the two
+group-edge fixtures corrected after controller/spec review. The user decision is
+to merge coverage only and keep PR27 open; publication remains with the controller.
+Following the task's reproduction gate, this branch contains verification only,
+not a mounting fix or
 a claim that every historical PR27 scenario is resolved. No failing Node model
 was invented in the absence of a demonstrated production failure.
 
@@ -48,7 +51,9 @@ from the actual `sidebar.html` page. No Chrome API or listener is mocked/replace
 
 In the recorded nine mount operations, the native tab ends in its intended
 position and the expected group updates occur. The event recorder sees **no
-`tab-moved` or `bookmark-moved` events** during those operations. Thus the extra
+`tab-moved` or `bookmark-moved` events** during those mount intervals. The corrected
+edge fixtures separately record the real sidebar move and bookmark reconciliation
+under `edge_setup`, before clearing events for the mount. Thus the extra
 reposition/suppression proposed by the old patch is not justified by these cases.
 This observation does not imply `tabs.group` never relocates tabs: PR76's movement
 scenarios demonstrate that it can for other starting arrangements.
@@ -58,7 +63,7 @@ scenarios demonstrate that it can for other starting arrangements.
 Fixture names start as `X,A,B,C,Y,U,V,Z` (the sidebar is also a real mapped tab).
 Each flow runs in a separate disposable profile. The default unrelated active
 group is `U,V`, active `U`; the last two flows use `X,A`, active `A`, immediately
-before the saved `B` destination.
+before the saved `B` destination, with the sidebar moved to the window end.
 
 | Flow ID | Saved target / invariant | Result |
 | --- | --- | --- |
@@ -78,6 +83,46 @@ movement queue delay and 100 ms delayed ungroup callback, but does not prove
 absence of arbitrarily late events. Screenshots independently record the real
 sidebar, whose single active row is asserted against the mounted logical ID.
 
+### Review correction: prove the group edge before mounting
+
+Controller/spec review identified a material gap in commit `c67fb28`: grouping
+noncontiguous X/A left the live sidebar between A and the saved B destination.
+The old evidence showed `X(group), A(active, group), Sidebar, C, ...`, making
+Sidebar the nearest live logical predecessor. The original two PASS results did
+**not** establish immediate adjacency to the active group; their earlier report
+descriptions overstated the evidence. The other seven cases were unaffected.
+
+The corrected fixture obtains the sidebar's actual tab via `tabs.getCurrent`,
+moves it to the same window's end via `tabs.move({index: -1})`, and gives the
+active group explicit `Active edge` / red metadata via `tabGroups.update`.
+The shipped native-event handlers reconcile bookmarks/session state. No direct
+production-state mutation or mocked Chrome API is used.
+
+Before sending `FOCUS_OR_MOUNT_TAB`, both edge cases now require:
+
+- B is saved-only in its intended root or saved-group parent.
+- B's nearest **live logical** predecessor is A, whose live identity is retained.
+- Exact native order is `X,A,C,Y,U,V,Z,Sidebar`, independently of the generic
+  bookmark-derived mount expectation; all remain in the target window.
+- A is active in native and session state, and the active group's only members
+  are X/A. The desired index is **2**, equal to the group's last index **1** + 1.
+- Sidebar is ungrouped at index **7**, and the mounted logical order has caught
+  up with the native move. X/A's bookmark parents and group title/color agree
+  between native, session and persisted bookmark state.
+
+These preconditions must remain quiet for 500 ms and are asserted again against
+the settled `before` snapshot immediately before dispatch. Evidence records the
+boundary indices and predecessor identities in `boundary_precondition`.
+In the final full run, setup quiet periods were 524 ms (root) and 526 ms
+(saved group); post-mount quiet periods were 511 ms and 518 ms respectively.
+Both targets mounted at index 2, preserving the active group's identity and
+metadata; the root target remained ungrouped and the saved-group target acquired
+its own restored group. Both targeted reruns passed first, then all nine passed.
+
+Only the mounting script and this report changed for the correction. The shared
+runner, other seven case assertions, CI and production code are unchanged, so
+their earlier preservation checks below remain applicable.
+
 ## Verification changes and checks
 
 `verify_mount_logical_tabs.py` subclasses `MovementCheck`, reusing its snapshot,
@@ -88,7 +133,7 @@ check script as well as both shared helper scripts and every extension file.
 The existing CI workflow runs the new check with the same pinned runtime and
 artifact upload, without a second workflow or framework.
 
-Commands run from the owned worktree:
+Commands run from the owned worktree across the initial milestone and correction:
 
 ```powershell
 node test/test_move_logical_tabs.js
@@ -100,22 +145,26 @@ node test/test_history_switch.js
 node test/test_sidebar_quick_drag.js
 python -B -m unittest discover -s test -p 'test_movement_*.py'
 $env:PLAYWRIGHT_BROWSERS_PATH='C:\Users\33632\AppData\Local\Temp\opencode\pr40-playwright'
+python -B test/verify_mount_logical_tabs.py --headless --flow root_after_active_group --artifacts-dir C:\Users\33632\AppData\Local\Temp\opencode
+python -B test/verify_mount_logical_tabs.py --headless --flow saved_group_after_active_group --artifacts-dir C:\Users\33632\AppData\Local\Temp\opencode
 python -B test/verify_mount_logical_tabs.py --headless --artifacts-dir C:\Users\33632\AppData\Local\Temp\opencode
 python -B test/verify_move_logical_tabs.py --headless --artifacts-dir C:\Users\33632\AppData\Local\Temp\opencode
 python -B test/verify_active_tab_reload.py --headless --artifacts-dir C:\Users\33632\AppData\Local\Temp\opencode
 git diff --check
 ```
 
-- All seven Node baseline scripts pass. Expected injected failure diagnostics and
-  the pre-existing module-type warnings remain visible.
-- Eight movement-observer/settling Python tests pass.
-- All nine new mounting flows pass. An earlier seven-flow run also passed before
-  adding the adjacent-active-group cases and explicit fixture preconditions.
-- All ten existing browser movement flows pass: `group_in`, `group_out`,
+- At the initial coverage milestone, all seven Node baseline scripts passed.
+  Expected injected failure diagnostics and pre-existing module-type warnings
+  remained visible. These unchanged suites were not rerun for the fixture correction.
+- Eight movement-observer/settling Python tests passed at the initial milestone.
+- All nine mounting flows pass after the edge-fixture correction, following two
+  passing targeted edge checks. An earlier seven-flow run also passed; the old
+  nine-flow run's two nominal edge checks are superseded by the correction above.
+- All ten existing browser movement flows passed at the initial milestone: `group_in`, `group_out`,
   `forward`, `backward`, `saved_destination`, `saved_destination_grouped`,
   `group_entry_leading`, `group_entry_trailing`, `group_entry_mixed`,
   `root_boundaries`.
-- All three active-state flows pass: `cold_worker`, `extension_reload`,
+- All three active-state flows passed at the initial milestone: `cold_worker`, `extension_reload`,
   `session_switch` (including saved selection and history assertions).
 
 Runtime: Windows, Node `24.12.0`, Python `3.13.12`, Playwright `1.59.0`, full
@@ -130,7 +179,10 @@ Evidence parent: `C:\Users\33632\AppData\Local\Temp\opencode`.
 | Directory | Contents |
 | --- | --- |
 | `mounting-evidence-p1i1vlmu` | Initial seven-flow non-reproduction, earlier test-script hashes. |
-| `mounting-evidence-ih_ujaqz` | Final nine-flow non-reproduction, per-flow evidence JSON, screenshots, exact source/script hashes. |
+| `mounting-evidence-ih_ujaqz` | Historical nine-flow run; its two claimed edge cases did not establish adjacency and are superseded. |
+| `mounting-evidence-fk97tvyq` | Corrected targeted `root_after_active_group`, including settled setup and explicit boundary proof. |
+| `mounting-evidence-4k0nh6eh` | Corrected targeted `saved_group_after_active_group`, including settled setup and explicit boundary proof. |
+| `mounting-evidence-z7p28pse` | Final corrected nine-flow run; per-flow snapshots, events, screenshots, exact source/script hashes. |
 | `movement-evidence-z823_zj2` | Ten movement flows using the shared runner adjustment. |
 | `pr40-evidence-1wst6qod` | Three active-state flows on the identical production source. |
 
@@ -140,7 +192,7 @@ Final tested byte SHA256 values (all source file hashes are in the evidence):
 src/background.js
 9d632f1c181d37a1dcb76723f39e7d73ef6cede37a22f3aad97278cad2944df1
 test/verify_mount_logical_tabs.py
-c94291097ba05804b64393b5443580403a8a17dcbfafde3631ce5283f8c0172e
+eceb31f7ce5494958233efbb2d4e72c530a33dd4c93744fdfbd8f75073ac55fe
 test/verify_move_logical_tabs.py
 d72edaa52c90b65ab61bdfc1755309b5024f65a249856ee6203d91646360f29b
 test/verify_active_tab_reload.py

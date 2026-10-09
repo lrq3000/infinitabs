@@ -54,6 +54,48 @@ class MountingCheck(MovementCheck):
         assert [tab["id"] for tab in after["native"] if tab["active"]] == [mounted_id]
         assert after["session"]["lastActiveLogicalTabId"] == target["logicalId"]
 
+    def assert_active_group_edge(self, snapshot, sidebar_id, saved_parent):
+        session = snapshot["session"]
+        logicals = session["logicalTabs"]
+        target_index = next(i for i, tab in enumerate(logicals) if tab["bookmarkId"] == self.bookmark_ids["B"])
+        target = logicals[target_index]
+        assert target["liveTabIds"] == [] and target["groupId"] == saved_parent
+        predecessor = next(tab for tab in reversed(logicals[:target_index]) if tab["liveTabIds"])
+        assert predecessor["bookmarkId"] == self.bookmark_ids["A"], "B's nearest live logical predecessor must be A, not the sidebar"
+        assert predecessor["liveTabIds"] == [self.live_ids["A"]]
+        assert session["lastActiveLogicalTabId"] == predecessor["logicalId"]
+
+        # Assert a fixed fixture layout independently of the generic mount oracle.
+        # Otherwise that oracle can accept a consistently wrong starting boundary.
+        native = snapshot["native"]
+        assert [tab["id"] for tab in native] == [self.live_ids[name] for name in "XACYUVZ"] + [sidebar_id]
+        assert all(tab["windowId"] == self.window_id for tab in native)
+        assert [tab["id"] for tab in native if tab["active"]] == [self.live_ids["A"]]
+        by_id = {tab["id"]: tab for tab in native}
+        members = [tab for tab in native if tab["groupId"] == self.group_id]
+        assert [tab["id"] for tab in members] == [self.live_ids[name] for name in "XA"]
+        group_last_index = max(tab["index"] for tab in members)
+        desired_index = by_id[predecessor["liveTabIds"][0]]["index"] + 1
+        assert desired_index == group_last_index + 1 == 2, "Mount must target the active group's immediate right edge"
+        assert by_id[sidebar_id]["groupId"] == -1
+
+        # The native move and metadata update can each reload logical IDs. Wait
+        # for their real bookmark/session feedback before dispatching the mount.
+        nodes = self.bookmark_nodes(snapshot)
+        for name in "XA":
+            logical = next(tab for tab in logicals if tab["bookmarkId"] == self.bookmark_ids[name])
+            assert logical["groupId"] == self.group_bookmark_id
+            assert nodes[logical["bookmarkId"]]["parentId"] == self.group_bookmark_id
+        group = next(group for group in snapshot["native_groups"] if group["id"] == self.group_id)
+        assert (group["title"], group["color"]) == ("Active edge", "red")
+        assert session["groups"][self.group_bookmark_id]["title"] == "Active edge [red]"
+        assert nodes[self.group_bookmark_id]["title"] == "Active edge [red]"
+        mounted_ids = [live_id for tab in logicals for live_id in tab["liveTabIds"]]
+        assert mounted_ids == [tab["id"] for tab in native], "Sidebar's bookmark move must settle too"
+        return {"predecessor_bookmark_id": predecessor["bookmarkId"], "predecessor_live_id": self.live_ids["A"],
+                "desired_native_index": desired_index, "active_group_last_native_index": group_last_index,
+                "sidebar_live_id": sidebar_id, "sidebar_native_index": by_id[sidebar_id]["index"]}
+
     def run(self, flow):
         target = "A" if flow == "existing_first" else "C" if flow == "existing_last" else "X" if flow == "root_first" else "B"
         if flow.startswith("existing_"):
@@ -78,6 +120,18 @@ class MountingCheck(MovementCheck):
         self.fixture = self.sidebar  # root_first closes the original fixture page.
         self.wait_until(lambda: self.session()["lastActiveLogicalTabId"] == self.logical(active_name)["logicalId"], "unrelated active group")
         before = self.snapshot()
+        if adjacent:
+            sidebar_tab = self.sidebar.evaluate("() => chrome.tabs.getCurrent()")
+            assert sidebar_tab["windowId"] == self.window_id
+            setup = {"before": before, "sidebar_live_id": sidebar_tab["id"]}
+            self.evidence["edge_setup"] = setup
+            # Grouping noncontiguous X/A leaves the real sidebar between A and B.
+            # Move it with the actual API; allow the shipped onMoved listener to
+            # reconcile its bookmark rather than editing production state.
+            self.sidebar.evaluate("id => chrome.tabs.move(id, {index: -1})", sidebar_tab["id"])
+            self.sidebar.evaluate("id => chrome.tabGroups.update(id, {title: 'Active edge', color: 'red'})", self.group_id)
+            before = self.observe_expected_state(
+                lambda snapshot: self.assert_active_group_edge(snapshot, sidebar_tab["id"], saved_parent), setup)
         # Fail setup explicitly if a group-removal regression flattened the saved
         # destination; such a fixture would silently test a root mount instead.
         assert self.logical(target)["groupId"] == saved_parent
@@ -94,6 +148,8 @@ class MountingCheck(MovementCheck):
         self.sidebar.evaluate("movementEvents.length = 0")
         record["request"] = {"type": "FOCUS_OR_MOUNT_TAB", "windowId": self.window_id,
                              "logicalId": self.logical(target)["logicalId"]}
+        if adjacent:
+            record["boundary_precondition"] = self.assert_active_group_edge(before, sidebar_tab["id"], saved_parent)
         record["response"] = self.send_message(record["request"])
         assert record["response"].get("success"), record["response"]
         try:
