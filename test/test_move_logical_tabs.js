@@ -35,6 +35,13 @@ class MovementCheck {
         return (await this.send({ type: 'GET_CURRENT_SESSION_STATE' })).session;
     }
 
+    async unmount(name) {
+        const tab = (await this.session()).logicalTabs.find(tab => tab.bookmarkId === this.saved.get(name).id);
+        const response = await this.send({ type: 'UNMOUNT_LOGICAL_TAB', logicalId: tab.logicalId });
+        assert.equal(response.success, true);
+        this.live.delete(name);
+    }
+
     send(message) {
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => reject(new Error(`Timed out: ${message.type}`)), 3000);
@@ -56,11 +63,12 @@ class MovementCheck {
         const after = await this.session();
         const afterByBookmark = new Map(after.logicalTabs.map(tab => [tab.bookmarkId, tab]));
         assert.equal(after.sessionId, before.sessionId);
+        assert.deepEqual(Object.keys(after.groups), Object.keys(before.groups), 'Retain group folders, including empty ones');
         for (const [name, bookmark] of this.saved) {
             const tab = afterByBookmark.get(bookmark.id);
             assert.ok(tab, `Retain bookmark ${name}`);
             assert.notEqual(tab.logicalId, logical(name).logicalId, 'Reload must regenerate logical IDs');
-            assert.deepEqual(tab.liveTabIds, [this.live.get(name).id], `Retain live identity ${name}`);
+            assert.deepEqual(tab.liveTabIds, this.live.has(name) ? [this.live.get(name).id] : [], `Retain live identity ${name}`);
             assert.equal(tab.groupId || null, groupedNames.includes(name) ? this.group.id : null);
         }
         assert.equal(after.lastActiveLogicalTabId, afterByBookmark.get(this.saved.get('A').id).logicalId);
@@ -72,7 +80,8 @@ class MovementCheck {
             assert.equal(live.find(item => item.id === tab.id).groupId,
                 groupedNames.includes(name) ? this.windowId * 10 : -1, `Native group for ${name}`);
         }
-        assert.deepEqual(live.map(tab => tab.id), order.map(name => this.live.get(name).id), 'Native tab order');
+        assert.deepEqual(live.map(tab => tab.id), order.filter(name => this.live.has(name)).map(name => this.live.get(name).id),
+            'Native tab order');
     }
 }
 
@@ -134,7 +143,14 @@ async function main() {
             await grouping.move(['A', 'B'], 'C', 'before', ['A', 'B', 'C', 'D', 'E'], ['A', 'B', 'C', 'D']);
         }],
         ['multiselect out of group', () => ungrouping.move(['C', 'D'], 'A', 'before', ['C', 'D', 'A', 'B', 'E'])],
-        ['forward move before interior anchor', () => forward.move(['A', 'B'], 'E', 'before', ['C', 'D', 'A', 'B', 'E'])],
+        ['forward move, reversed selection, and saved-only tabs', async () => {
+            await forward.move(['A', 'B'], 'E', 'before', ['C', 'D', 'A', 'B', 'E']);
+            await forward.unmount('D');
+            await forward.move(['B', 'A'], 'E', 'after', ['C', 'D', 'E', 'B', 'A']);
+            await forward.move(['E', 'D'], 'C', 'before', ['E', 'D', 'C', 'B', 'A']);
+            await forward.move(['D'], 'B', 'after', ['E', 'C', 'B', 'D', 'A']);
+            await forward.move(['E', 'B'], 'A', 'after', ['C', 'D', 'A', 'E', 'B']);
+        }],
         ['backward move then repeat selection after reload', async () => {
             await backward.move(['D', 'E'], 'B', 'before', ['A', 'D', 'E', 'B', 'C']);
             await backward.move(['D', 'E'], 'A', 'before', ['D', 'E', 'A', 'B', 'C']);

@@ -69,6 +69,35 @@ class MovementCheck(ActiveTabReloadCheck):
             "windowId => chrome.tabs.query({windowId})", self.window_id),
             "bookmarks": self.sidebar.evaluate("id => chrome.bookmarks.getSubTree(id)", self.session()["sessionId"])}
 
+    def unmount(self, name):
+        response = self.send_message({"type": "UNMOUNT_LOGICAL_TAB", "windowId": self.window_id,
+                                      "logicalId": self.logical(name)["logicalId"]})
+        assert response.get("success"), response
+        self.wait_until(lambda: not self.logical(name)["liveTabIds"], f"unmount {name}")
+        del self.live_ids[name]
+
+    def verify_live_only_deletion(self):
+        # The existing group-removal listener preserves saved-only children. Check
+        # that native move events did not leave stale mappings that defeat it.
+        self.unmount("D")
+        before = self.snapshot()
+        response = self.send_message({"type": "DELETE_MOUNTED_TABS_IN_GROUP", "windowId": self.window_id,
+                                      "groupId": self.group_bookmark_id})
+        assert response.get("success"), response
+        self.fixture = self.sidebar  # A was active and is now intentionally deleted.
+        self.fixture.wait_for_timeout(500)
+        after = self.snapshot()
+        self.evidence["flows"].append({"flow": "live_only_deletion_after_move", "before": before, "after": after})
+        retained = {tab["bookmarkId"]: tab for tab in after["session"]["logicalTabs"]}
+        for name in "ABC":
+            assert self.bookmark_ids[name] not in retained, f"Mounted bookmark {name} not deleted"
+        assert retained[self.bookmark_ids["D"]]["groupId"] == self.group_bookmark_id
+        assert retained[self.bookmark_ids["D"]]["liveTabIds"] == []
+        assert self.bookmark_ids["E"] in retained
+        assert self.group_bookmark_id in after["session"]["groups"], "Saved-only group must survive native removal"
+        children = self.sidebar.evaluate("id => chrome.bookmarks.getChildren(id)", self.group_bookmark_id)
+        assert [child["id"] for child in children] == [self.bookmark_ids["D"]]
+
     def move(self, names, target, position, order, grouped=""):
         before = self.snapshot()
         by_bookmark = {tab["bookmarkId"]: tab for tab in before["session"]["logicalTabs"]}
@@ -87,12 +116,13 @@ class MovementCheck(ActiveTabReloadCheck):
         self.sidebar.screenshot(path=str(self.artifacts / f"move-{len(self.evidence['flows'])}.png"))
         session = after["session"]
         assert session["sessionId"] == before["session"]["sessionId"]
+        assert set(session["groups"]) == set(before["session"]["groups"]), "Retain group folders, including empty ones"
         current = {tab["bookmarkId"]: tab for tab in session["logicalTabs"]}
         assert set(current) == set(by_bookmark), "Move must retain every bookmark"
         for name, bookmark_id in self.bookmark_ids.items():
             tab = current[bookmark_id]
             assert tab["logicalId"] != by_bookmark[bookmark_id]["logicalId"], "Logical IDs must refresh"
-            assert tab["liveTabIds"] == [self.live_ids[name]], f"Live identity changed: {name}"
+            assert tab["liveTabIds"] == ([self.live_ids[name]] if name in self.live_ids else []), f"Live identity changed: {name}"
             assert tab["groupId"] == (self.group_bookmark_id if name in grouped else None), f"Logical group: {name}"
         names_by_bookmark = {value: key for key, value in self.bookmark_ids.items()}
         logical_order = [names_by_bookmark[tab["bookmarkId"]] for tab in session["logicalTabs"]
@@ -105,15 +135,13 @@ class MovementCheck(ActiveTabReloadCheck):
             expected = self.group_id if name in grouped else -1
             assert tab["groupId"] == expected, f"Native group {name}: expected {expected}, got {tab['groupId']}"
         native_order = [names_by_live[tab["id"]] for tab in native]
-        assert native_order == list(order), f"Native order: expected {order}, got {native_order}"
+        expected_native = [name for name in order if name in self.live_ids]
+        assert native_order == expected_native, f"Native order: expected {expected_native}, got {native_order}"
         assert self.active_tab()["id"] == self.tab_id
         active_logical_id = current[self.bookmark_ids["A"]]["logicalId"]
         assert session["lastActiveLogicalTabId"] == active_logical_id
         expect(self.sidebar.locator(".tab-item.active-live")).to_have_count(1)
         expect(self.sidebar.locator(".tab-item.active-live")).to_have_attribute("data-id", active_logical_id)
-        assert not self.evidence["page_errors"], self.evidence["page_errors"]
-        errors = [msg for msg in self.evidence["worker_console"] if msg["type"] == "error"]
-        assert not errors, errors
 
     def run(self, flow):
         if flow in ("group_in", "group_out"):
@@ -121,13 +149,22 @@ class MovementCheck(ActiveTabReloadCheck):
         if flow == "group_in":
             self.move("AB", "group", "inside", "CDABE", "CDAB")
             self.move("AB", "C", "before", "ABCDE", "ABCD")
+            self.verify_live_only_deletion()
         elif flow == "group_out":
             self.move("CD", "A", "before", "CDABE")
         elif flow == "forward":
             self.move("AB", "E", "before", "CDABE")
+            self.unmount("D")
+            self.move("BA", "E", "after", "CDEBA")
+            self.move("ED", "C", "before", "EDCBA")
+            self.move("D", "B", "after", "ECBDA")
+            self.move("EB", "A", "after", "CDAEB")
         elif flow == "backward":
             self.move("DE", "B", "before", "ADEBC")
             self.move("DE", "A", "before", "DEABC")
+        assert not self.evidence["page_errors"], self.evidence["page_errors"]
+        errors = [msg for msg in self.evidence["worker_console"] if msg["type"] == "error"]
+        assert not errors, errors
 
 
 def main():
