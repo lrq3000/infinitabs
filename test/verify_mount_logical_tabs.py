@@ -1,0 +1,183 @@
+"""Real saved-tab mounts via FOCUS_OR_MOUNT_TAB, sharing the movement harness.
+
+Each flow uses a fresh profile, real bookmarks/native groups, the shipped sidebar,
+and event-quiet verification. No Chrome API or production listener is replaced.
+"""
+
+from playwright.sync_api import expect
+from verify_move_logical_tabs import MovementCheck, main
+
+
+class MountingCheck(MovementCheck):
+    @staticmethod
+    def structure(snapshot):
+        # Dates and tab titles may settle after navigation; folder titles encode
+        # saved group names/colors and must remain canonical. Chrome identifies
+        # folders by the absence of URL, not children (mocks give tabs children: []).
+        return {key: (node.get("parentId"), node.get("index"), node.get("url"),
+                      node.get("title") if "url" not in node else None,
+                      [child["id"] for child in node.get("children", [])])
+                for key, node in MovementCheck.bookmark_nodes(snapshot).items()}
+
+    def assert_mount(self, before, after, name):
+        assert self.structure(after) == self.structure(before), "Mount rewrote canonical bookmark structure"
+        # A lookup dictionary erases duplicate identities and order. Compare the
+        # ordered saved identities first, while allowing logical IDs to regenerate.
+        assert [tab["bookmarkId"] for tab in after["session"]["logicalTabs"]] == [
+            tab["bookmarkId"] for tab in before["session"]["logicalTabs"]
+        ], "Mount changed logical bookmark order or multiplicity"
+        old = {tab["bookmarkId"]: tab for tab in before["session"]["logicalTabs"]}
+        current = {tab["bookmarkId"]: tab for tab in after["session"]["logicalTabs"]}
+        target = current[self.bookmark_ids[name]]
+        assert len(target["liveTabIds"]) == 1, "Saved tab must have exactly one native instance"
+        mounted_id = target["liveTabIds"][0]
+        for bookmark_id, tab in current.items():
+            assert tab["groupId"] == old[bookmark_id]["groupId"], "Logical group changed"
+            if bookmark_id != target["bookmarkId"]:
+                assert tab["liveTabIds"] == old[bookmark_id]["liveTabIds"], "Unrelated live identity changed"
+        expected_ids = [live_id for tab in before["session"]["logicalTabs"]
+                        for live_id in ([mounted_id] if tab["bookmarkId"] == target["bookmarkId"] else tab["liveTabIds"])]
+        assert [tab["id"] for tab in after["native"]] == expected_ids, "Native order differs from saved order"
+        native = {tab["id"]: tab for tab in after["native"]}
+        # Bookmark writes lag navigation by 2s. Validate both live representations
+        # on every poll against the PRE-mount saved URL, not a still-correct bookmark
+        # or two equally incorrect native/logical URLs. No extra sleep is needed.
+        expected_url = self.bookmark_nodes(before)[target["bookmarkId"]]["url"]
+        assert native[mounted_id]["url"] == expected_url, "Mounted native URL differs from saved bookmark"
+        assert target["url"] == expected_url, "Mounted logical URL differs from saved bookmark"
+        old_groups = {group["id"]: group for group in before["native_groups"]}
+        new_groups = {group["id"]: group for group in after["native_groups"]}
+        for group_id, group in old_groups.items():
+            assert new_groups.get(group_id) == group, "Unrelated native group metadata changed"
+        for tab in before["native"]:
+            assert native[tab["id"]]["groupId"] == tab["groupId"], "Mount split/joined an unrelated native group"
+        expected_group = -1
+        if target["groupId"]:
+            # An existing group keeps its native ID; saved-only groups are recreated
+            # with their saved metadata and without adopting the active group.
+            peer = next((tab for tab in old.values() if tab["groupId"] == target["groupId"] and tab["liveTabIds"]), None)
+            expected_group = native[peer["liveTabIds"][0]]["groupId"] if peer else native[mounted_id]["groupId"]
+            assert expected_group != -1
+            if not peer:
+                restored = next(group for group in after["native_groups"] if group["id"] == expected_group)
+                assert (restored["title"], restored["color"]) == ("Saved mount", "blue")
+        assert native[mounted_id]["groupId"] == expected_group, "Mounted native group differs from saved parent"
+        assert set(new_groups) == set(old_groups) | ({expected_group} if expected_group != -1 else set()), "Unexpected native group"
+        assert [tab["id"] for tab in after["native"] if tab["active"]] == [mounted_id]
+        assert after["session"]["lastActiveLogicalTabId"] == target["logicalId"]
+
+    def assert_active_group_edge(self, snapshot, sidebar_id, saved_parent):
+        session = snapshot["session"]
+        logicals = session["logicalTabs"]
+        target_index = next(i for i, tab in enumerate(logicals) if tab["bookmarkId"] == self.bookmark_ids["B"])
+        target = logicals[target_index]
+        assert target["liveTabIds"] == [] and target["groupId"] == saved_parent
+        predecessor = next(tab for tab in reversed(logicals[:target_index]) if tab["liveTabIds"])
+        assert predecessor["bookmarkId"] == self.bookmark_ids["A"], "B's nearest live logical predecessor must be A, not the sidebar"
+        assert predecessor["liveTabIds"] == [self.live_ids["A"]]
+        assert session["lastActiveLogicalTabId"] == predecessor["logicalId"]
+
+        # Assert a fixed fixture layout independently of the generic mount oracle.
+        # Otherwise that oracle can accept a consistently wrong starting boundary.
+        native = snapshot["native"]
+        assert [tab["id"] for tab in native] == [self.live_ids[name] for name in "XACYUVZ"] + [sidebar_id]
+        assert all(tab["windowId"] == self.window_id for tab in native)
+        assert [tab["id"] for tab in native if tab["active"]] == [self.live_ids["A"]]
+        by_id = {tab["id"]: tab for tab in native}
+        members = [tab for tab in native if tab["groupId"] == self.group_id]
+        assert [tab["id"] for tab in members] == [self.live_ids[name] for name in "XA"]
+        group_last_index = max(tab["index"] for tab in members)
+        desired_index = by_id[predecessor["liveTabIds"][0]]["index"] + 1
+        assert desired_index == group_last_index + 1 == 2, "Mount must target the active group's immediate right edge"
+        assert by_id[sidebar_id]["groupId"] == -1
+
+        # The native move and metadata update can each reload logical IDs. Wait
+        # for their real bookmark/session feedback before dispatching the mount.
+        nodes = self.bookmark_nodes(snapshot)
+        for name in "XA":
+            logical = next(tab for tab in logicals if tab["bookmarkId"] == self.bookmark_ids[name])
+            assert logical["groupId"] == self.group_bookmark_id
+            assert nodes[logical["bookmarkId"]]["parentId"] == self.group_bookmark_id
+        group = next(group for group in snapshot["native_groups"] if group["id"] == self.group_id)
+        assert (group["title"], group["color"]) == ("Active edge", "red")
+        assert session["groups"][self.group_bookmark_id]["title"] == "Active edge [red]"
+        assert nodes[self.group_bookmark_id]["title"] == "Active edge [red]"
+        mounted_ids = [live_id for tab in logicals for live_id in tab["liveTabIds"]]
+        assert mounted_ids == [tab["id"] for tab in native], "Sidebar's bookmark move must settle too"
+        return {"predecessor_bookmark_id": predecessor["bookmarkId"], "predecessor_live_id": self.live_ids["A"],
+                "desired_native_index": desired_index, "active_group_last_native_index": group_last_index,
+                "sidebar_live_id": sidebar_id, "sidebar_native_index": by_id[sidebar_id]["index"]}
+
+    def run(self, flow):
+        target = "A" if flow == "existing_first" else "C" if flow == "existing_last" else "X" if flow == "root_first" else "B"
+        if flow.startswith("existing_"):
+            self.group("ABC")
+        elif flow.startswith("saved_group"):
+            self.group("B")
+            self.sidebar.evaluate("id => chrome.tabGroups.update(id, {title: 'Saved mount', color: 'blue'})", self.group_id)
+            self.wait_until(lambda: self.session()["groups"][self.group_bookmark_id]["title"] == "Saved mount [blue]",
+                            "saved group metadata")
+        if flow == "root_blank":
+            page = next(page for page in self.context.pages if page.url.endswith("?B"))
+            page.goto("about:blank")
+            self.wait_until(lambda: self.logical("B")["lastSavedUrl"] == "about:blank", "saved blank URL")
+        saved_parent = self.logical(target)["groupId"]
+        # Also cover the sticky-group boundary specifically: a root/saved-group
+        # mount immediately after the active group's last native member.
+        adjacent = flow.endswith("after_active_group")
+        active_name = "A" if adjacent else "U"
+        self.group("XA" if adjacent else "UV")
+        self.sidebar.evaluate("id => chrome.tabs.update(id, {active: true})", self.live_ids[active_name])
+        self.unmount(target)
+        self.fixture = self.sidebar  # root_first closes the original fixture page.
+        self.wait_until(lambda: self.session()["lastActiveLogicalTabId"] == self.logical(active_name)["logicalId"], "unrelated active group")
+        before = self.snapshot()
+        if adjacent:
+            sidebar_tab = self.sidebar.evaluate("() => chrome.tabs.getCurrent()")
+            assert sidebar_tab["windowId"] == self.window_id
+            setup = {"before": before, "sidebar_live_id": sidebar_tab["id"]}
+            self.evidence["edge_setup"] = setup
+            # Grouping noncontiguous X/A leaves the real sidebar between A and B.
+            # Move it with the actual API; allow the shipped onMoved listener to
+            # reconcile its bookmark rather than editing production state.
+            self.sidebar.evaluate("id => chrome.tabs.move(id, {index: -1})", sidebar_tab["id"])
+            self.sidebar.evaluate("id => chrome.tabGroups.update(id, {title: 'Active edge', color: 'red'})", self.group_id)
+            before = self.observe_expected_state(
+                lambda snapshot: self.assert_active_group_edge(snapshot, sidebar_tab["id"], saved_parent), setup)
+        # Fail setup explicitly if a group-removal regression flattened the saved
+        # destination; such a fixture would silently test a root mount instead.
+        assert self.logical(target)["groupId"] == saved_parent
+        if flow.startswith("saved_group"):
+            assert saved_parent and saved_parent in before["session"]["groups"]
+            assert not any(tab["groupId"] == saved_parent and tab["liveTabIds"] for tab in before["session"]["logicalTabs"])
+        elif flow.startswith("existing_"):
+            assert saved_parent and sum(tab["groupId"] == saved_parent and bool(tab["liveTabIds"])
+                                        for tab in before["session"]["logicalTabs"]) == 2
+        else:
+            assert saved_parent is None
+        record = {"flow": flow, "before": before}
+        self.evidence["flows"].append(record)
+        self.sidebar.evaluate("movementEvents.length = 0")
+        record["request"] = {"type": "FOCUS_OR_MOUNT_TAB", "windowId": self.window_id,
+                             "logicalId": self.logical(target)["logicalId"]}
+        if adjacent:
+            record["boundary_precondition"] = self.assert_active_group_edge(before, sidebar_tab["id"], saved_parent)
+        record["response"] = self.send_message(record["request"])
+        assert record["response"].get("success"), record["response"]
+        try:
+            after = self.observe_expected_state(lambda snapshot: self.assert_mount(before, snapshot, target), record)
+        finally:
+            self.sidebar.screenshot(path=str(self.artifacts / "mount.png"))
+        active_id = after["session"]["lastActiveLogicalTabId"]
+        expect(self.sidebar.locator(".tab-item.active-live")).to_have_count(1)
+        expect(self.sidebar.locator(".tab-item.active-live")).to_have_attribute("data-id", active_id)
+        assert not self.evidence["page_errors"], self.evidence["page_errors"]
+        errors = [msg for msg in self.evidence["worker_console"] if msg["type"] == "error"]
+        assert not errors, errors
+
+
+if __name__ == "__main__":
+    main(check_class=MountingCheck,
+         flows=["existing_middle", "existing_first", "existing_last", "saved_group", "root_middle", "root_first", "root_blank",
+                "root_after_active_group", "saved_group_after_active_group"],
+         names_for_flow=lambda _flow: "XABCYUVZ", evidence_prefix="mounting")
