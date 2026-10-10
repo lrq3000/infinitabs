@@ -63,10 +63,29 @@ their referenced commit to be available locally. Configure the `ARTIFACTS_DIR` a
 `BROWSER_CACHE_DIR` environment variables, or enter their values when prompted.
 Both paths must already exist: artifacts belong in an approved external temporary
 directory; the browser cache contains the approved full Chromium. Later blocks
-reuse these prerequisites and environment variables. No crx build/install or
-personal browser is involved.
+reuse these prerequisites, environment variables, and the helper defined here.
+Positive verification uses one native command per helper call: shell errors and
+nonzero exit codes terminate the block before later checks can mask a failure.
+Negative-proof blocks intentionally retain their explicit expected-exit-1 checks
+instead of using this success-only helper. No crx build/install or personal browser
+is involved.
 
 ```powershell
+function Invoke-CheckedNative {
+    param(
+        [Parameter(Mandatory = $true)][string]$Command,
+        [string[]]$ArgumentList = @()
+    )
+    $ErrorActionPreference = 'Stop' # Fail on shell/command-resolution errors too.
+    $PSNativeCommandUseErrorActionPreference = $false # Check native exits explicitly across PS versions.
+    $nativeCommand = Get-Command -Name $Command -CommandType Application -ErrorAction Stop
+    & $nativeCommand.Source @ArgumentList
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "Native command '$Command' exited with code $exitCode"
+    }
+}
+
 if (-not $env:ARTIFACTS_DIR) {
     $env:ARTIFACTS_DIR = Read-Host 'Existing approved external artifact directory'
 }
@@ -83,15 +102,15 @@ if (-not (Test-Path -LiteralPath 'test/test_group_folder_resolution.js' -PathTyp
     throw 'Run these commands from the owned Infinitabs worktree'
 }
 $env:PLAYWRIGHT_BROWSERS_PATH = $env:BROWSER_CACHE_DIR
-node test/test_group_folder_resolution.js
-node test/test_group_removal_classification.js
-node test/test_group_metadata_interleavings.js
-node test/test_group_lifecycle_fixture.js
-python test/verify_group_lifecycle.py --headless --artifacts-dir "$env:ARTIFACTS_DIR"
-python -m unittest discover -s test -p 'test_*.py'
-python test/verify_move_logical_tabs.py --headless --artifacts-dir "$env:ARTIFACTS_DIR"
-python test/verify_mount_logical_tabs.py --headless --artifacts-dir "$env:ARTIFACTS_DIR"
-python test/verify_active_tab_reload.py --headless --artifacts-dir "$env:ARTIFACTS_DIR"
+Invoke-CheckedNative 'node' @('test/test_group_folder_resolution.js')
+Invoke-CheckedNative 'node' @('test/test_group_removal_classification.js')
+Invoke-CheckedNative 'node' @('test/test_group_metadata_interleavings.js')
+Invoke-CheckedNative 'node' @('test/test_group_lifecycle_fixture.js')
+Invoke-CheckedNative 'python' @('test/verify_group_lifecycle.py', '--headless', '--artifacts-dir', "$env:ARTIFACTS_DIR")
+Invoke-CheckedNative 'python' @('-m', 'unittest', 'discover', '-s', 'test', '-p', 'test_*.py')
+Invoke-CheckedNative 'python' @('test/verify_move_logical_tabs.py', '--headless', '--artifacts-dir', "$env:ARTIFACTS_DIR")
+Invoke-CheckedNative 'python' @('test/verify_mount_logical_tabs.py', '--headless', '--artifacts-dir', "$env:ARTIFACTS_DIR")
+Invoke-CheckedNative 'python' @('test/verify_active_tab_reload.py', '--headless', '--artifacts-dir', "$env:ARTIFACTS_DIR")
 ```
 
 The seven pre-existing Node scripts remain in `.github/workflows/movement-regressions.yml`;
@@ -293,11 +312,11 @@ the actual deferred write condition; no fixed sleep was added to hide disagreeme
 The new script is included in the existing read-only CI Node list:
 
 ```powershell
-node test/test_group_metadata_interleavings.js
+Invoke-CheckedNative 'node' @('test/test_group_metadata_interleavings.js')
 # Optional focused reproduction, using the case name substring:
-node test/test_group_metadata_interleavings.js 'P1'
-node test/test_group_metadata_interleavings.js 'P2'
-node test/test_group_metadata_interleavings.js 'P3'
+Invoke-CheckedNative 'node' @('test/test_group_metadata_interleavings.js', 'P1')
+Invoke-CheckedNative 'node' @('test/test_group_metadata_interleavings.js', 'P2')
+Invoke-CheckedNative 'node' @('test/test_group_metadata_interleavings.js', 'P3')
 ```
 
 ### Revised verification record before the snapshot reduction below
@@ -459,9 +478,9 @@ after the startup correction. Other old test scripts are unchanged.
 Reproduction commands in `WORKTREE`:
 
 ```powershell
-node test/test_group_folder_resolution.js 'startup imports'
+Invoke-CheckedNative 'node' @('test/test_group_folder_resolution.js', 'startup imports')
 $env:GROUP_TEST_BACKGROUND_REF = '0780c87aa61e82d9732cf10aafd0abc5cf40acca'
-try { node test/test_group_folder_resolution.js 'startup imports' }
+try { Invoke-CheckedNative 'node' @('test/test_group_folder_resolution.js', 'startup imports') }
 finally { Remove-Item Env:GROUP_TEST_BACKGROUND_REF }
 
 $env:GROUP_TEST_OLD_INIT_MUTEX = '1'
