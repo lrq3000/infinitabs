@@ -9,6 +9,8 @@ from verify_move_logical_tabs import MovementCheck, main
 
 class GroupLifecycleCheck(MovementCheck):
     def run(self, flow):
+        if flow.startswith('removal_'):
+            return self.removal(flow)
         name = "Amazon.fr : livres, DVD, jeux vidéo, musique, high-tech, informatique, jouets, vêtements, chaussures, sport, bricolage, maison, beauté, puériculture, épicerie et plus encore !"
         title = name + " [blue]"
         before = self.snapshot()
@@ -85,7 +87,88 @@ class GroupLifecycleCheck(MovementCheck):
         errors = [msg for msg in self.evidence["worker_console"] if msg["type"] == "error"]
         assert not errors, errors
 
+    def removal(self, flow):
+        self.group('SC')
+        group_id, folder_id = self.group_id, self.group_bookmark_id
+        self.sidebar.evaluate("id => chrome.tabGroups.update(id, {title: 'Saved destination', color: 'blue'})", group_id)
+        self.wait_until(lambda: self.session()['groups'][folder_id]['title'] == 'Saved destination [blue]', 'group metadata')
+        self.unmount('S')
+        before = self.snapshot()
+        self.sidebar.evaluate('movementEvents.length = 0')
+        record = {'flow': flow, 'before': before}
+        self.evidence['flows'].append(record)
+        if flow == 'removal_move_close':
+            # Additive test-side observer uses actual Chrome APIs. It closes C
+            # on the first selected native move; it does not delay/replace any
+            # production API. Evidence must prove whether the intended race hit.
+            self.sidebar.evaluate("""({selected, closeId, windowId}) => {
+                globalThis.closeDuringMove = {};
+                const listener = (id, info) => {
+                    if (!selected.includes(id)) return;
+                    chrome.tabs.onMoved.removeListener(listener);
+                    closeDuringMove.trigger = {id, info, at: Date.now()};
+                    chrome.tabs.query({windowId}).then(tabs => { closeDuringMove.nativeAtTrigger = tabs; });
+                    chrome.tabs.remove(closeId).then(() => { closeDuringMove.closedAt = Date.now(); });
+                };
+                chrome.tabs.onMoved.addListener(listener);
+            }""", {'selected': [self.live_ids[name] for name in 'AB'], 'closeId': self.live_ids['C'], 'windowId': self.window_id})
+            record['response'] = self.send_message({'type': 'MOVE_LOGICAL_TABS', 'windowId': self.window_id,
+                'logicalIds': [self.logical(name)['logicalId'] for name in 'AB'], 'targetLogicalId': folder_id, 'position': 'inside'})
+            assert record['response'].get('success'), record['response']
+        elif flow == 'removal_ungroup':
+            self.sidebar.evaluate('id => chrome.tabs.ungroup(id)', self.live_ids['C'])
+        elif flow == 'removal_live_only':
+            record['response'] = self.send_message({'type': 'DELETE_MOUNTED_TABS_IN_GROUP', 'windowId': self.window_id, 'groupId': folder_id})
+            assert record['response'].get('success'), record['response']
+        else:
+            self.sidebar.evaluate('id => chrome.tabs.remove(id)', self.live_ids['C'])
+
+        def expected(after):
+            nodes = self.bookmark_nodes(after)
+            logical = {tab['bookmarkId']: tab for tab in after['session']['logicalTabs']}
+            native = {tab['id']: tab for tab in after['native']}
+            if flow == 'removal_ungroup':
+                assert folder_id not in nodes and folder_id not in after['session']['groups']
+                assert native[self.live_ids['C']]['groupId'] == -1
+                for name in 'SC':
+                    assert nodes[self.bookmark_ids[name]]['parentId'] == before['session']['sessionId']
+                    assert logical[self.bookmark_ids[name]]['groupId'] is None
+            else:
+                assert folder_id in nodes and folder_id in after['session']['groups'], 'Original saved folder lost'
+                assert nodes[folder_id]['title'] == 'Saved destination [blue]'
+                assert self.live_ids['C'] not in native
+                names = 'SCAB' if flow == 'removal_move_close' else 'S' if flow == 'removal_live_only' else 'SC'
+                assert [child['id'] for child in nodes[folder_id]['children']] == [self.bookmark_ids[name] for name in names]
+                for name in names:
+                    assert logical[self.bookmark_ids[name]]['groupId'] == folder_id
+                    assert logical[self.bookmark_ids[name]]['liveTabIds'] == ([] if name in 'SC' else [self.live_ids[name]])
+                if flow == 'removal_live_only':
+                    assert self.bookmark_ids['C'] not in nodes and self.bookmark_ids['C'] not in logical
+                if flow == 'removal_move_close':
+                    assert native[self.live_ids['A']]['groupId'] == native[self.live_ids['B']]['groupId'] != -1
+                    record['close_during_move'] = self.sidebar.evaluate('closeDuringMove')
+                    assert record['close_during_move'].get('closedAt'), 'Native closure did not run'
+                    at_trigger = {tab['id']: tab for tab in record['close_during_move']['nativeAtTrigger']}
+                    assert all(at_trigger[self.live_ids[name]]['groupId'] == -1 for name in 'AB'), 'A/B must not yet be native G members'
+                    assert at_trigger[self.live_ids['C']]['groupId'] == group_id, 'C must still be native G at the trigger'
+                    assert any(event['type'] == 'group-removed' and event['detail']['id'] == group_id
+                               for event in self.sidebar.evaluate('movementEvents')), 'C was not the last native group member when closed'
+            for name in 'ABD':
+                assert logical[self.bookmark_ids[name]]['liveTabIds'] == [self.live_ids[name]]
+                assert self.live_ids[name] in native
+
+        try:
+            self.observe_expected_state(expected, record, observe_ms=2500, quiet_ms=1500)
+        finally:
+            if flow == 'removal_move_close':
+                record['close_during_move'] = self.sidebar.evaluate('closeDuringMove')
+            self.sidebar.screenshot(path=str(self.artifacts / 'group-removal.png'))
+        assert not self.evidence['page_errors'], self.evidence['page_errors']
+        errors = [msg for msg in self.evidence['worker_console'] if msg['type'] == 'error']
+        assert not errors, errors
+
 
 if __name__ == "__main__":
-    main(check_class=GroupLifecycleCheck, flows=["native_background", "metadata_recreation", "ambiguous", "same_name"],
-         names_for_flow=lambda _flow: "AB", evidence_prefix="group-lifecycle")
+    main(check_class=GroupLifecycleCheck, flows=["native_background", "metadata_recreation", "ambiguous", "same_name",
+         "removal_move_close", "removal_close", "removal_ungroup", "removal_live_only"],
+         names_for_flow=lambda flow: "ABSCD" if flow.startswith('removal_') else "AB", evidence_prefix="group-lifecycle")

@@ -63,6 +63,7 @@ Python Playwright 1.59.0. No crx build/install or personal browser is involved.
 
 ```powershell
 node test/test_group_folder_resolution.js
+node test/test_group_removal_classification.js
 $env:PLAYWRIGHT_BROWSERS_PATH = 'BROWSER_CACHE_DIR'
 python test/verify_group_lifecycle.py --headless --artifacts-dir 'ARTIFACTS_DIR'
 python -m unittest discover -s test -p 'test_*.py'
@@ -94,3 +95,44 @@ different contents); they do not claim to automate the browser's Ctrl+Shift+T UI
 Exact held API scheduling, failure injection, disappearance and startup concurrency
 are deterministic Node models using actual production listeners, not browser proof
 of that exact schedule. Browser profiles/evidence stay under `ARTIFACTS_DIR`.
+
+## Inherited removal classifier: separately committed fix
+
+The unchanged base removal handler was reproduced before this fix (on the
+creation/reuse commit `f78eb98`). Both the Node listener model and real Chromium
+lost G when `MOVE_LOGICAL_TABS` had already logically assigned A/B to G(S,C), but
+A/B remained natively ungrouped and C, the last native member, closed.
+
+The classifier now captures unowned logical live IDs at event receipt, reads
+actual native tabs once, and only interprets surviving **ungrouped** candidates
+as Ungroup. Dead IDs, tabs already transferred to another native group and
+operation-owned A/B do not qualify. The primary binding is removed for the old
+group; a still-alive native group or a new binding to the saved folder protects
+that folder. Empty logical groups retain the existing LiveOnly preservation rule.
+
+The same existing `syncingLiveTabIds` guard now begins **before logical bookmark
+writes**, and releases in `finally` after the logical/native move phase. A focused
+test proved why this boundary matters: closing C during the first native tab read
+still flattened G if ownership only began afterward. No native-member index,
+new persistent tracking or general transaction architecture is introduced.
+
+Ten Node cases check the immediate/held/pre-native-read closure windows, normal
+Close with reversed callback ordering, genuine Ungroup, LiveOnly saved/empty
+folder preservation, stale removal of a still-alive group, native transfer, and
+guard cleanup after a failed logical bookmark write. Existing movement tests
+continue to cover native failure, late feedback, surviving/closing tabs and
+immediate genuine native drags after a logical move.
+
+The Chromium `removal_move_close` case uses an additive test-side native movement
+observer to call `chrome.tabs.remove(C)` during the public move. It does not
+replace any production API/listener. Evidence asserts A/B's native `groupId` was
+still `-1`, C was in G at the trigger, and G's native removal actually occurred.
+It failed before the classifier fix and passed afterward with the same saved
+folder/children and a newly formed native group for A/B. Separate native Close,
+Ungroup and LiveOnly cases also verify saved/native/logical structure.
+
+Limits: native queries are asynchronous snapshots, not a maintained record of
+every past native group membership. The classification is for the observed
+current facts and existing operation ownership. Precisely held API reads and
+the pre-native-read closure boundary remain modeled schedules; the actual
+native-move closure ordering above was observed in Chromium.

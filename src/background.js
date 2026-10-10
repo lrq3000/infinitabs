@@ -1216,11 +1216,31 @@ chrome.tabGroups.onRemoved.addListener(async (group) => {
         const session = state.sessionsById[sessionId];
         if (!session) return; // Should be loaded if sessionId exists
 
-        // Distinguish between "Group Closed" (tabs closed) and "Group Ungrouped" (tabs moved out/ungrouped).
-        // - "Closed": Tabs are dead. We want to PERSIST the logical group (folder).
-        // - "Ungrouped": Tabs are alive. We want to DISSOLVE the logical group (flatten tabs).
-
+        // Logical membership can lead native membership: MOVE_LOGICAL_TABS has
+        // already assigned A/B to this folder while still moving their live tabs.
+        // Capture ownership NOW, before reads yield and the scoped move finishes.
+        // Only genuine, surviving, ungrouped native tabs can imply Ungroup. Dead
+        // IDs, transfers to another group, and operation-owned IDs imply no such
+        // intent. This temporary Set is built only for this removal event.
+        const unownedTabIds = new Set();
+        for (const logical of session.logicalTabs) {
+            if (logical.groupId !== bookmarkId) continue;
+            for (const id of logical.liveTabIds) {
+                if (!state.syncingLiveTabIds.has(id)) unownedTabIds.add(id);
+            }
+        }
+        const nativeTabs = await chrome.tabs.query({ windowId: group.windowId });
+        if (nativeTabs.some(tab => tab.groupId === group.id)) {
+            // Stale removal feedback for a group which still exists must not
+            // dissolve its folder or lose the primary binding cleared above.
+            if (!state.liveGroupToBookmark[group.id]) state.liveGroupToBookmark[group.id] = bookmarkId;
+            return;
+        }
         const children = await chrome.bookmarks.getChildren(bookmarkId);
+        // A restore/move can have rebound this folder while browser reads were
+        // pending. Its new native group owns it; old removal cannot flatten it.
+        if (state.windowToSession[group.windowId] !== sessionId ||
+            Object.values(state.liveGroupToBookmark).includes(bookmarkId)) return;
 
         // 1. If folder is empty, only delete it if the logical group no longer exists.
         //    When handleDeleteMountedTabsInGroup removes all mounted tabs from a group
@@ -1232,15 +1252,11 @@ chrome.tabGroups.onRemoved.addListener(async (group) => {
                 await chrome.bookmarks.remove(bookmarkId);
             }
         } else {
-            // 2. Check if this is an "Ungroup" operation.
-            // If any logical tab *currently in this group* has live tabs, it means the user likely ungrouped them
-            // (or dragged them out, triggering this removal).
-            // Note: If tabs were closed, onRemoved(tab) would have fired and cleared liveTabIds.
+            // 2. Closing the last native member preserves all saved history even
+            // if tabs.onRemoved has not cleared that member's logical ID yet.
+            const wasUngrouped = nativeTabs.some(tab => tab.groupId === -1 && unownedTabIds.has(tab.id));
 
-            const tabsInGroup = session.logicalTabs.filter(t => t.groupId === bookmarkId);
-            const hasLiveTabs = tabsInGroup.some(t => t.liveTabIds.length > 0);
-
-            if (hasLiveTabs) {
+            if (wasUngrouped) {
                 // Ungroup detected: Move children out and delete folder.
                 const groupNode = await chrome.bookmarks.get(bookmarkId);
                 const parentId = groupNode[0].parentId;
@@ -2379,6 +2395,19 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
         }
     }
 
+    // Ownership starts before logical membership changes, not after the first
+    // native read. A closing destination member can remove its native group in
+    // that gap too; A/B's new logical parent must not masquerade as Ungroup.
+    const syncingTabIds = logicalIds.flatMap(id => logicalTabsById.get(id)?.liveTabIds || []);
+    syncingTabIds.forEach(id => state.syncingLiveTabIds.add(id));
+    try {
+        await moveBookmarksAndLiveTabs(windowId, sessionId, bookmarksToMove, parentId, index);
+    } finally {
+        syncingTabIds.forEach(id => state.syncingLiveTabIds.delete(id));
+    }
+}
+
+async function moveBookmarksAndLiveTabs(windowId, sessionId, bookmarksToMove, parentId, index) {
     // Insert backwards at one boundary, then use the actual resulting index as
     // the next boundary. Chrome adjusts bookmark indices when removing a sibling
     // before the destination; incrementing a stale index splits forward moves.
@@ -2432,10 +2461,6 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
                 liveTabsToMove.map(tid => chrome.tabs.get(tid).catch(() => null))
             );
             const validTabs = currentLiveTabs.filter(t => t && t.windowId === windowId);
-
-            // Suppress only these tabs' programmatic move/group feedback for the
-            // duration of native synchronization, rather than a two-second timer.
-            validTabs.forEach(t => state.syncingLiveTabIds.add(t.id));
 
             try {
                 const relevantIds = new Set([...anchorIds, ...validTabs.map(tab => tab.id)]);
@@ -2504,8 +2529,6 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
                 }
             } catch (e) {
                 console.warn("Failed to sync live tabs order", e);
-            } finally {
-                validTabs.forEach(t => state.syncingLiveTabIds.delete(t.id));
             }
         }
     }
