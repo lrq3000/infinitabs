@@ -399,6 +399,10 @@ class BookmarkUpdate {
                     // that may have arrived while this API call was in flight.
                     this.logical.lastSavedTitle = title;
                     this.logical.lastSavedUrl = url;
+                    // A write can predate a subtree read but complete during it.
+                    // Version the exact ACK too, so the old tree cannot roll back
+                    // primary metadata after this pending job has been removed.
+                    this.logical.metadataVersion = ++bookmarkMetadataVersion;
                 } catch (err) {
                     console.error("Failed to update bookmark", err);
                 }
@@ -643,11 +647,9 @@ async function bindWindowToSession(windowId, sessionId) {
 }
 
 async function reloadSessionAndPreserveState(sessionId, windowId) {
+    // Events AND successful write ACKs advance this scalar; no snapshot of
+    // unrelated pending jobs is needed to recognize metadata newer than this read.
     const metadataVersionAtStart = bookmarkMetadataVersion;
-    // Only pending writes need a start-of-read snapshot. One may finish while
-    // getSubTree is in flight yet its returned tree still predates that write.
-    // This O(P) temporary snapshot is not a maintained index or a join rewrite.
-    const pendingUpdates = { ...bookmarkUpdateTimers };
     const reloadedSession = await loadSessionFromBookmarks(sessionId);
     reloadedSession.windowId = windowId;
 
@@ -660,7 +662,7 @@ async function reloadSessionAndPreserveState(sessionId, windowId) {
         reloadedSession.logicalTabs.forEach(newLt => {
             const oldLt = latestSessionState.logicalTabs.find(old => old.bookmarkId === newLt.bookmarkId);
             if (oldLt) {
-                const update = bookmarkUpdateTimers[newLt.bookmarkId] || pendingUpdates[newLt.bookmarkId];
+                const update = bookmarkUpdateTimers[newLt.bookmarkId];
                 if (update || oldLt.metadataVersion > metadataVersionAtStart ||
                     oldLt.title !== oldLt.lastSavedTitle || oldLt.url !== oldLt.lastSavedUrl) {
                     // Bookmark structure is authoritative, but a debounced/native
@@ -671,6 +673,8 @@ async function reloadSessionAndPreserveState(sessionId, windowId) {
                     }
                 }
                 if (update) update.logical = newLt;
+                // Carry revision evidence even through a clean newer reload:
+                // an overlapping older read may still be waiting to return.
                 newLt.metadataVersion = oldLt.metadataVersion;
                 newLt.liveTabIds = oldLt.liveTabIds;
                 oldIdToNewId[oldLt.logicalId] = newLt.logicalId;

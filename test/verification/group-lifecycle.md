@@ -236,7 +236,7 @@ that read: no job existed at either boundary. A monotonic metadata-write revisio
 on the primary record now identifies that newer metadata without keeping completed
 jobs around. Clean saved-only bookmark edits are still adopted from the tree.
 
-### Cost and no-index audit
+### Cost and no-index audit before the snapshot reduction below
 
 - No name/color/URL/reverse lookup index, folder-content matcher, invalidation hook,
   or periodic maintenance was added. Known live-group mappings still bypass rare
@@ -278,7 +278,7 @@ node test/test_group_metadata_interleavings.js 'P2'
 node test/test_group_metadata_interleavings.js 'P3'
 ```
 
-### Revised verification record
+### Revised verification record before the snapshot reduction below
 
 Production/test fix commit: `bc239f71964e3baad11abe073d1a77faf4dba4b6`.
 These results supersede the earlier metadata-blind lifecycle result. They are
@@ -318,3 +318,90 @@ closed-tab history, startup/coalescing, mapped fast paths, removal classificatio
 and movement feedback remain covered. Exact held-API metadata interleavings are
 Node models; real Chromium supplies the strengthened native/logical/persisted
 agreement evidence. No production backdoor or test-only listener was added.
+
+## Snapshot reduction from spec-approved `bf0c8f6`
+
+The O(P) copy of all pending jobs at every reload has been removed. The existing
+primary metadata revision now advances on a successful exact-payload write ACK
+as well as on a metadata change. A write already pending before a subtree read
+therefore leaves revision evidence when it finishes during that read, even after
+its job is deleted. The existing unconditional revision propagation is retained
+through clean reloads, so a newer completed reload cannot erase evidence needed
+by an overlapping older read. The original nested `find` join is unchanged.
+
+### Correctness proof before accepting the reduction
+
+Three focused listener regressions were added to the existing metadata suite:
+
+- A bookmark write is explicitly held **before** a subtree read; the read captures
+  verified old URL/title; the write finishes during that read, with no new native
+  navigation; the old read must retain the current native/logical/saved metadata.
+- The same ordering, but a newer reload completes with saved new data before the
+  old read returns. The test verifies replacement of the primary logical record
+  and then rechecks agreement after the old read returns.
+- An older payload succeeds while the logical record has newer values. Its ACK
+  must record the older written values, including across reload; the newer values
+  still require a separate write and must ultimately agree in all representations.
+
+Controlled comparisons, with all temporary mutations removed before final checks:
+
+| Implementation under test | Result |
+| --- | --- |
+| Original `bf0c8f6` with new ACK cases | All three pass |
+| Remove registry snapshot, omit successful-ACK revision | Held-read and overlapping-read cases fail with stale logical URL |
+| Advance ACK revision, retain unconditional propagation | All three pass |
+| Retain ACK revision, omit propagation through reload | Overlapping-read case fails with stale logical URL |
+| Final code with both guards | All eleven metadata cases pass, including the original eight |
+
+Commands: `node test/test_group_metadata_interleavings.js ACK`, focused name
+substring `"ACK pending before"` or `"ACK pending before overlapping"` during the
+guard comparisons, then the complete three group/metadata scripts and baseline
+commands documented above. These are API-gated correctness tests, not timing
+benchmarks; no grace timer, listener, index or completed-job cache was added.
+
+### Exact current cost
+
+- **Changed metadata event:** unchanged from the approved fix: existing O(N)
+  primary-record search, then O(1) revision increment/assignment and pending-timer
+  bookkeeping. This reduction adds no work to that path.
+- **Successful bookmark write:** one additional scalar increment and one primary
+  record assignment, O(1). Exact `lastSaved*` payload acknowledgement is unchanged.
+  Failed or skipped writes do not advance the ACK revision.
+- **Reload start:** one scalar read, O(1) time and additional space. No pending-job
+  enumeration or cross-session copy. The existing loop still has O(1) metadata
+  checks/copies per matched record; total join complexity remains O(N²), with its
+  pre-existing session/ID-remapping allocations. This is not a zero-cost reload.
+- The existing registry still owns O(P) actually pending jobs; this change removes
+  the **additional per-reload O(P) snapshot**, not the required debounce queue.
+  Primary fields/counter are reused; there are no additional maintained structures.
+  Rare folder matching and known-mapping fast paths are unchanged.
+
+### Final-source verification and fingerprints
+
+| Check | Result | Runtime | Evidence under `ARTIFACTS_DIR` |
+| --- | --- | --- | --- |
+| Focused Node suites | 11 metadata + 17 resolution + 10 classifier cases pass | 57.3s | Console output |
+| Baseline Node + Python | 7 scripts + 20 Python tests pass | 17.2s | Console output |
+| Strengthened lifecycle browser checks | 8/8 pass | 102.0s | `group-lifecycle-evidence-24oy8gsh` |
+| Movement browser preservation | 10/10 pass | 171.2s | `movement-evidence-2akog5m9` |
+| Mount browser preservation | 9/9 pass | 193.4s | `mounting-evidence-os33zpw7` |
+| Active-state browser preservation | 3/3 pass | 9.4s | `pr40-evidence-kt6fbqh7` |
+
+All browser suites ran once on this final source using the existing isolated
+Playwright 1.59.0 / full Chromium 147.0.7727.15 runners. Metadata URL/title/exact
+save-acknowledgement assertions and event-quiet observation were retained.
+
+Changed SHA-256 fingerprints:
+
+- `src/background.js`: `c8dcb439f399f3703d3622997b1e3a736e4e78fc34d417e2be068ff674621561`
+- `test/test_group_metadata_interleavings.js`: `a7671696c8966a3587e580cc328c15fd100267026c15fc54b2bb55aee9f2d06e`
+
+Fixture and Python script fingerprints are unchanged from the preceding table;
+they were independently checked on disk and against the final browser evidence.
+`git diff --check` passes. All changes stay in the owned worktree.
+
+Limit: no separately named `lastNative`/cache-clear stress script was present in
+the owned checkout or approved artifact directory, so execution of those external
+probes is not claimed. Existing last-native closure/classifier/movement cases pass.
+The exact held-read/ACK orderings above are modeled API schedules; browser suites
+provide actual native/logical/bookmark agreement and preservation evidence.

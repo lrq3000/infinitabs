@@ -37,7 +37,7 @@ class MetadataFixture extends Fixture {
 }
 
 async function main() {
-    const f = await new MetadataFixture().prepare(8);
+    const f = await new MetadataFixture().prepare(11);
     await f.start();
     const failures = [];
     async function check(name, run) {
@@ -197,6 +197,85 @@ async function main() {
             await f.agreement(tab, bookmarkId);
         } finally { release.release(); }
         await reloading;
+        await f.agreement(tab, bookmarkId);
+    });
+    for (const overlapping of [false, true]) await check(`ACK pending before ${overlapping ? 'overlapping reads' : 'held read'} survives completion without new navigation`, async () => {
+        const windowId = overlapping ? 10 : 9;
+        const group = f.addGroup(windowId), tab = await f.createTab(windowId, group.id);
+        const initial = await f.logical(tab), bookmarkId = initial.bookmarkId;
+        const writeRelease = Fixture.gate(), readRelease = Fixture.gate();
+        let writeEntered = false, readEntered = false, olderRead;
+        f.hooks.update = async ({ id }) => {
+            if (id !== bookmarkId) return;
+            delete f.hooks.update;
+            writeEntered = true;
+            await writeRelease.promise;
+        };
+        try {
+            await f.update(tab, { url: `https://example.test/ack-${windowId}`, title: 'Already pending before read' });
+            await Fixture.until(() => writeEntered, 'write is in flight BEFORE the subtree read');
+            f.hooks.aftergetSubTree = async ({ id, snapshot }) => {
+                if (id !== f.sessions.get(windowId)) return;
+                delete f.hooks.aftergetSubTree;
+                const folder = snapshot[0].children.find(node => node.id === initial.groupId);
+                const saved = folder.children.find(node => node.id === bookmarkId);
+                assert.equal(saved.url, initial.url, 'Held tree must actually contain the pre-write URL');
+                assert.equal(saved.title, initial.title, 'Held tree must actually contain the pre-write title');
+                readEntered = true;
+                await readRelease.promise;
+            };
+            olderRead = f.rename(group, 'Older held read');
+            await Fixture.until(() => readEntered, 'older subtree captured before the write completes');
+            // No further navigation occurs: only the exact-payload write ACK can
+            // distinguish newer primary metadata from the captured old subtree.
+            writeRelease.release();
+            await f.persisted(bookmarkId, tab);
+            await f.agreement(tab, bookmarkId);
+            if (overlapping) {
+                const beforeNewRead = await f.logical(tab);
+                await f.rename(group, 'Newer completed read');
+                const afterNewRead = await f.logical(tab);
+                assert.notEqual(afterNewRead.logicalId, beforeNewRead.logicalId, 'Newer read must replace the primary record');
+                await f.agreement(tab, bookmarkId);
+            }
+        } finally { writeRelease.release(); readRelease.release(); }
+        if (olderRead) await olderRead;
+        await f.agreement(tab, bookmarkId);
+        assert.equal((await f.logical(tab)).groupId, initial.groupId);
+    });
+
+    await check('ACK of older payload never acknowledges newer logical metadata as saved', async () => {
+        const group = f.addGroup(11), tab = await f.createTab(11, group.id);
+        const bookmarkId = (await f.logical(tab)).bookmarkId;
+        const older = { url: 'https://example.test/exact-ack-older', title: 'Written older payload' };
+        const newer = { url: 'https://example.test/exact-ack-newer', title: 'Newer logical payload' };
+        const olderRelease = Fixture.gate(), newerRelease = Fixture.gate();
+        let olderEntered = false, newerEntered = false;
+        f.hooks.update = async ({ id, data }) => {
+            if (id !== bookmarkId) return;
+            if (data.url === older.url) { olderEntered = true; await olderRelease.promise; }
+            if (data.url === newer.url) { newerEntered = true; await newerRelease.promise; }
+        };
+        try {
+            await f.update(tab, older);
+            await Fixture.until(() => olderEntered, 'older payload submitted to bookmark API');
+            await f.update(tab, newer);
+            olderRelease.release();
+            await f.persisted(bookmarkId, older);
+            const current = await f.logical(tab);
+            assert.equal(current.url, newer.url);
+            assert.equal(current.title, newer.title);
+            assert.equal(current.lastSavedUrl, older.url, 'ACK must name the URL actually written');
+            assert.equal(current.lastSavedTitle, older.title, 'ACK must name the title actually written');
+            await Fixture.until(() => newerEntered, 'newer payload must still need a write after older ACK');
+            await f.rename(group, 'Reload between acknowledgements');
+            const reloaded = await f.logical(tab);
+            assert.equal(reloaded.url, newer.url);
+            assert.equal(reloaded.title, newer.title);
+            assert.equal(reloaded.lastSavedUrl, older.url);
+            assert.equal(reloaded.lastSavedTitle, older.title);
+        } finally { olderRelease.release(); newerRelease.release(); }
+        await f.persisted(bookmarkId, newer);
         await f.agreement(tab, bookmarkId);
     });
     assert.deepEqual(failures, [], 'Spec-review metadata interleavings');
