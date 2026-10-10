@@ -136,3 +136,71 @@ every past native group membership. The classification is for the observed
 current facts and existing operation ownership. Precisely held API reads and
 the pre-native-read closure boundary remain modeled schedules; the actual
 native-move closure ordering above was observed in Chromium.
+
+## Final local validation record
+
+Production changes: `f78eb98` (creation/reuse) and `03d51f1` (classifier and full
+operation ownership). All final runs below use identical production bytes,
+Python Playwright **1.59.0**, full Chromium **147.0.7727.15**, headless disposable
+profiles, and extension ID `dnemhhcolpnebjamkkefbdmmplgfeaif` for this worktree.
+
+| Check | Result | Command runtime | Evidence under `ARTIFACTS_DIR` |
+| --- | --- | --- | --- |
+| Seven existing + two new Node scripts; Python unittest discovery | 9 scripts; 20 Python tests passed (new scripts: 17 resolution + 10 classifier cases) | 40.9s combined | Console output; intentional injected-failure diagnostics retained |
+| `verify_group_lifecycle.py` | 8 flows passed | 101.9s | `group-lifecycle-evidence-2qh_nb99` |
+| `verify_move_logical_tabs.py` | 10 flows passed | 172.6s | `movement-evidence-svirheuu` |
+| `verify_mount_logical_tabs.py` | 9 flows passed | 194.4s | `mounting-evidence-xh5ueshg` |
+| `verify_active_tab_reload.py` | 3 flows passed | 8.2s | `pr40-evidence-mq0z8z1_` |
+
+Browser failures before fixes:
+
+- `group-lifecycle-evidence-awlrj2cu/metadata_recreation/evidence.json`: exact
+  `0780c87` production; three same-title folders instead of one.
+- `group-lifecycle-evidence-_uartjyt/removal_move_close/evidence.json`: creation
+  milestone, unchanged inherited classifier; original saved folder deleted.
+
+Each final browser directory contains `evidence.json` (per flow except the active
+runner), screenshots, worker/page diagnostics, native event snapshots and source
+fingerprints. Source/script SHA-256 values:
+
+| File | SHA-256 |
+| --- | --- |
+| `src/background.js` | `7230ff089247aa96624171d5f1de3c2d7116dca97aee71e6c1b46feac3631da6` |
+| `test/verify_group_lifecycle.py` | `5f7ea2c35a403fbaa976d7022ae0cda54b059cec0bb9925723833b81359e3c07` |
+| `test/verify_move_logical_tabs.py` | `7a86c5c16a5977eed197aa326dc2667c0ef3fd64dd65477f7563bd459bb18e27` |
+| `test/verify_mount_logical_tabs.py` | `42a169695b52098367961f5c32266d6fbcc722b0ddec0c1b18d532baaed331f5` |
+| `test/verify_active_tab_reload.py` | `cd980aced1f761b89ba2149c93bbdc26da121d6daf78a7e306153bcc7845685d` |
+
+The full source-file fingerprint set is in the movement/mount/lifecycle evidence.
+The inherited Node ESM package warning remains; injected failures intentionally
+exercise existing console diagnostics. No browser page/worker errors occurred in
+the final flows. `git diff --check` passed.
+
+### Shared runner cleanup
+
+Two earlier successful assertion runs exited on Windows `WinError 145` while
+deleting a temporary `GPUCache`/`ShaderCache` after `context.close()`. The existing
+runner now shares `ChromiumProfile`, a `TemporaryDirectory` subclass with at most
+ten cleanup attempts (100ms apart), only for transient Windows errors 5/32/145.
+Persistent/unrelated errors still fail. This only cleans the profile that the
+runner itself allocated; it never enumerates or touches personal profiles. Final
+runs above all exited zero, including cleanup. This test-infrastructure change is
+separate from both production milestones.
+
+### Self-review
+
+- Single production file; no manifest, permissions, dependencies or reload-join
+  optimization changes. No source-branch merge, history rewrite, or discarded tests.
+- Known mapped paths precede resolution; a regression makes root metadata and
+  native group lookup throw if that path tries to use them, then checks preserved
+  group and tab identities.
+- Temporary metadata/removal sets are operation-local. The only lifetime change
+  to existing shared state is keeping the pending promise alive through its work
+  and extending the existing move guard across the logical phase.
+- Title/color reuse is explicitly content-independent; unique empty folders and
+  ambiguous/mapped collisions are covered. Main's unrelated URL-based tab sync
+  is unchanged, and is not a new folder content matcher.
+- Browser race observations exceed the rename debounce. Deterministic model-only
+  scheduling and the untested Ctrl+Shift+T UI are labeled above.
+- Existing read-only CI runs the added scripts through the same runner/observer;
+  all new test sources are committed, with runtime evidence outside Git.

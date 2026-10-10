@@ -18,7 +18,7 @@ from threading import Thread
 from urllib.parse import urlparse
 
 from playwright.sync_api import expect, sync_playwright
-from verify_active_tab_reload import ActiveTabReloadCheck, FixtureHandler
+from verify_active_tab_reload import ActiveTabReloadCheck, ChromiumProfile, FixtureHandler
 
 
 class MovementCheck(ActiveTabReloadCheck):
@@ -355,7 +355,7 @@ def main(check_class=MovementCheck, flows=None, names_for_flow=None, evidence_pr
                 faulthandler.dump_traceback_later(60, repeat=False)
                 folder = artifacts / flow
                 folder.mkdir()
-                with tempfile.TemporaryDirectory(prefix="movement-profile-", dir=args.artifacts_dir) as profile:
+                with ChromiumProfile(prefix="movement-profile-", dir=args.artifacts_dir) as profile:
                     context = playwright.chromium.launch_persistent_context(profile, headless=args.headless, channel="chromium",
                         viewport={"width": 1100, "height": 800}, ignore_default_args=["--disable-extensions"],
                         args=[f"--disable-extensions-except={extension}", f"--load-extension={extension}"])

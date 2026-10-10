@@ -21,6 +21,20 @@ from urllib.parse import urlparse
 from playwright.sync_api import expect, sync_playwright
 
 
+class ChromiumProfile(tempfile.TemporaryDirectory):
+    def cleanup(self):
+        # Windows can briefly retain/write GPU cache files after context.close().
+        # Retry only transient Windows filesystem errors on this owned profile;
+        # never hide persistent cleanup errors or touch other browser profiles.
+        for attempt in range(10):
+            try:
+                return super().cleanup()
+            except OSError as error:
+                if getattr(error, 'winerror', None) not in (5, 32, 145) or attempt == 9:
+                    raise
+                time.sleep(0.1)
+
+
 class FixtureHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         title = "PR40 inactive tab" if "?inactive" in self.path else "PR40 active tab"
@@ -319,7 +333,7 @@ def main():
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        with tempfile.TemporaryDirectory(prefix="pr40-profile-", dir=args.artifacts_dir) as profile:
+        with ChromiumProfile(prefix="pr40-profile-", dir=args.artifacts_dir) as profile:
             with sync_playwright() as playwright:
                 context = playwright.chromium.launch_persistent_context(
                     profile, headless=args.headless, channel="chromium", viewport={"width": 1100, "height": 800},
