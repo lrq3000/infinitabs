@@ -5,14 +5,40 @@
 const assert = require('node:assert/strict');
 const { GroupLifecycleFixture: Fixture } = require('./group_lifecycle_fixture.js');
 
+let completedCases = 0;
+const timeoutMs = Number(process.env.GROUP_RESOLUTION_TIMEOUT_MS || 120000);
+assert.ok(Number.isFinite(timeoutMs) && timeoutMs > 0, 'Watchdog timeout must be positive');
+// Intentionally referenced: an unresolved init/mutex promise alone does not keep
+// Node alive. The suite must not silently exit zero before executing any cases.
+const watchdog = setTimeout(() => {
+    console.error(`FAIL group resolution watchdog: suite unfinished; completedCases=${completedCases}`);
+    process.exit(1);
+}, timeoutMs);
+
+function probeBackgroundSource() {
+    const ref = process.env.GROUP_TEST_BACKGROUND_REF;
+    const oldMutex = process.env.GROUP_TEST_OLD_INIT_MUTEX === '1';
+    if (!ref && !oldMutex) return;
+    const path = require('node:path');
+    const source = ref ? require('node:child_process').execFileSync('git', ['show', `${ref}:src/background.js`],
+        { cwd: path.resolve(__dirname, '..'), encoding: 'utf8' }) :
+        require('node:fs').readFileSync(path.resolve(__dirname, '../src/background.js'), 'utf8');
+    if (!oldMutex) return source;
+    const current = '    if (!state.initialized) await init();\n    moveMutex.run(async () => {';
+    assert.equal(source.split(current).length, 2, 'Negative probe must find exactly the native-move init boundary');
+    return source.replace(current, '    moveMutex.run(async () => {\n        if (!state.initialized) await init();');
+}
+
 async function main() {
     const f = await new Fixture().prepare();
     const failures = [];
+    let selectedCases = 0;
     async function check(name, run) {
         if (process.argv[2] && !name.includes(process.argv[2])) return;
+        selectedCases++;
         try { await run(); console.log(`PASS ${name}`); }
         catch (error) { failures.push(`${name}: ${error.stack}`); }
-        finally { f.hooks = {}; }
+        finally { completedCases++; f.hooks = {}; }
     }
     const longName = 'Amazon.fr : livres, DVD, jeux vidéo, musique, high-tech, informatique, jouets, vêtements, chaussures, sport, bricolage, maison, beauté, puériculture, épicerie et plus encore !';
     const startupFolder = await f.folder(1, `${longName} [cyan]`, ['https://example.test/history']);
@@ -20,12 +46,67 @@ async function main() {
     const startupTab = f.addTab(1, startupGroup.id);
     // More existing groups must not introduce sequential one-second debounces.
     for (let i = 2; i <= 4; i++) f.addTab(1, f.addGroup(1, `Other ${i}`).id);
+    const startupCases = [];
+    for (const [windowId, duplicate] of [[18, true], [19, false]]) {
+        const groups = ['First', 'Middle', 'Last'].map((name, index) => f.addGroup(windowId, name, ['red', 'blue', 'green'][index]));
+        const tabs = groups.map((group, index) => f.addTab(windowId, group.id, {
+            title: group.title, url: `https://example.test/import/${duplicate && index === 2 ? 0 : index}`, active: index === 0
+        }));
+        startupCases.push({ windowId, duplicate, groups, tabs });
+    }
+    // Reused folders retain saved order even when the native strip orders them
+    // differently. Their saved-only histories intentionally differ from live URLs.
+    const reusedGroups = ['First', 'Middle', 'Last'].map(name => f.addGroup(20, name));
+    const reusedFolders = [];
+    for (const index of [2, 0, 1]) reusedFolders.push(await f.folder(20,
+        `${reusedGroups[index].title} [blue]`, [`https://example.test/history/${index}`]));
+    const reusedTabs = reusedGroups.map((group, index) => f.addTab(20, group.id, { url: `https://example.test/reused-import/${index}` }));
     const started = Date.now();
-    await f.start(() => f.listeners['tabs.onMoved'](startupTab.id, { windowId: 1, fromIndex: 0, toIndex: 0 }));
+    await f.start(() => f.listeners['tabs.onMoved'](startupTab.id, { windowId: 1, fromIndex: 0, toIndex: 0 }), probeBackgroundSource());
+    const importReads = new Map(startupCases.map(({ windowId, groups }) => [windowId, {
+        subTrees: f.reads.subTrees.get(f.sessions.get(windowId)), nativeQueries: f.reads.tabs.get(windowId),
+        groupReads: groups.reduce((sum, group) => sum + (f.reads.groups.get(group.id) || 0), 0)
+    }]));
     await check('startup reuses unique metadata despite different contents without serial debounce', async () => {
         assert.equal((await f.logical(startupTab)).groupId, startupFolder.id);
         assert.ok(Date.now() - started < 2000, 'Existing-group startup must not wait 1s per group');
         assert.equal((await f.folders(1)).length, 4);
+    });
+
+    for (const { windowId, duplicate, groups, tabs } of startupCases) await check(
+        `startup imports ${duplicate ? 'duplicate' : 'distinct'} URLs with distinct bindings, full coverage and native order`, async () => {
+            const session = await f.session(windowId), folders = await f.folders(windowId);
+            console.log(`Startup ${duplicate ? 'duplicate' : 'distinct'} API reads: ${JSON.stringify(importReads.get(windowId))}`);
+            assert.equal(folders.length, 3, 'Three native groups require three separate saved folders');
+            assert.equal(session.logicalTabs.length, 3, 'Every imported native tab needs its own bookmark');
+            assert.deepEqual(session.logicalTabs.flatMap(tab => tab.liveTabIds).sort((a, b) => a - b),
+                tabs.map(tab => tab.id).sort((a, b) => a - b), 'Every native tab is attached exactly once');
+            assert.deepEqual(folders.map(folder => folder.title), groups.map(group => `${group.title} [${group.color}]`), 'Folder order follows native group order');
+            assert.deepEqual(session.logicalTabs.map(tab => tab.liveTabIds), tabs.map(tab => [tab.id]), 'Logical order follows native order');
+            assert.deepEqual((await chrome.tabs.query({ windowId })).map(tab => tab.id), tabs.map(tab => tab.id));
+            for (const [index, tab] of tabs.entries()) {
+                const logical = await f.logical(tab);
+                assert.equal(logical.groupId, folders[index].id);
+                assert.equal(logical.url, tab.url);
+                assert.deepEqual((await chrome.bookmarks.getChildren(folders[index].id)).map(node => node.id), [logical.bookmarkId]);
+            }
+            assert.equal(importReads.get(windowId).subTrees, 2, 'Only initial load and one final reload, never one subtree per imported group');
+            assert.equal(importReads.get(windowId).nativeQueries, 2, 'One native import snapshot and one active-tab query');
+            assert.equal(session.lastActiveLogicalTabId, (await f.logical(tabs[0])).logicalId);
+        });
+
+    await check('startup reused folders retain saved order and original histories', async () => {
+        assert.deepEqual((await f.folders(20)).map(folder => folder.id), reusedFolders.map(folder => folder.id));
+        for (const [index, tab] of reusedTabs.entries()) {
+            const logical = await f.logical(tab);
+            const folder = reusedFolders.find(folder => folder.title === `${reusedGroups[index].title} [blue]`);
+            assert.equal(logical.groupId, folder.id);
+            const children = await chrome.bookmarks.getChildren(folder.id);
+            assert.equal(children[0].url, `https://example.test/history/${index}`);
+            assert.equal(children[1].id, logical.bookmarkId);
+        }
+        assert.deepEqual((await f.session(20)).logicalTabs.flatMap(tab => tab.liveTabIds).sort((a, b) => a - b),
+            reusedTabs.map(tab => tab.id).sort((a, b) => a - b));
     });
 
     await check('concurrent native group and grouped tab creation produces one stable folder', async () => {
@@ -239,6 +320,13 @@ async function main() {
         assert.equal((await f.folders(17)).length, 1);
     });
     assert.deepEqual(failures, [], 'Group folder lifecycle regressions');
+    assert.ok(selectedCases > 0, 'Filter must select a meaningful case');
+    assert.equal(completedCases, process.argv[2] ? selectedCases : 20, 'Every selected case must complete');
+    console.log(`COMPLETE group resolution suite: completedCases=${completedCases}`);
 }
 
-main().catch(error => { console.error(error); process.exitCode = 1; });
+main().then(() => clearTimeout(watchdog), error => {
+    clearTimeout(watchdog);
+    console.error(error);
+    process.exitCode = 1;
+});

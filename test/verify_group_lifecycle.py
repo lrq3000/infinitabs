@@ -21,6 +21,8 @@ class GroupLifecycleCheck(MovementCheck):
             assert logical['lastSavedTitle'] == saved['title'], 'Deferred title save not acknowledged in current logical record'
 
     def run(self, flow):
+        if flow.startswith('startup_'):
+            return self.startup_import(flow)
         if flow.startswith('removal_'):
             return self.removal(flow)
         name = "Amazon.fr : livres, DVD, jeux vidéo, musique, high-tech, informatique, jouets, vêtements, chaussures, sport, bricolage, maison, beauté, puériculture, épicerie et plus encore !"
@@ -98,6 +100,74 @@ class GroupLifecycleCheck(MovementCheck):
             self.sidebar.screenshot(path=str(self.artifacts / "group-lifecycle.png"))
         assert not self.evidence["page_errors"], self.evidence["page_errors"]
         errors = [msg for msg in self.evidence["worker_console"] if msg["type"] == "error"]
+        assert not errors, errors
+
+    def startup_import(self, flow):
+        groups = self.sidebar.evaluate("""async ids => {
+            const groups = [];
+            for (const [index, id] of ids.entries()) {
+                const groupId = await chrome.tabs.group({tabIds: [id]});
+                groups.push(await chrome.tabGroups.update(groupId, {
+                    title: ['First', 'Middle', 'Last'][index], color: ['red', 'blue', 'green'][index]
+                }));
+            }
+            return groups;
+        }""", [self.live_ids[name] for name in 'ABC'])
+        if flow == 'startup_duplicate_urls':
+            page = next(page for page in self.context.pages if page.url.endswith('?C'))
+            page.goto(self.fixture.url)
+
+        setup = {'flow': flow, 'native_groups': groups}
+        self.evidence['startup_setup'] = setup
+
+        def fixture_ready(snapshot):
+            self.assert_metadata(snapshot)
+            by_live = {live_id: tab for tab in snapshot['session']['logicalTabs'] for live_id in tab['liveTabIds']}
+            parents = [by_live[self.live_ids[name]]['groupId'] for name in 'ABC']
+            assert all(parents) and len(set(parents)) == 3
+
+        before = self.observe_expected_state(fixture_ready, setup, observe_ms=2500, quiet_ms=1500)
+        # Use actual saved-session/storage APIs, then stop/restart the real worker.
+        # The next init has three established native groups and an EMPTY target
+        # session, with no artificial production state or API replacement.
+        target = self.sidebar.evaluate("""async ({rootId, windowId}) => {
+            const target = await chrome.bookmarks.create({parentId: rootId, title: `Startup import [windowId:${windowId}]`});
+            await chrome.storage.local.set({windowToSession: {[windowId]: target.id}, reloadOnRestart: false});
+            return {folder: target, children: await chrome.bookmarks.getChildren(target.id)};
+        }""", {'rootId': before['session']['rootFolderId'], 'windowId': self.window_id})
+        assert target['children'] == []
+        record = {'flow': flow, 'before': before, 'target': target}
+        self.evidence['flows'].append(record)
+        result, trigger = self.cold_worker()
+        record.update(initial_state=result, trigger=trigger)
+        expected_ids = [tab['id'] for tab in before['native']]
+
+        def expected(after):
+            session = after['session']
+            assert session['sessionId'] == target['folder']['id']
+            assert [tab['id'] for tab in after['native']] == expected_ids, 'Startup must retain the native strip order'
+            assert len(session['logicalTabs']) == len(expected_ids), 'Every native tab requires a separate bookmark'
+            assert [tab['liveTabIds'] for tab in session['logicalTabs']] == [[tab_id] for tab_id in expected_ids], 'Logical order and complete one-to-one native coverage'
+            nodes = self.bookmark_nodes(after)
+            folders = [node for node in nodes.values() if node.get('parentId') == session['sessionId'] and 'url' not in node]
+            assert [folder['title'] for folder in folders] == ['First [red]', 'Middle [blue]', 'Last [green]'], 'Saved folders must follow native group order'
+            by_live = {tab['liveTabIds'][0]: tab for tab in session['logicalTabs']}
+            for index, name in enumerate('ABC'):
+                logical = by_live[self.live_ids[name]]
+                assert logical['groupId'] == folders[index]['id']
+                assert [child['id'] for child in folders[index]['children']] == [logical['bookmarkId']]
+            assert len({by_live[self.live_ids[name]]['groupId'] for name in 'ABC'}) == 3, 'Duplicate URLs must not merge distinct native groups'
+            assert [(tab['id'], tab['groupId']) for tab in after['native']] == [(tab['id'], tab['groupId']) for tab in before['native']]
+            self.assert_metadata(after)
+
+        try:
+            self.observe_expected_state(expected, record, observe_ms=2500, quiet_ms=1500)
+        finally:
+            self.sidebar.screenshot(path=str(self.artifacts / 'startup-import.png'))
+            record['target_session_load_logs'] = [entry for entry in self.evidence['worker_console']
+                if entry['text'] == f"loadSessionFromBookmarks: Loading {target['folder']['id']}"]
+        assert not self.evidence['page_errors'], self.evidence['page_errors']
+        errors = [entry for entry in self.evidence['worker_console'] if entry['type'] == 'error']
         assert not errors, errors
 
     def removal(self, flow):
@@ -184,5 +254,5 @@ class GroupLifecycleCheck(MovementCheck):
 
 if __name__ == "__main__":
     main(check_class=GroupLifecycleCheck, flows=["native_background", "metadata_recreation", "ambiguous", "same_name",
-         "removal_move_close", "removal_close", "removal_ungroup", "removal_live_only"],
-         names_for_flow=lambda flow: "ABSCD" if flow.startswith('removal_') else "AB", evidence_prefix="group-lifecycle")
+         "removal_move_close", "removal_close", "removal_ungroup", "removal_live_only", "startup_duplicate_urls", "startup_distinct_urls"],
+         names_for_flow=lambda flow: "ABSCD" if flow.startswith('removal_') else "ABC" if flow.startswith('startup_') else "AB", evidence_prefix="group-lifecycle")

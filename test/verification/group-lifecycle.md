@@ -405,3 +405,117 @@ the owned checkout or approved artifact directory, so execution of those externa
 probes is not claimed. Existing last-native closure/classifier/movement cases pass.
 The exact held-read/ACK orderings above are modeled API schedules; browser suites
 provide actual native/logical/bookmark agreement and preservation evidence.
+
+## Startup ownership/order correction after quality review of `281672c`
+
+Two introduced regressions were reproduced before production edits. Empty-session
+imports of native groups First/Middle/Last lost a bookmark/live binding when First
+and Last shared a URL, and reversed saved folder/logical order when all URLs were
+distinct. The same focused assertions pass with the actual `0780c87` module body.
+The optional Node baseline loader reads that Git object and relocates only its
+relative imports in memory; it never overwrites a production file or worktree.
+
+The correction batches group import with one final reload. An import-local
+`Map<BookmarkId, NativeTab>` records each matched/created bookmark's ownership
+before another iteration can claim it. Final attachment uses those stable IDs,
+not another URL match. The preceding imported bookmark is passed to the shared
+resolver as placement context; startup does not need to publish partial logical
+records or re-query the native strip to find its already-imported predecessor.
+Ordinary group creation retains its current placement/reload behavior. Existing
+reused folders retain their saved order and saved-only children.
+
+### Completion guard and negative proof
+
+The resolution suite has a **referenced** 120-second watchdog, cleared on normal
+completion or an explicit failure. It asserts completion of all 20 default cases
+(the original 17 plus three startup cases); filters must select at least one case.
+Restoring the old init-inside-mutex ordering **in memory** with a one-second
+watchdog prints `suite unfinished; completedCases=0` and exits **1**, rather than
+silently exiting zero with an unresolved promise. This was verified before and
+after the startup correction. Other old test scripts are unchanged.
+
+Reproduction commands in `WORKTREE`:
+
+```powershell
+node test/test_group_folder_resolution.js 'startup imports'
+$env:GROUP_TEST_BACKGROUND_REF = '0780c87aa61e82d9732cf10aafd0abc5cf40acca'
+try { node test/test_group_folder_resolution.js 'startup imports' }
+finally { Remove-Item Env:GROUP_TEST_BACKGROUND_REF }
+
+$env:GROUP_TEST_OLD_INIT_MUTEX = '1'
+$env:GROUP_RESOLUTION_TIMEOUT_MS = '1000'
+try {
+    node test/test_group_folder_resolution.js
+    if ($LASTEXITCODE -ne 1) { throw 'Expected referenced watchdog to exit 1' }
+} finally {
+    Remove-Item Env:GROUP_TEST_OLD_INIT_MUTEX
+    Remove-Item Env:GROUP_RESOLUTION_TIMEOUT_MS
+}
+```
+
+### Measured import reads and cost boundaries
+
+Instrumented Node counts for the three-native-tab target session, captured before
+the test oracle performs its own reads:
+
+| Source/fixture | Session subtree reads | Native tab queries | Native group metadata/liveness reads |
+| --- | ---: | ---: | ---: |
+| Base `0780c87`, duplicate or distinct URLs | 2 | 2 | 3 |
+| Reviewed `281672c`, duplicate URLs (incorrectly only two groups) | 4 | 4 | 6 |
+| Reviewed `281672c`, distinct URLs | 5 | 5 | 9 |
+| Corrected source, duplicate or distinct URLs | **2** | **2** | **9** |
+
+The two subtree reads are the initial load and **one final reload**, with no
+per-group/per-tab intermediate reloads. The two native tab queries are the import
+snapshot and active-tab query. The shared resolver's existing three group reads
+per newly created group remain for metadata/liveness checks; total API parity
+with the old base is not claimed. Actual Chromium worker logs also show exactly
+two loads of the new target session in each startup flow.
+
+Temporary import storage is O(T) for T native tabs plus one predecessor scalar.
+Each ownership operation is O(1); final attachment traverses the L reloaded logical
+records once with O(1) association lookup. Existing initial URL-based tab matching
+is retained, with an ownership exclusion. The separate shared reload's nested
+`find` join is unchanged. Metadata-only folder eligibility remains operation-local
+O(R + B). There is no import-map maintenance on ordinary browsing events, no new
+global index/cache/listener, and no per-existing-group one-second startup delay.
+
+### Actual Chromium startup proof and final validation
+
+The two new browser flows create real native groups, choose duplicate or distinct
+URLs, create a fresh empty saved session through `chrome.bookmarks`, set its real
+`chrome.storage.local` binding, then stop/restart the extension worker through the
+existing cold-worker helper. Public messages read the resulting session. No
+production state, API, listener or browser profile is patched. Assertions cover
+every native tab exactly once, distinct saved group bindings, folder/logical/native
+order, stable native IDs/group membership, and native/logical/persisted metadata.
+
+Both failed on `281672c`:
+
+- `ARTIFACTS_DIR/group-lifecycle-evidence-dgbz1c5y/startup_duplicate_urls`: missing
+  per-native-tab bookmark/coverage.
+- `ARTIFACTS_DIR/group-lifecycle-evidence-bcwm2owx/startup_distinct_urls`: wrong
+  logical/native order.
+
+Final-source runs (Playwright 1.59.0 / full Chromium 147.0.7727.15):
+
+| Check | Result | Runtime | Evidence under `ARTIFACTS_DIR` |
+| --- | --- | --- | --- |
+| Resolution + classifier + metadata | 20 + 10 + 11 cases pass | 57.2s | Console output; `completedCases=20` |
+| Guard negative + baseline Node/Python | Expected watchdog exit 1; 7 Node scripts + 20 Python tests pass | 18.3s | Console output |
+| Expanded lifecycle | 10/10 browser flows pass | 130.2s | `group-lifecycle-evidence-uu_l5uwm` |
+| Movement preservation | 10/10 pass | 174.1s | `movement-evidence-g63o2ekt` |
+| Mount preservation | 9/9 pass | 196.5s | `mounting-evidence-uupw9iyb` |
+| Active-state preservation | 3/3 pass | 9.1s | `pr40-evidence-t5zi0624` |
+
+Final SHA-256 values:
+
+- `src/background.js`: `6287083f3604562f4aafa95bf9649a44bfb7217abf3a85f0ada675d30a05c0bd`
+- `test/group_lifecycle_fixture.js`: `4341cd015d467aac72290a5421bc560169680a0bce70968a1acbcf41e589decc`
+- `test/test_group_folder_resolution.js`: `5c16a15185126986aabdca54dd22d3562de7a2dc7c7e8573958bab44c1ab0648`
+- `test/verify_group_lifecycle.py`: `4226eabee2b83d8b5673f2910b96c48387f1794e2f54bf2f2b843c65ac85ea14`
+
+Other browser runner/observer fingerprints remain as recorded above. The existing
+CI commands automatically run the expanded resolution and lifecycle suites. These
+are bounded fixtures and actual cold-worker startup evidence, not a claim about
+arbitrary overlapping session switches or external bookmark edits during import.

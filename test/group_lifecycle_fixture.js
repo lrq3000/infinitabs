@@ -12,6 +12,7 @@ class GroupLifecycleFixture {
         this.nextId = 100;
         this.hooks = {};
         this.calls = { children: 0, group: 0 };
+        this.reads = { subTrees: new Map(), tabs: new Map(), groups: new Map() };
         let bookmarkId = 0, logicalId = 0;
         const create = chrome.bookmarks.create;
         chrome.bookmarks.create = async data => {
@@ -25,6 +26,7 @@ class GroupLifecycleFixture {
             const original = chrome.bookmarks[method];
             chrome.bookmarks[method] = async id => {
                 if (method === 'getChildren') this.calls.children++;
+                if (method === 'getSubTree') this.reads.subTrees.set(id, (this.reads.subTrees.get(id) || 0) + 1);
                 await this.hook(method, id);
                 const snapshot = structuredClone(await original(id));
                 await this.hook(`after${method}`, { id, snapshot });
@@ -45,12 +47,14 @@ class GroupLifecycleFixture {
             return structuredClone(this.tabs.get(id));
         };
         chrome.tabs.query = async query => {
+            this.reads.tabs.set(query.windowId, (this.reads.tabs.get(query.windowId) || 0) + 1);
             await this.hook('query', query);
             return structuredClone([...this.tabs.values()].filter(tab => Object.entries(query)
                 .every(([key, value]) => tab[key] === value)).sort((a, b) => a.index - b.index));
         };
         chrome.tabGroups.get = async id => {
             this.calls.group++;
+            this.reads.groups.set(id, (this.reads.groups.get(id) || 0) + 1);
             await this.hook('group', id);
             assert.ok(this.groups.has(id), `No native group ${id}`);
             return structuredClone(this.groups.get(id));
@@ -71,8 +75,16 @@ class GroupLifecycleFixture {
         if (this.hooks[name]) await this.hooks[name](arg);
     }
 
-    async start(beforeInit = () => {}) {
-        await import('../src/background.js');
+    async start(beforeInit = () => {}, backgroundSource) {
+        if (backgroundSource) {
+            // Baseline/negative probes execute the actual module body in memory.
+            // Only relative import URLs are relocated; no production file changes.
+            const { pathToFileURL } = require('node:url');
+            const base = pathToFileURL(require('node:path').resolve(__dirname, '../src/background.js'));
+            const source = backgroundSource.replace(/from '(\.\/[^']+)'/g,
+                (_, relative) => `from '${new URL(relative, base).href}'`);
+            await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+        } else await import('../src/background.js');
         const pending = beforeInit();
         await this.listeners.onInstalled();
         await pending;
