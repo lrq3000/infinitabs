@@ -57,19 +57,41 @@ is deliberately outside this approved milestone.
 
 ## Reproduction and commands
 
-Run in `WORKTREE` (the owned worktree). `ARTIFACTS_DIR` is an existing external
-temporary directory; `BROWSER_CACHE_DIR` contains the approved full Chromium for
-Python Playwright 1.59.0. No crx build/install or personal browser is involved.
+Run every PowerShell block below from `WORKTREE` (the owned worktree), with Git,
+Node and Python Playwright 1.59.0 already available. Baseline-object probes require
+their referenced commit to be available locally. Configure the `ARTIFACTS_DIR` and
+`BROWSER_CACHE_DIR` environment variables, or enter their values when prompted.
+Both paths must already exist: artifacts belong in an approved external temporary
+directory; the browser cache contains the approved full Chromium. Later blocks
+reuse these prerequisites and environment variables. No crx build/install or
+personal browser is involved.
 
 ```powershell
+if (-not $env:ARTIFACTS_DIR) {
+    $env:ARTIFACTS_DIR = Read-Host 'Existing approved external artifact directory'
+}
+if (-not $env:BROWSER_CACHE_DIR) {
+    $env:BROWSER_CACHE_DIR = Read-Host 'Existing approved Playwright browser cache directory'
+}
+foreach ($name in @('ARTIFACTS_DIR', 'BROWSER_CACHE_DIR')) {
+    $path = [Environment]::GetEnvironmentVariable($name)
+    if (-not (Test-Path -LiteralPath "$path" -PathType Container)) {
+        throw "$name must identify an existing directory"
+    }
+}
+if (-not (Test-Path -LiteralPath 'test/test_group_folder_resolution.js' -PathType Leaf)) {
+    throw 'Run these commands from the owned Infinitabs worktree'
+}
+$env:PLAYWRIGHT_BROWSERS_PATH = $env:BROWSER_CACHE_DIR
 node test/test_group_folder_resolution.js
 node test/test_group_removal_classification.js
-$env:PLAYWRIGHT_BROWSERS_PATH = 'BROWSER_CACHE_DIR'
-python test/verify_group_lifecycle.py --headless --artifacts-dir 'ARTIFACTS_DIR'
+node test/test_group_metadata_interleavings.js
+node test/test_group_lifecycle_fixture.js
+python test/verify_group_lifecycle.py --headless --artifacts-dir "$env:ARTIFACTS_DIR"
 python -m unittest discover -s test -p 'test_*.py'
-python test/verify_move_logical_tabs.py --headless --artifacts-dir 'ARTIFACTS_DIR'
-python test/verify_mount_logical_tabs.py --headless --artifacts-dir 'ARTIFACTS_DIR'
-python test/verify_active_tab_reload.py --headless --artifacts-dir 'ARTIFACTS_DIR'
+python test/verify_move_logical_tabs.py --headless --artifacts-dir "$env:ARTIFACTS_DIR"
+python test/verify_mount_logical_tabs.py --headless --artifacts-dir "$env:ARTIFACTS_DIR"
+python test/verify_active_tab_reload.py --headless --artifacts-dir "$env:ARTIFACTS_DIR"
 ```
 
 The seven pre-existing Node scripts remain in `.github/workflows/movement-regressions.yml`;
@@ -519,3 +541,106 @@ Other browser runner/observer fingerprints remain as recorded above. The existin
 CI commands automatically run the expanded resolution and lifecycle suites. These
 are bounded fixtures and actual cold-worker startup evidence, not a claim about
 arbitrary overlapping session switches or external bookmark edits during import.
+
+## PR78 feedback verified against published `526280e`
+
+Implementation/test commit: `fd55edd9b28dc5ea0803ee06361e7070347cf16e`.
+The eight supplied review threads were assessed as six topics. All six findings
+were valid in the inspected source. This is a local disposition/evidence record;
+GitHub replies, thread resolution and publishing remain controller operations.
+
+| Topic | Disposition and proof |
+| --- | --- |
+| 1. Overlapping same-tab moves release shared ownership too early | Fixed. Two actual public `MOVE_LOGICAL_TABS` handlers are held concurrently on A. With the published Set, releasing the first (success OR logical-write failure) lets C's removal flatten saved G while the second still owns A. Both cases fail first on `526280e`, then pass with reference-counted primary ownership. After the last owner exits, genuine Ungroup succeeds, proving release cleanup for the exercised ID. |
+| 2. Rare reuse leaves canonical state/UI stale | Fixed. A folder and saved history are added behind the loaded model, and A's bookmark is moved into it externally. With the published early return, the native group update has no parent move to perform and leaves the folder invisible. The new Node case fails first, then passes. Reuse and creation now share publication; the real `external_reuse` browser flow also verifies canonical state and the public `STATE_UPDATED` notification. |
+| 3. Metadata suite can pass without completing/selecting cases | Fixed. Before the guard, both an unmatched filter and an unresolved test gate exit zero. A small shared focused-suite helper now provides a referenced watchdog, selected/completed counts, and cleanup. Both negative probes exit 1. Resolution/removal/fixture checks share the helper rather than copying guard blocks. |
+| 4. Held-removal fixture assumes a specific read without bounding that wait | Fixed. The specific folder-gate await has a 2s deadline and an explicit `Held-removal model assumption failed: expected getChildren(...)` diagnostic. Gate release and handler settlement are in `finally`; timeout handles are cleared. Deliberately suppressing that hook fails with this diagnostic using a 100ms probe deadline, rather than relying on the generic 6s RPC timeout. Positive structure/membership assertions are retained. |
+| 5. Indexed mock creation renumbers snapshots, not backing nodes | Fixed. The new contract first fails with stale sibling indices `[0,0,1]` and an internal read-hook invocation. Internal normalization now uses the captured backing getter; `get`, `getChildren` and `getSubTree` agree on `[0,1,2]`, earlier snapshots remain unchanged, and internal bookkeeping invokes zero production-read hooks. Existing assertions pass unchanged. |
+| 6. Copyable commands use literal path placeholders | Fixed. The prerequisite block now accepts environment/user-provided values, validates existing directories, assigns `$env:PLAYWRIGHT_BROWSERS_PATH = $env:BROWSER_CACHE_DIR`, and quotes `"$env:ARTIFACTS_DIR"` in browser commands. All command sections were reviewed against the common prerequisites; the variable-based browser invocations below were executed successfully. No machine path is embedded in the report. |
+
+### Scope and precise costs
+
+`LiveTabOwnership` replaces the one existing ownership Set with one private Map
+of active native ID to owner count. It is **primary operation ownership**, not a
+matching index or idle-tab cache. Acquisition/release each perform O(1) Map work
+per selected native ID; a move with K selected native IDs remains O(K) ownership
+work. `has` stays O(1); iteration yields unique IDs in insertion order, with O(U)
+iteration/storage for U currently owned IDs. The last release removes the entry.
+Ordinary metadata/tab events do not maintain counts; there is no grace timer.
+
+For rare unmapped reuse with `reload=true`, publication now pays one canonical
+session reload and notification, just as creation does. This is an intentional
+rare-path correctness cost; the existing O(N²) reload join is unchanged. Known
+mapped groups still bypass resolution, and batch startup's `reload=false` still
+uses its single final reload (two subtree loads including the initial load).
+Option 2 remains name/color-only, including different contents/empty folders;
+there is no maintained secondary matching index or invalidation listener.
+
+The counts do not serialize moves or define arbitration for conflicting concurrent
+destinations. The held overlap tests use actual production handlers/public
+messages with modeled native API gates and one canonical destination. They prove
+ownership lifetime and output invariants, not a general transaction framework.
+
+### Bounded negative probes
+
+Run from the owned worktree with the prerequisites above. Each command below is
+expected to fail with exit 1; these are test-only flags, not production timers.
+
+```powershell
+node test/test_group_metadata_interleavings.js NO_SUCH_CASE
+if ($LASTEXITCODE -ne 1) { throw 'Unmatched filter must fail' }
+
+$env:GROUP_METADATA_UNRESOLVED_GATE = '1'
+$env:GROUP_METADATA_TIMEOUT_MS = '1000'
+try {
+    node test/test_group_metadata_interleavings.js
+    if ($LASTEXITCODE -ne 1) { throw 'Unresolved metadata gate must fail' }
+} finally {
+    Remove-Item Env:GROUP_METADATA_UNRESOLVED_GATE
+    Remove-Item Env:GROUP_METADATA_TIMEOUT_MS
+}
+
+$env:GROUP_REMOVAL_SKIP_GATE = '1'
+$env:GROUP_REMOVAL_GATE_TIMEOUT_MS = '100'
+try {
+    node test/test_group_removal_classification.js 'held removal'
+    if ($LASTEXITCODE -ne 1) { throw 'Missing model read hook must fail' }
+} finally {
+    Remove-Item Env:GROUP_REMOVAL_SKIP_GATE
+    Remove-Item Env:GROUP_REMOVAL_GATE_TIMEOUT_MS
+}
+```
+
+### Final-source evidence
+
+| Check | Result | Runtime | Evidence under `ARTIFACTS_DIR` |
+| --- | --- | --- | --- |
+| Four focused Node suites | 21 resolution + 12 removal/ownership + 11 metadata + 1 fixture-contract case pass | 58.2s | Console completion counts |
+| Removal cleanup recheck + baseline | 12 cases + 7 baseline Node scripts + 20 Python tests pass | 19.3s | Console output |
+| Lifecycle, including external-folder publication | 11/11 browser flows pass | 142.4s | `group-lifecycle-evidence-m80gthb6` |
+| Movement preservation | 10/10 pass | 173.8s | `movement-evidence-nixsp26y` |
+| Mount preservation | 9/9 pass | 195.9s | `mounting-evidence-bugsgz_7` |
+| Active-state preservation | 3/3 pass | 9.2s | `pr40-evidence-siu7xmzb` |
+
+The original 32 browser flows are retained, plus one new external-reuse flow.
+All four browser suites ran once on the final production source, using isolated
+Playwright 1.59.0 / Chromium 147.0.7727.15 profiles. Source hashes agree across the
+evidence sets. Intentional Node fault-injection diagnostics remain visible;
+browser page/worker error checks pass. `git diff --check` passes.
+
+Final SHA-256 fingerprints:
+
+| Source/script | SHA-256 |
+| --- | --- |
+| `src/background.js` | `6ffac634d1e2edff44c81e41fd0f86a2a42d6843c44afd87a09d2a21ed00587a` |
+| `test/group_lifecycle_fixture.js` | `ac935c207129e31d9fc0b9f82e62dd7306ab81873638ea5e62ccc26a90d9da5b` |
+| `test/group_lifecycle_suite.js` | `6b217868c1850414d9ab53875f6140bfba88c6a645e9c1db3fb700d3ddfc871d` |
+| `test/test_group_folder_resolution.js` | `c0f7fc04444a2fa6cdc6223f1a8624e866095411c17f404fb0d5a4f35e509079` |
+| `test/test_group_removal_classification.js` | `bf0f3c6db9750e094c877f5fb29b441fd4e65eb9111f87d973ecfe4cdca1aa9a` |
+| `test/test_group_metadata_interleavings.js` | `ab2ea0ed9f99e7d5c081fbe40918b05b9d2d45b5fe0fc62dee0860ba4baad54d` |
+| `test/test_group_lifecycle_fixture.js` | `b7b7896dffc33c6d2e580edc5004e976762ae7afd6b7e68ed72abe9af69771fe` |
+| `test/verify_group_lifecycle.py` | `dd2ee1c3f74b38c4f9168aa8b3e0ed0d25e1c590b5c4ae2e63e408e3e6952e3e` |
+
+Other browser runner/observer fingerprints are unchanged from the earlier tables
+and were checked again against the final evidence. All new test files are committed
+and the mock contract is included in the existing read-only CI Node list.
