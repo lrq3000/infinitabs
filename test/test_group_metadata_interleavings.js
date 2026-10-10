@@ -3,6 +3,8 @@
 // bookmarks; a successful bookmark save alone never proves logical agreement.
 const assert = require('node:assert/strict');
 const { GroupLifecycleFixture: Fixture } = require('./group_lifecycle_fixture.js');
+const { GroupLifecycleSuite } = require('./group_lifecycle_suite.js');
+const suite = new GroupLifecycleSuite('group metadata', 11, Number(process.env.GROUP_METADATA_TIMEOUT_MS || 120000));
 
 class MetadataFixture extends Fixture {
     async update(tab, changes) {
@@ -37,14 +39,12 @@ class MetadataFixture extends Fixture {
 }
 
 async function main() {
+    // Test-only negative probe: an unresolved gate with no other live handles.
+    if (process.env.GROUP_METADATA_UNRESOLVED_GATE === '1') await Fixture.gate().promise;
     const f = await new MetadataFixture().prepare(11);
     await f.start();
-    const failures = [];
     async function check(name, run) {
-        if (process.argv[2] && !name.includes(process.argv[2])) return;
-        try { await run(); console.log(`PASS ${name}`); }
-        catch (error) { failures.push(`${name}: ${error.stack}`); }
-        finally { f.hooks = {}; }
+        await suite.check(name, run, () => { f.hooks = {}; });
     }
 
     await check('P1 older combined group/metadata event cannot replay after a newer navigation', async () => {
@@ -278,7 +278,6 @@ async function main() {
         await f.persisted(bookmarkId, newer);
         await f.agreement(tab, bookmarkId);
     });
-    assert.deepEqual(failures, [], 'Spec-review metadata interleavings');
 }
 
-main().catch(error => { console.error(error); process.exitCode = 1; });
+suite.run(main);

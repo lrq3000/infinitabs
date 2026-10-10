@@ -3,11 +3,13 @@
 // must not let that group's removal flatten saved G(S,C,A,B).
 const assert = require('node:assert/strict');
 const { GroupLifecycleFixture: Fixture } = require('./group_lifecycle_fixture.js');
+const { GroupLifecycleSuite } = require('./group_lifecycle_suite.js');
+const suite = new GroupLifecycleSuite('group removal', 12);
 
 async function main() {
-    const f = await new Fixture().prepare(10);
+    const f = await new Fixture().prepare(12);
     const fixtures = [];
-    for (let windowId = 1; windowId <= 10; windowId++) {
+    for (let windowId = 1; windowId <= 12; windowId++) {
         const group = f.addGroup(windowId), bookmarks = {}, live = {};
         let folder;
         for (const name of 'ABSCD') {
@@ -52,12 +54,8 @@ async function main() {
         Object.assign(f.groups.get(id), changes);
         await f.listeners['tabGroups.onUpdated'](structuredClone(f.groups.get(id)));
     };
-    const failures = [];
     async function check(name, run) {
-        if (process.argv[2] && !name.includes(process.argv[2])) return;
-        try { await run(); console.log(`PASS ${name}`); }
-        catch (error) { failures.push(`${name}: ${error.stack}`); }
-        finally { f.hooks = {}; beforeMove = null; }
+        await suite.check(name, run, () => { f.hooks = {}; beforeMove = null; });
     }
     async function assertPreserved(fixture, childNames = 'SC', closed = 'C') {
         const { windowId, folder, bookmarks, live } = fixture;
@@ -76,7 +74,7 @@ async function main() {
 
     for (const index of [0, 5, 8]) await check(`closing last native C during logical move preserves G (${index === 0 ? 'immediate' : index === 5 ? 'held removal' : 'before native read'})`, async () => {
         const fixture = fixtures[index], { windowId, folder, group, live, bookmarks } = fixture;
-        let removal;
+        let removal, gateFailure;
         const entered = Fixture.gate(), release = Fixture.gate();
         const closeDuringMove = async () => {
             assert.equal((await f.logical(live.A)).groupId, folder.id, 'A is already logically in G');
@@ -89,8 +87,15 @@ async function main() {
                 f.hooks.getChildren = async id => {
                     if (id === folder.id) { delete f.hooks.getChildren; entered.release(); await release.promise; }
                 };
+                if (process.env.GROUP_REMOVAL_SKIP_GATE === '1') delete f.hooks.getChildren; // Negative fixture probe only.
                 removal = f.listeners['tabGroups.onRemoved'](structuredClone(group));
-                await entered.promise;
+                // This model specifically holds the folder read. If production
+                // no longer reaches it, fail that assumption, not the later RPC.
+                try {
+                    await GroupLifecycleSuite.waitFor(entered.promise,
+                        `Held-removal model assumption failed: expected getChildren(${folder.id}) to enter the folder gate`,
+                        Number(process.env.GROUP_REMOVAL_GATE_TIMEOUT_MS || 2000));
+                } catch (error) { gateFailure = error; }
             }
         };
         if (index === 8) {
@@ -101,11 +106,16 @@ async function main() {
             };
         } else beforeMove = closeDuringMove;
         const before = await f.session(windowId);
-        const response = await f.send({ type: 'MOVE_LOGICAL_TABS', windowId,
-            logicalIds: before.logicalTabs.filter(t => [bookmarks.A.id, bookmarks.B.id].includes(t.bookmarkId)).map(t => t.logicalId),
-            targetLogicalId: folder.id, position: 'inside' });
-        release.release();
-        if (removal) await removal;
+        let response;
+        try {
+            response = await f.send({ type: 'MOVE_LOGICAL_TABS', windowId,
+                logicalIds: before.logicalTabs.filter(t => [bookmarks.A.id, bookmarks.B.id].includes(t.bookmarkId)).map(t => t.logicalId),
+                targetLogicalId: folder.id, position: 'inside' });
+        } finally {
+            release.release();
+            if (removal) await GroupLifecycleSuite.waitFor(removal, 'Held-removal handler did not settle after releasing its folder gate');
+        }
+        if (gateFailure) throw gateFailure;
         assert.equal(response.success, true);
         await assertPreserved(fixture, 'SCAB');
         const nativeGroup = (await chrome.tabs.get(live.A.id)).groupId;
@@ -166,7 +176,69 @@ async function main() {
         assert.equal((await f.logical(live.A)).groupId, folder.id, 'Later genuine native grouping must be imported');
         assert.equal((await chrome.bookmarks.get(fixture.bookmarks.A.id))[0].parentId, folder.id);
     });
-    assert.deepEqual(failures, [], 'Removal classifier regressions');
+    for (const failsFirst of [false, true]) await check(`overlapping public moves retain ownership after first ${failsFirst ? 'failure' : 'success'}`, async () => {
+        const fixture = fixtures[failsFirst ? 11 : 10], { windowId, folder, live } = fixture;
+        const firstRelease = Fixture.gate(), secondRelease = Fixture.gate();
+        const moveTab = chrome.tabs.move, moveBookmark = chrome.bookmarks.move;
+        let firstEntered = false, secondEntered = false, nativeCalls = 0, bookmarkCalls = 0;
+        let first, second;
+        chrome.tabs.move = async (id, options) => {
+            if (id === live.A.id) {
+                nativeCalls++;
+                if (!failsFirst && nativeCalls === 1) { firstEntered = true; await firstRelease.promise; }
+                else if (nativeCalls === (failsFirst ? 1 : 2)) { secondEntered = true; await secondRelease.promise; }
+            }
+            return moveTab(id, options);
+        };
+        chrome.bookmarks.move = async (id, options) => {
+            if (id === fixture.bookmarks.A.id && ++bookmarkCalls === 1 && failsFirst) {
+                firstEntered = true;
+                await firstRelease.promise;
+                throw new Error('Injected first overlapping logical move failure');
+            }
+            return moveBookmark(id, options);
+        };
+        const move = async () => f.send({ type: 'MOVE_LOGICAL_TABS', windowId,
+            logicalIds: [(await f.logical(live.A)).logicalId], targetLogicalId: folder.id, position: 'inside' });
+        try {
+            first = move();
+            await Fixture.until(() => firstEntered, 'first public move owns A and reaches its held API');
+            second = move();
+            await Fixture.until(() => secondEntered, 'second public move also owns A and reaches its held native API');
+            firstRelease.release();
+            const response = await first;
+            assert.ok(failsFirst ? response.error : response.success);
+            assert.equal((await f.logical(live.A)).groupId, folder.id);
+            // The first operation has returned. The second still owns A while
+            // its native move is held; temporary group feedback and C's removal
+            // must not flatten the canonical destination or import an interim move.
+            live.A.groupId = -1;
+            await f.listeners['tabs.onUpdated'](live.A.id, { groupId: -1 }, structuredClone(live.A));
+            await f.close(live.C.id);
+            await assertPreserved(fixture, 'SCA');
+        } finally {
+            firstRelease.release(); secondRelease.release();
+            try {
+                await Promise.all([first, second].filter(Boolean));
+            } finally {
+                chrome.tabs.move = moveTab;
+                chrome.bookmarks.move = moveBookmark;
+            }
+        }
+        await assertPreserved(fixture, 'SCA');
+        const nativeGroupId = (await chrome.tabs.get(live.A.id)).groupId;
+        assert.notEqual(nativeGroupId, -1);
+        assert.equal(f.groups.get(nativeGroupId).title, 'Saved group');
+        assert.deepEqual((await chrome.tabs.query({ windowId })).map(tab => tab.id), [live.B.id, live.A.id, live.D.id]);
+        // With the LAST owner released, a genuine native Ungroup must work.
+        // A leaked ownership entry would preserve G here and fail the assertion.
+        const removed = f.groups.get(nativeGroupId);
+        f.groups.delete(nativeGroupId);
+        live.A.groupId = -1;
+        await f.listeners['tabGroups.onRemoved'](structuredClone(removed));
+        assert.equal((await chrome.bookmarks.get(folder.id)).length, 0);
+        assert.equal((await f.logical(live.A)).groupId, null);
+    });
 }
 
-main().catch(error => { console.error(error); process.exitCode = 1; });
+suite.run(main);

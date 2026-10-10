@@ -4,16 +4,8 @@
 // stable bookmark/native identities rather than passing on create-call counts.
 const assert = require('node:assert/strict');
 const { GroupLifecycleFixture: Fixture } = require('./group_lifecycle_fixture.js');
-
-let completedCases = 0;
-const timeoutMs = Number(process.env.GROUP_RESOLUTION_TIMEOUT_MS || 120000);
-assert.ok(Number.isFinite(timeoutMs) && timeoutMs > 0, 'Watchdog timeout must be positive');
-// Intentionally referenced: an unresolved init/mutex promise alone does not keep
-// Node alive. The suite must not silently exit zero before executing any cases.
-const watchdog = setTimeout(() => {
-    console.error(`FAIL group resolution watchdog: suite unfinished; completedCases=${completedCases}`);
-    process.exit(1);
-}, timeoutMs);
+const { GroupLifecycleSuite } = require('./group_lifecycle_suite.js');
+const suite = new GroupLifecycleSuite('group resolution', 21, Number(process.env.GROUP_RESOLUTION_TIMEOUT_MS || 120000));
 
 function probeBackgroundSource() {
     const ref = process.env.GROUP_TEST_BACKGROUND_REF;
@@ -30,15 +22,9 @@ function probeBackgroundSource() {
 }
 
 async function main() {
-    const f = await new Fixture().prepare();
-    const failures = [];
-    let selectedCases = 0;
+    const f = await new Fixture().prepare(21);
     async function check(name, run) {
-        if (process.argv[2] && !name.includes(process.argv[2])) return;
-        selectedCases++;
-        try { await run(); console.log(`PASS ${name}`); }
-        catch (error) { failures.push(`${name}: ${error.stack}`); }
-        finally { completedCases++; f.hooks = {}; }
+        await suite.check(name, run, () => { f.hooks = {}; });
     }
     const longName = 'Amazon.fr : livres, DVD, jeux vidéo, musique, high-tech, informatique, jouets, vêtements, chaussures, sport, bricolage, maison, beauté, puériculture, épicerie et plus encore !';
     const startupFolder = await f.folder(1, `${longName} [cyan]`, ['https://example.test/history']);
@@ -319,14 +305,30 @@ async function main() {
         assert.equal((await f.session(17)).lastActiveLogicalTabId, logicalA.logicalId);
         assert.equal((await f.folders(17)).length, 1);
     });
-    assert.deepEqual(failures, [], 'Group folder lifecycle regressions');
-    assert.ok(selectedCases > 0, 'Filter must select a meaningful case');
-    assert.equal(completedCases, process.argv[2] ? selectedCases : 20, 'Every selected case must complete');
-    console.log(`COMPLETE group resolution suite: completedCases=${completedCases}`);
+    await check('rare reuse publishes externally added folder and contents when parent is already correct', async () => {
+        const tab = await f.createTab(21), before = await f.logical(tab);
+        const folder = await f.folder(21, 'External saved group [blue]', ['https://example.test/external-history']);
+        await chrome.bookmarks.move(before.bookmarkId, { parentId: folder.id });
+        const stale = await f.session(21);
+        assert.equal(stale.groups[folder.id], undefined, 'Fixture must change bookmarks behind the loaded primary model');
+        assert.equal(stale.logicalTabs.find(t => t.bookmarkId === before.bookmarkId).groupId, null);
+        const messages = [], sendMessage = chrome.runtime.sendMessage;
+        chrome.runtime.sendMessage = async message => { messages.push(structuredClone(message)); return sendMessage(message); };
+        try {
+            const group = f.addGroup(21, 'External saved group');
+            tab.groupId = group.id;
+            await f.listeners['tabs.onUpdated'](tab.id, { groupId: group.id }, structuredClone(tab));
+            const session = await f.session(21);
+            assert.ok(session.groups[folder.id], 'Rare reuse must materialize its canonical saved folder');
+            assert.equal((await f.logical(tab)).groupId, folder.id);
+            assert.equal((await f.logical(tab)).bookmarkId, before.bookmarkId);
+            assert.ok(session.logicalTabs.some(t => t.url === 'https://example.test/external-history' && t.groupId === folder.id));
+            assert.ok(messages.some(message => message.type === 'STATE_UPDATED' && message.windowId === 21 &&
+                message.session.groups[folder.id] && message.session.logicalTabs.some(t => t.bookmarkId === before.bookmarkId && t.groupId === folder.id)),
+                'Reuse must notify the sidebar even when the caller has no bookmark move to perform');
+            assert.deepEqual((await f.folders(21)).map(node => node.id), [folder.id]);
+        } finally { chrome.runtime.sendMessage = sendMessage; }
+    });
 }
 
-main().then(() => clearTimeout(watchdog), error => {
-    clearTimeout(watchdog);
-    console.error(error);
-    process.exitCode = 1;
-});
+suite.run(main);

@@ -5,6 +5,27 @@ import { WORD_LIST } from './words.js';
 // --- Constants ---
 const ROOT_FOLDER_TITLE = "InfiniTabs Sessions";
 
+// Primary in-flight ownership, not an idle-tab or matching index. Concurrent
+// public moves can own the same native ID; each finally releases only its share.
+class LiveTabOwnership {
+    #counts = new Map();
+    add(id) {
+        this.#counts.set(id, (this.#counts.get(id) || 0) + 1);
+        return this;
+    }
+    delete(id) {
+        const count = this.#counts.get(id);
+        if (count > 1) {
+            this.#counts.set(id, count - 1);
+            return true;
+        }
+        return this.#counts.delete(id);
+    }
+    has(id) { return this.#counts.has(id); }
+    // Preserve Set-like ID snapshots, not Map [ID, count] entries.
+    [Symbol.iterator]() { return this.#counts.keys(); }
+}
+
 // --- Global State ---
 // Held in memory, persisted where necessary.
 const state = {
@@ -12,7 +33,7 @@ const state = {
     windowToSession: {},  // Record<WindowId, SessionId>
     tabToLogical: {},     // Record<TabId, LogicalTabId>
     liveGroupToBookmark: {}, // Record<LiveGroupId, BookmarkId>
-    syncingLiveTabIds: new Set(), // Set<TabId>: scoped native move/group feedback, released in finally
+    syncingLiveTabIds: new LiveTabOwnership(), // Reference-counted active ownership, released in finally
     isCreatingGroup: false, // Flag to suppress bookmark creation during programmatic group creation
     pendingGroupCreations: {}, // Record<LiveGroupId, Promise<BookmarkId>> - Locks for group creation
     workspaceHistory: [], // Array<WorkspaceSnapshot>
@@ -237,9 +258,8 @@ async function getOrCreateGroupBookmark(groupId, windowId, { debounce = true, re
                     reusable = child;
                 }
                 if (reusable) {
-                    state.liveGroupToBookmark[groupId] = reusable.id;
                     // Retain the exact saved folder, its title, ordering and history.
-                    return reusable.id;
+                    return publishGroupBookmark(groupId, reusable.id, sessionId, windowId, reload);
                 }
                 const createData = {
                     parentId: sessionId,
@@ -258,16 +278,7 @@ async function getOrCreateGroupBookmark(groupId, windowId, { debounce = true, re
                     return state.windowToSession[windowId] === sessionId ? state.liveGroupToBookmark[groupId] || null : null;
                 }
 
-                state.liveGroupToBookmark[groupId] = created.id;
-
-                // A batch import will reload once after all bookmarks exist.
-                // Ordinary live creation still publishes its group immediately.
-                if (reload) {
-                    await reloadSessionAndPreserveState(sessionId, windowId);
-                    notifySidebarStateUpdated(windowId, sessionId);
-                }
-
-                return created.id;
+                return publishGroupBookmark(groupId, created.id, sessionId, windowId, reload);
             });
         } catch (e) {
             console.error("Failed to create bookmark folder for group", e);
@@ -279,6 +290,19 @@ async function getOrCreateGroupBookmark(groupId, windowId, { debounce = true, re
 
     state.pendingGroupCreations[groupId] = creationPromise;
     return creationPromise;
+}
+
+async function publishGroupBookmark(groupId, bookmarkId, sessionId, windowId, reload) {
+    state.liveGroupToBookmark[groupId] = bookmarkId;
+    // A live-bookmark candidate may have been added/changed behind the loaded
+    // session. Rare resolution publishes canonical state even if the caller's
+    // bookmark already has the right parent and needs no move of its own.
+    // Batch startup still defers this work to its single final reload.
+    if (reload) {
+        await reloadSessionAndPreserveState(sessionId, windowId);
+        notifySidebarStateUpdated(windowId, sessionId);
+    }
+    return bookmarkId;
 }
 
 async function getIndexAfterBookmark(bookmarkId, sessionId) {

@@ -30,13 +30,24 @@ class GroupLifecycleCheck(MovementCheck):
         before = self.snapshot()
         session_id = before["session"]["sessionId"]
         saved = []
-        for _ in range(2 if flow == "ambiguous" else 1 if flow == "metadata_recreation" else 0):
+        for _ in range(2 if flow == "ambiguous" else 1 if flow in ("metadata_recreation", "external_reuse") else 0):
             folder = self.sidebar.evaluate("""async ({parentId, title}) => {
                 const folder = await chrome.bookmarks.create({parentId, title});
                 await chrome.bookmarks.create({parentId: folder.id, title: 'Saved history', url: 'https://example.test/history'});
                 return (await chrome.bookmarks.getSubTree(folder.id))[0];
             }""", {"parentId": session_id, "title": title})
             saved.append(folder)
+        if flow == 'external_reuse':
+            self.sidebar.evaluate("""async ({bookmarkId, folderId}) => {
+                globalThis.reuseNotifications = [];
+                chrome.runtime.onMessage.addListener(message => {
+                    if (message.type === 'STATE_UPDATED') reuseNotifications.push(message);
+                });
+                await chrome.bookmarks.move(bookmarkId, {parentId: folderId});
+            }""", {'bookmarkId': self.bookmark_ids['A'], 'folderId': saved[0]['id']})
+            stale = self.session()
+            assert saved[0]['id'] not in stale['groups'], 'Fixture must edit the live tree behind the loaded model'
+            assert self.logical('A')['groupId'] is None
         self.sidebar.evaluate("""() => {
             movementEvents.length = 0;
             chrome.tabs.onCreated.addListener(tab => movementEvents.push({type: 'tab-created', detail: tab, at: Date.now()}));
@@ -49,7 +60,7 @@ class GroupLifecycleCheck(MovementCheck):
         if flow == "same_name":
             second = self.sidebar.evaluate("ids => chrome.tabs.group({tabIds: ids})", [self.live_ids["B"]])
             self.sidebar.evaluate("({id, title}) => chrome.tabGroups.update(id, {title, color: 'blue'})", {"id": second, "title": name})
-        else:
+        elif flow != 'external_reuse':
             # A middle-click is an actual browser background-link action. Chromium
             # decides initial groupId/openerTabId; the test does not replace APIs.
             self.fixture.evaluate("""() => {
@@ -82,11 +93,19 @@ class GroupLifecycleCheck(MovementCheck):
                     assert nodes[logical["bookmarkId"]]["url"] == native["url"]
             if flow == "same_name":
                 assert by_live[self.live_ids["B"]]["groupId"] != a["groupId"]
-            else:
+            elif flow != 'external_reuse':
                 created = [event["detail"] for event in self.sidebar.evaluate("movementEvents") if event["type"] == "tab-created"]
                 assert any(tab["groupId"] == group_id for tab in created), "Background link did not exercise native grouped creation"
-            if flow == "metadata_recreation":
+            if flow in ("metadata_recreation", "external_reuse"):
                 assert a["groupId"] == saved[0]["id"], "Unique saved folder identity must be reused despite different contents"
+            if flow == 'external_reuse':
+                record['public_notifications'] = self.sidebar.evaluate('reuseNotifications')
+                assert any(saved[0]['id'] in message['session']['groups'] and
+                           any(tab['bookmarkId'] == self.bookmark_ids['A'] and tab['groupId'] == saved[0]['id']
+                               for tab in message['session']['logicalTabs'])
+                           for message in record['public_notifications']), 'Rare reuse must notify canonical sidebar state'
+                assert any(tab['url'] == 'https://example.test/history' and tab['groupId'] == saved[0]['id']
+                           for tab in after['session']['logicalTabs']), 'Externally added saved content must materialize too'
             if flow == "ambiguous":
                 assert a["groupId"] not in {folder["id"] for folder in saved}
             for folder in saved:
@@ -253,6 +272,6 @@ class GroupLifecycleCheck(MovementCheck):
 
 
 if __name__ == "__main__":
-    main(check_class=GroupLifecycleCheck, flows=["native_background", "metadata_recreation", "ambiguous", "same_name",
+    main(check_class=GroupLifecycleCheck, flows=["native_background", "metadata_recreation", "ambiguous", "same_name", "external_reuse",
          "removal_move_close", "removal_close", "removal_ungroup", "removal_live_only", "startup_duplicate_urls", "startup_distinct_urls"],
          names_for_flow=lambda flow: "ABSCD" if flow.startswith('removal_') else "ABC" if flow.startswith('startup_') else "AB", evidence_prefix="group-lifecycle")

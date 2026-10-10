@@ -15,10 +15,13 @@ class GroupLifecycleFixture {
         this.reads = { subTrees: new Map(), tabs: new Map(), groups: new Map() };
         let bookmarkId = 0, logicalId = 0;
         const create = chrome.bookmarks.create;
+        const backingChildren = chrome.bookmarks.getChildren;
         chrome.bookmarks.create = async data => {
             await this.hook('create', data);
             const node = await create({ ...data, id: String(++bookmarkId) });
-            const siblings = await chrome.bookmarks.getChildren(node.parentId);
+            // Internal mock bookkeeping must mutate backing nodes, not the API
+            // snapshots below, and must not fire production-read scheduling hooks.
+            const siblings = await backingChildren(node.parentId);
             siblings.forEach((sibling, index) => { sibling.index = index; });
             return structuredClone(node);
         };
