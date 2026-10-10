@@ -1,4 +1,4 @@
-# SPECIFICATION DOCUMENT — “LazyTabs Session Manager”
+# SPECIFICATION DOCUMENT — “InfiniTabs Session Manager”
 
 ## 0. Short Summary
 
@@ -29,7 +29,7 @@
 
 * **Root session bookmark folder**
 
-  * Dedicated parent folder: `"LazyTabs Sessions"`.
+  * Dedicated parent folder: `"InfiniTabs Sessions"`.
   * Each child folder under it = one session.
 
 ### 1.2 Key Invariants
@@ -95,7 +95,7 @@ interface TabGroup {
 interface Session {
   sessionId: SessionId;        // bookmark folder id
   name: string;                // folder title
-  rootFolderId: BookmarkId;    // "LazyTabs Sessions" folder id
+  rootFolderId: BookmarkId;    // "InfiniTabs Sessions" folder id
   windowId: WindowId | null;   // bound window, or null if detached
 
   logicalTabs: LogicalTab[];   // ordered by indexInSession
@@ -129,22 +129,22 @@ On startup:
 
 ```ts
 async function ensureRootFolder(): Promise<BookmarkId> {
-  const existing = await chrome.bookmarks.search({ title: "LazyTabs Sessions" });
-  const folder = existing.find(n => n.title === "LazyTabs Sessions" && !n.url);
+  const existing = await chrome.bookmarks.search({ title: "InfiniTabs Sessions" });
+  const folder = existing.find(n => n.title === "InfiniTabs Sessions" && !n.url);
   if (folder) return folder.id;
-  const created = await chrome.bookmarks.create({ title: "LazyTabs Sessions" });
+  const created = await chrome.bookmarks.create({ title: "InfiniTabs Sessions" });
   return created.id;
 }
 ```
 
-All sessions live as direct subfolders of `"LazyTabs Sessions"`.
+All sessions live as direct subfolders of `"InfiniTabs Sessions"`.
 
 ### 3.2 Session Folder
 
 Each session is a bookmark folder under root:
 
 ```text
-LazyTabs Sessions
+InfiniTabs Sessions
 ├── Work Session 1 (folder, = SessionId)
 │   ├── Bookmark: Logical Tab 1
 │   ├── Bookmark: Logical Tab 2
