@@ -277,3 +277,44 @@ node test/test_group_metadata_interleavings.js 'P1'
 node test/test_group_metadata_interleavings.js 'P2'
 node test/test_group_metadata_interleavings.js 'P3'
 ```
+
+### Revised verification record
+
+Production/test fix commit: `bc239f71964e3baad11abe073d1a77faf4dba4b6`.
+These results supersede the earlier metadata-blind lifecycle result. They are
+local verification evidence, not a claim that the controller's spec review passed.
+
+| Final check | Result | Runtime | Evidence under `ARTIFACTS_DIR` |
+| --- | --- | --- | --- |
+| All ten Node scripts in CI + Python unittest discovery | 7 baseline scripts + 17 resolution, 10 classifier, 8 metadata cases; 20 Python tests passed | 63.4s combined | Console output |
+| Strengthened lifecycle URL/title/save-acknowledgement oracle | 8/8 flows passed | 100.7s | `group-lifecycle-evidence-6ev80jfo` |
+| Movement preservation | 10/10 flows passed | 173.4s | `movement-evidence-03lkvr8s` |
+| Mount preservation | 9/9 flows passed | 193.5s | `mounting-evidence-ag1rihvl` |
+| Active-state preservation | 3/3 flows passed | 9.3s | `pr40-evidence-k7pf65zh` |
+
+The browser commands are the same documented commands above, using Playwright
+1.59.0 / full Chromium 147.0.7727.15 and disposable profiles. All final commands
+exited zero; browser worker/page error checks passed. The lifecycle check retained
+1500ms uninterrupted quiet and 2500ms minimum observation. Node's inherited ESM
+warning and intentional failure-injection diagnostics remain visible.
+
+Final SHA-256 fingerprints, independently checked against the on-disk files and
+the browser evidence after the fix commit:
+
+| Source/script | SHA-256 |
+| --- | --- |
+| `src/background.js` | `65ea681798756fbb778e2d9bc773d34acb85f8ed9753da1c44452536beb13d5e` |
+| `test/group_lifecycle_fixture.js` | `7c182bb47d71e714a44e326169c439661ca0964ff559f9b56cec690630897396` |
+| `test/test_group_metadata_interleavings.js` | `d858c5254af9f08d19c82bccf6fd49cdb1928baf433d6d1f3037b1d88b7d153c` |
+| `test/verify_group_lifecycle.py` | `732de7a80dc2fba193c2e638cf8fea9f9ab8dec1e492ea9b575f03e5cb8adb9e` |
+| `test/verify_move_logical_tabs.py` | `7a86c5c16a5977eed197aa326dc2667c0ef3fd64dd65477f7563bd459bb18e27` |
+| `test/verify_mount_logical_tabs.py` | `42a169695b52098367961f5c32266d6fbcc722b0ddec0c1b18d532baaed331f5` |
+| `test/verify_active_tab_reload.py` | `cd980aced1f761b89ba2149c93bbdc26da121d6daf78a7e306153bcc7845685d` |
+
+Self-review: the timer registry is the only per-bookmark pending-write owner;
+its jobs are disposed when settled, and completed jobs are not retained as a cache.
+Reload performs extra synchronization only at its own boundary. Clean saved edits,
+closed-tab history, startup/coalescing, mapped fast paths, removal classification
+and movement feedback remain covered. Exact held-API metadata interleavings are
+Node models; real Chromium supplies the strengthened native/logical/persisted
+agreement evidence. No production backdoor or test-only listener was added.
