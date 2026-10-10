@@ -28,7 +28,7 @@ jobs:
           node-version: '22'
       - name: Node regressions
         run: |
-          for test in test/test_move_logical_tabs.js test/test_move_group_feedback.js test/test_active_tab_sync.js test/test_switch_session.js test/test_add_new_tab.js test/test_history_switch.js test/test_sidebar_quick_drag.js; do
+          for test in test/test_move_logical_tabs.js test/test_move_group_feedback.js test/test_active_tab_sync.js test/test_switch_session.js test/test_add_new_tab.js test/test_history_switch.js test/test_sidebar_quick_drag.js test/test_group_folder_resolution.js test/test_group_removal_classification.js test/test_group_metadata_interleavings.js test/test_group_lifecycle_fixture.js; do
             node "$test"
           done
       - name: Install documented browser runtime
@@ -43,6 +43,7 @@ jobs:
           python test/verify_move_logical_tabs.py --headless --artifacts-dir evidence
           python test/verify_mount_logical_tabs.py --headless --artifacts-dir evidence
           python test/verify_active_tab_reload.py --headless --artifacts-dir evidence
+          python test/verify_group_lifecycle.py --headless --artifacts-dir evidence
       - name: Preserve exact-source browser evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
