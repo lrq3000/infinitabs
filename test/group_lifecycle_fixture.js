@@ -26,9 +26,18 @@ class GroupLifecycleFixture {
             chrome.bookmarks[method] = async id => {
                 if (method === 'getChildren') this.calls.children++;
                 await this.hook(method, id);
-                return structuredClone(await original(id));
+                const snapshot = structuredClone(await original(id));
+                await this.hook(`after${method}`, { id, snapshot });
+                return snapshot;
             };
         }
+        const update = chrome.bookmarks.update;
+        chrome.bookmarks.update = async (id, data) => {
+            await this.hook('update', { id, data });
+            const snapshot = structuredClone(await update(id, data));
+            await this.hook('updated', { id, data });
+            return snapshot;
+        };
         self.crypto.randomUUID = () => `lifecycle-${++logicalId}`;
         chrome.tabs.get = async id => {
             await this.hook('tab', id);

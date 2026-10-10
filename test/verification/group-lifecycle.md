@@ -137,7 +137,7 @@ current facts and existing operation ownership. Precisely held API reads and
 the pre-native-read closure boundary remain modeled schedules; the actual
 native-move closure ordering above was observed in Chromium.
 
-## Final local validation record
+## Initial local validation record (superseded by spec-review fixes below)
 
 Production changes: `f78eb98` (creation/reuse) and `03d51f1` (classifier and full
 operation ownership). All final runs below use identical production bytes,
@@ -204,3 +204,76 @@ separate from both production milestones.
   scheduling and the untested Ctrl+Shift+T UI are labeled above.
 - Existing read-only CI runs the added scripts through the same runner/observer;
   all new test sources are committed, with runtime evidence outside Git.
+
+## Spec-review revision of `f34293f`
+
+The initial green lifecycle result was insufficient: its URL oracle omitted title
+agreement. Review found real artifacts with logical `New Tab` and native/persisted
+`PR40 active tab`. The strengthened oracle reproduced that failure on unmodified
+`f34293f` in `ARTIFACTS_DIR/group-lifecycle-evidence-3mqqtlec/metadata_recreation`.
+
+`node test/test_group_metadata_interleavings.js` first failed all three reported
+invariants on `f34293f`, plus the held-write and stale-subtree variants:
+
+1. An older combined group/metadata event resumed after resolution and overwrote
+   newer navigation metadata. Metadata is now consumed synchronously before the
+   group-related awaits, including the first native membership read.
+2. Group reload discarded pending URL/title, and callbacks acknowledged an obsolete
+   logical object (or acknowledged newer values that were never written). The
+   existing pending-write registry now uses stable bookmark identity and retains
+   one short-lived `BookmarkUpdate` until its timer/write settles. Writes for the
+   same bookmark serialize; reload retargets the pending job to the current primary
+   logical record, while callbacks acknowledge the exact payload written.
+3. A native rename during placement changed the create key without rechecking
+   eligibility. Placement and root metadata reads now finish before the final
+   native metadata read and eligibility decision. Reuse/create use one name/color
+   snapshot with no intervening await or rename retry loop.
+
+Reload preserves dirty/pending primary metadata. Its temporary snapshot of pending
+jobs also covers a save completing while an older subtree read is in flight. An
+additional test failed when navigation **and** its save occurred wholly inside
+that read: no job existed at either boundary. A monotonic metadata-write revision
+on the primary record now identifies that newer metadata without keeping completed
+jobs around. Clean saved-only bookmark edits are still adopted from the tree.
+
+### Cost and no-index audit
+
+- No name/color/URL/reverse lookup index, folder-content matcher, invalidation hook,
+  or periodic maintenance was added. Known live-group mappings still bypass rare
+  resolution completely. The one-off eligibility scan remains O(R + B); existing
+  placement reads now precede it even on an unmapped reuse hit.
+- Ordinary metadata handling keeps its existing primary-record `find` (O(N)).
+  Additional work is O(1): a revision assignment/counter increment and access to
+  the already-existing pending-write registry. There is no new full-session scan
+  on metadata events or write acknowledgements. No job exists for an idle tab.
+- At reload, P outstanding jobs are shallow-snapshotted in O(P) time/space; constant
+  metadata fields and any pending job target are carried along during the existing
+  join. The nested `find` join is unchanged and remains O(N²). This is metadata
+  correctness work, not the unapproved reload-join optimization.
+- Revisions are primary metadata fields plus one scalar, not lookup structures.
+  Registry entries hold only pending timer/write work and are removed on settle.
+
+### Regression scope
+
+The eight new listener cases check older event replay, creation/debounce/reload,
+rename eligibility and later bound-folder rename, ordinary URL-only/title-only
+updates, serialized held writes plus newer navigation, a write completing during
+reload, a navigation/write wholly inside reload, and clean saved bookmark edits.
+They use the existing fixture with before/after API gates. All gate releases use
+`finally`. Saves are observed from bookmarks and then compared against the current
+logical record and native URL/title, including exact `lastSaved*` acknowledgements.
+
+The real lifecycle oracle now requires native/current-logical/persisted **URL and
+title** agreement for every live tab, and current `lastSavedUrl`/`lastSavedTitle`
+acknowledgement. It retains the existing minimum/quiet observation and waits for
+the actual deferred write condition; no fixed sleep was added to hide disagreement.
+
+The new script is included in the existing read-only CI Node list:
+
+```powershell
+node test/test_group_metadata_interleavings.js
+# Optional focused reproduction, using the case name substring:
+node test/test_group_metadata_interleavings.js 'P1'
+node test/test_group_metadata_interleavings.js 'P2'
+node test/test_group_metadata_interleavings.js 'P3'
+```

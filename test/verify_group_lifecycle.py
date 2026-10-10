@@ -8,6 +8,18 @@ from verify_move_logical_tabs import MovementCheck, main
 
 
 class GroupLifecycleCheck(MovementCheck):
+    def assert_metadata(self, snapshot):
+        nodes = self.bookmark_nodes(snapshot)
+        by_live = {live_id: logical for logical in snapshot['session']['logicalTabs'] for live_id in logical['liveTabIds']}
+        for native in snapshot['native']:
+            logical = by_live[native['id']]
+            saved = nodes[logical['bookmarkId']]
+            for field in ('url', 'title'):
+                assert logical[field] == native[field], f"Logical {field} differs from native for bookmark {logical['bookmarkId']}"
+                assert saved[field] == native[field], f"Saved {field} differs from native for bookmark {logical['bookmarkId']}"
+            assert logical['lastSavedUrl'] == saved['url'], 'Deferred URL save not acknowledged in current logical record'
+            assert logical['lastSavedTitle'] == saved['title'], 'Deferred title save not acknowledged in current logical record'
+
     def run(self, flow):
         if flow.startswith('removal_'):
             return self.removal(flow)
@@ -48,6 +60,7 @@ class GroupLifecycleCheck(MovementCheck):
             record["opened_url"] = opened.value.url
 
         def expected(after):
+            self.assert_metadata(after)
             nodes = self.bookmark_nodes(after)
             folders = [node for node in nodes.values() if node.get("parentId") == session_id and "url" not in node]
             count = 3 if flow == "ambiguous" else 2 if flow == "same_name" else 1
@@ -124,6 +137,7 @@ class GroupLifecycleCheck(MovementCheck):
             self.sidebar.evaluate('id => chrome.tabs.remove(id)', self.live_ids['C'])
 
         def expected(after):
+            self.assert_metadata(after)
             nodes = self.bookmark_nodes(after)
             logical = {tab['bookmarkId']: tab for tab in after['session']['logicalTabs']}
             native = {tab['id']: tab for tab in after['native']}

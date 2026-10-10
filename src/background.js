@@ -167,30 +167,9 @@ async function getOrCreateGroupBookmark(groupId, windowId, { debounce = true } =
             return await moveMutex.run(async () => {
                 if (state.windowToSession[windowId] !== sessionId) return null;
                 if (state.liveGroupToBookmark[groupId]) return state.liveGroupToBookmark[groupId];
-                const children = await chrome.bookmarks.getChildren(sessionId);
                 let groupInfo = await currentGroup();
                 if (!groupInfo) return null;
                 if (state.liveGroupToBookmark[groupId]) return state.liveGroupToBookmark[groupId];
-
-                // Option 2: metadata only. Different contents (including empty
-                // folders) do not disqualify a unique unmapped name/color match.
-                // This one-off scan is O(R + B), R root entries and B bindings.
-                // No secondary index or ordinary-tab bookkeeping is maintained.
-                const title = formatGroupTitle(groupInfo.title, groupInfo.color);
-                const boundFolders = new Set(Object.values(state.liveGroupToBookmark));
-                let reusable = null;
-                for (const child of children) {
-                    if (child.url || boundFolders.has(child.id)) continue;
-                    const parsed = parseGroupTitle(child.title);
-                    if (formatGroupTitle(parsed.name, parsed.color) !== title) continue;
-                    if (reusable) { reusable = null; break; } // Ambiguous: never guess.
-                    reusable = child;
-                }
-                if (reusable) {
-                    state.liveGroupToBookmark[groupId] = reusable.id;
-                    // Retain the exact saved folder, its title, ordering and history.
-                    return reusable.id;
-                }
 
                 let insertIndex = null;
                 try {
@@ -247,12 +226,36 @@ async function getOrCreateGroupBookmark(groupId, windowId, { debounce = true } =
 
                 // Placement reads may yield to closure, rebinding or a restore
                 // that establishes the primary mapping. Do not create an orphan.
+                const children = await chrome.bookmarks.getChildren(sessionId);
                 groupInfo = await currentGroup();
                 if (!groupInfo) return null;
                 if (state.liveGroupToBookmark[groupId]) return state.liveGroupToBookmark[groupId];
+
+                // Resolve eligibility AFTER placement reads. Lookup and creation
+                // use the same fresh name/color, with no intervening await or
+                // rename retry loop that could choose using two different keys.
+                // Option 2: metadata only. Different contents (including empty
+                // folders) do not disqualify a unique unmapped name/color match.
+                // This one-off scan is O(R + B), R root entries and B bindings.
+                // No secondary index or ordinary-tab bookkeeping is maintained.
+                const title = formatGroupTitle(groupInfo.title, groupInfo.color);
+                const boundFolders = new Set(Object.values(state.liveGroupToBookmark));
+                let reusable = null;
+                for (const child of children) {
+                    if (child.url || boundFolders.has(child.id)) continue;
+                    const parsed = parseGroupTitle(child.title);
+                    if (formatGroupTitle(parsed.name, parsed.color) !== title) continue;
+                    if (reusable) { reusable = null; break; } // Ambiguous: never guess.
+                    reusable = child;
+                }
+                if (reusable) {
+                    state.liveGroupToBookmark[groupId] = reusable.id;
+                    // Retain the exact saved folder, its title, ordering and history.
+                    return reusable.id;
+                }
                 const createData = {
                     parentId: sessionId,
-                    title: formatGroupTitle(groupInfo.title, groupInfo.color)
+                    title
                 };
                 if (insertIndex !== null) {
                     createData.index = insertIndex;
@@ -356,18 +359,67 @@ async function ensureLiveGroupForLogicalTabs(tabIds, logicalGroupId, session) {
 }
 
 // Debounce helper
-const bookmarkUpdateTimers = {}; // logicalId -> timerId
+const bookmarkUpdateTimers = {}; // bookmarkId -> pending BookmarkUpdate (removed when settled)
+let bookmarkMetadataVersion = 0; // Monotonic write revision, not a lookup/cache.
 let sidebarUpdateTimer = null;
 let workspaceUpdateTimer = null;
 
-function scheduleBookmarkUpdate(logicalId, updateFn, delay = 2000) {
-    if (bookmarkUpdateTimers[logicalId]) {
-        clearTimeout(bookmarkUpdateTimers[logicalId]);
+class BookmarkUpdate {
+    constructor(logical) {
+        this.logical = logical;
+        this.timer = null;
+        this.writing = false;
+        this.ready = false;
     }
-    bookmarkUpdateTimers[logicalId] = setTimeout(() => {
-        delete bookmarkUpdateTimers[logicalId];
-        updateFn();
-    }, delay);
+
+    schedule(delay) {
+        clearTimeout(this.timer);
+        this.ready = false;
+        this.timer = setTimeout(() => {
+            this.timer = null;
+            this.save();
+        }, delay);
+    }
+
+    async save() {
+        // A newer debounce may expire during an older API call. Queue the latest
+        // value behind it: concurrent writes can otherwise finish in reverse order.
+        if (this.writing) { this.ready = true; return; }
+        this.writing = true;
+        try {
+            do {
+                this.ready = false;
+                const { bookmarkId, title, url, lastSavedTitle, lastSavedUrl } = this.logical;
+                // Double check if we really need to update bookmark.
+                if (title === lastSavedTitle && url === lastSavedUrl) continue;
+                try {
+                    await chrome.bookmarks.update(bookmarkId, { title, url });
+                    // Reload retargets this pending job to the current primary
+                    // record. Acknowledge the payload written, never newer values
+                    // that may have arrived while this API call was in flight.
+                    this.logical.lastSavedTitle = title;
+                    this.logical.lastSavedUrl = url;
+                } catch (err) {
+                    console.error("Failed to update bookmark", err);
+                }
+            } while (this.ready);
+        } finally {
+            this.writing = false;
+            if (!this.timer) delete bookmarkUpdateTimers[this.logical.bookmarkId];
+        }
+    }
+}
+
+function scheduleBookmarkUpdate(logical, delay = 2000) {
+    // Reuse the existing timer registry with stable bookmark identity. No entry
+    // exists for an idle tab; ordinary metadata events add no session-wide scan.
+    // A navigation and its save can both finish inside a slow subtree read,
+    // leaving no pending job at either end. Tag the primary record so reload can
+    // still recognize newer metadata without retaining completed write entries.
+    logical.metadataVersion = ++bookmarkMetadataVersion;
+    const update = bookmarkUpdateTimers[logical.bookmarkId] ||= new BookmarkUpdate(logical);
+    update.logical = logical;
+    update.schedule(delay);
 }
 
 function scheduleSidebarUpdate(windowId, sessionId, delay = 200) {
@@ -591,6 +643,11 @@ async function bindWindowToSession(windowId, sessionId) {
 }
 
 async function reloadSessionAndPreserveState(sessionId, windowId) {
+    const metadataVersionAtStart = bookmarkMetadataVersion;
+    // Only pending writes need a start-of-read snapshot. One may finish while
+    // getSubTree is in flight yet its returned tree still predates that write.
+    // This O(P) temporary snapshot is not a maintained index or a join rewrite.
+    const pendingUpdates = { ...bookmarkUpdateTimers };
     const reloadedSession = await loadSessionFromBookmarks(sessionId);
     reloadedSession.windowId = windowId;
 
@@ -603,6 +660,18 @@ async function reloadSessionAndPreserveState(sessionId, windowId) {
         reloadedSession.logicalTabs.forEach(newLt => {
             const oldLt = latestSessionState.logicalTabs.find(old => old.bookmarkId === newLt.bookmarkId);
             if (oldLt) {
+                const update = bookmarkUpdateTimers[newLt.bookmarkId] || pendingUpdates[newLt.bookmarkId];
+                if (update || oldLt.metadataVersion > metadataVersionAtStart ||
+                    oldLt.title !== oldLt.lastSavedTitle || oldLt.url !== oldLt.lastSavedUrl) {
+                    // Bookmark structure is authoritative, but a debounced/native
+                    // metadata change is newer than persisted URL/title. Carry it
+                    // and its exact save acknowledgement through ID regeneration.
+                    for (const field of ['url', 'title', 'favIconUrl', 'lastUpdated', 'lastSavedUrl', 'lastSavedTitle']) {
+                        newLt[field] = oldLt[field];
+                    }
+                }
+                if (update) update.logical = newLt;
+                newLt.metadataVersion = oldLt.metadataVersion;
                 newLt.liveTabIds = oldLt.liveTabIds;
                 oldIdToNewId[oldLt.logicalId] = newLt.logicalId;
 
@@ -1411,9 +1480,8 @@ chrome.tabs.onCreated.addListener(async (tab) => {
         const latest = { title: liveTab.title || "New Tab", url: liveTab.pendingUrl || liveTab.url || "about:blank" };
         Object.assign(newLogical, latest);
         if (latest.title !== newLogical.lastSavedTitle || latest.url !== newLogical.lastSavedUrl) {
-            await chrome.bookmarks.update(createdBookmark.id, latest);
-            newLogical.lastSavedTitle = latest.title;
-            newLogical.lastSavedUrl = latest.url;
+            // Use the same reload-aware pending write as later navigation events.
+            scheduleBookmarkUpdate(newLogical, 0);
         }
 
     }
@@ -1441,6 +1509,10 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (!state.initialized) await init();
 
+    // Consume independent metadata before ANY group-related await. Replaying
+    // this event's payload after resolution would overwrite a newer navigation.
+    updateLogicalTabMetadata(tabId, changeInfo, tab);
+
     // Event payloads are snapshots: delayed temporary group changes must not
     // overwrite the final native membership. Still process title/URL updates.
     let currentGroup = true;
@@ -1452,7 +1524,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     // Individual native moves can temporarily ungroup a selected tab. While the
     // logical move owns it, the bookmark destination is authoritative; feeding
     // that intermediate group change back would undo the user's bookmark move.
-    // Other updates (title, URL, etc.) still follow their normal path below.
+    // Other updates (title, URL, etc.) have already followed their normal path.
     if (changeInfo.groupId !== undefined && currentGroup && !state.syncingLiveTabIds.has(tabId)) {
          const logicalId = state.tabToLogical[tabId];
          if (logicalId) {
@@ -1536,6 +1608,9 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
          }
     }
 
+});
+
+function updateLogicalTabMetadata(tabId, changeInfo, tab) {
     // Optimization: Ignore loading state if title/url didn't change to avoid spamming the sidebar
     if (changeInfo.status === 'loading' && !changeInfo.url && !changeInfo.title) return;
 
@@ -1567,29 +1642,15 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (changed) {
         logical.lastUpdated = Date.now();
 
-        // Debounce bookmark update
-        scheduleBookmarkUpdate(logicalId, () => {
-            // Double check if we really need to update bookmark
-            if (logical.title === logical.lastSavedTitle && logical.url === logical.lastSavedUrl) {
-                return;
-            }
-
-            // Note: favIconUrl is not persisted to bookmarks as Chrome bookmarks don't support storing favicon (or any kind of meta) data.
-            // Favicons will fall back to the /_favicon/ service after reload until live tabs reattach.
-            // TODO: store favIconUrl data in a local database in the extension. More generally, the extension should have a local database to store bookmarks' metadata, which should only be metadata that is not necessary for core functionality (ie, not necessary for managing or storing or recalling sessions and workspaces and tabs and tabs groups) but can be used to improve UX (eg, favicons recall after browser close and reopening).
-            chrome.bookmarks.update(logical.bookmarkId, {
-                title: logical.title,
-                url: logical.url
-            }).then(() => {
-                logical.lastSavedTitle = logical.title;
-                logical.lastSavedUrl = logical.url;
-            }).catch(err => console.error("Failed to update bookmark", err));
-        }, 2000); // 2s debounce to avoid rapid updates causing side effects
+        // Note: favIconUrl is not persisted to bookmarks as Chrome bookmarks don't support storing favicon (or any kind of meta) data.
+        // Favicons will fall back to the /_favicon/ service after reload until live tabs reattach.
+        // TODO: store favIconUrl data in a local database in the extension. More generally, the extension should have a local database to store bookmarks' metadata, which should only be metadata that is not necessary for core functionality (ie, not necessary for managing or storing or recalling sessions and workspaces and tabs and tabs groups) but can be used to improve UX (eg, favicons recall after browser close and reopening).
+        scheduleBookmarkUpdate(logical); // 2s debounce to avoid rapid updates causing side effects
 
         // Debounce sidebar update for onUpdated events to prevent thrashing
         scheduleSidebarUpdate(windowId, sessionId);
     }
-});
+}
 
 chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
     if (!state.initialized) await init();
