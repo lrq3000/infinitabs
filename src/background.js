@@ -2434,10 +2434,15 @@ async function handleMoveLogicalTabs(windowId, logicalIds, targetLogicalId, posi
     // Collect bookmark IDs to move
     const logicalTabsById = new Map(session.logicalTabs.map(tab => [tab.logicalId, tab]));
     const bookmarksToMove = [];
+    const sourceGroupIds = new Set();
+
     for (const lid of logicalIds) {
         const l = logicalTabsById.get(lid);
         if (l) {
             bookmarksToMove.push(l.bookmarkId);
+            if (l.groupId) {
+                sourceGroupIds.add(l.groupId);
+            }
         } else {
             // Could be a group move? Not implemented in UI yet but good to be safe
             // For now assume only tabs.
@@ -2494,6 +2499,24 @@ async function moveBookmarksAndLiveTabs(windowId, sessionId, bookmarksToMove, pa
         const bid = bookmarksToMove[i];
         const moved = await chrome.bookmarks.move(bid, { parentId, index });
         index = moved.index;
+    }
+
+    // Check if source groups are empty and delete them
+    for (const groupId of sourceGroupIds) {
+        try {
+            const children = await chrome.bookmarks.getChildren(groupId);
+            if (children.length === 0) {
+                await chrome.bookmarks.remove(groupId);
+
+                // Cleanup live group mapping if exists
+                const liveGroupId = Object.keys(state.liveGroupToBookmark).find(k => state.liveGroupToBookmark[k] === groupId);
+                if (liveGroupId) {
+                    delete state.liveGroupToBookmark[liveGroupId];
+                }
+            }
+        } catch (e) {
+            console.warn("Failed to cleanup empty group", e);
+        }
     }
 
     // Update state using helper
