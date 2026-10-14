@@ -26,5 +26,15 @@
   "options_ui": {
     "page": "options.html",
     "open_in_tab": true
+  },
+  "commands": {
+    "unmount-current-tab": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+4",
+        "mac": "Command+Shift+U"
+      },
+      "description": "Unmount the current tab",
+      "global": true
+    }
   }
 }
