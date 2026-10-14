@@ -557,6 +557,15 @@ function performSearch() {
 }
 
 function navigateSearch(direction) {
+    if (searchInput.value === '') {
+        chrome.runtime.sendMessage({
+            type: "NAVIGATE_TAB_HISTORY",
+            windowId: currentWindowId,
+            direction: direction
+        });
+        return;
+    }
+
     if (currentMatches.length === 0) return;
 
     // Clear active style on current
