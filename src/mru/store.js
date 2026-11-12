@@ -108,4 +108,18 @@ export class RecoveryStore extends StorageQueue {
         return [...this.records.values()].sort((a, b) => b.deletedAt - a.deletedAt || b.ordinal - a.ordinal);
     }
 
+    async update(record) {
+        await this.ready();
+        if (!this.enabled || !this.records.has(record.recoveryId)) throw new Error('Recovery entry is no longer available');
+        // Remember a successfully created bookmark even if journaling fails. Retrying in this worker must not create a second bookmark.
+        this.records.set(record.recoveryId, record);
+        await this.enqueue(() => this.storage.set({ [RECOVERY + record.recoveryId]: record }));
+    }
+
+    async remove(recoveryId) {
+        await this.ready();
+        await this.enqueue(() => this.storage.remove(RECOVERY + recoveryId));
+        this.records.delete(recoveryId);
+    }
+
 }

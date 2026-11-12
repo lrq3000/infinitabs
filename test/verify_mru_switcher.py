@@ -45,6 +45,34 @@ class MruCheck(MovementCheck):
         popup.get_by_role("combobox", name="Search recent tabs").press("Enter")
         self.wait_until(lambda: popup.is_closed() and self.active_tab()["id"] == self.live_ids["A"], "keyboard activation and popup close")
         self.evidence["flows"].append({"name": "popup-keyboard-no-phantom-session", "status": "pass"})
+        # Collection opt-out, not just result hiding: a viewed tab deleted before opt-in must leave no recovery payload.
+        self.send_message({"type": "DELETE_LOGICAL_TAB", "windowId": self.window_id, "logicalId": self.logical("C")["logicalId"]})
+        self.wait_until(lambda: not self.sidebar.evaluate("id => chrome.bookmarks.get(id).catch(() => [])", self.bookmark_ids["C"]), "deleted C bookmark")
+        assert self.send_message({"type": "MRU_RECOVERY_STATUS"}) == {"enabled": False, "count": 0}
+        persisted = self.sidebar.evaluate("async () => Object.fromEntries(Object.entries(await chrome.storage.local.get(null)).filter(([key]) => key.startsWith('mru.v1.')))")
+        assert "?C" not in json.dumps(persisted), persisted
+        cdp = self.context.new_cdp_session(self.fixture)
+        try:
+            with self.context.expect_page() as opened:
+                cdp.send("Target.createTarget", {"url": self.sidebar_url.replace("sidebar.html", "options.html"), "background": True})
+        finally:
+            cdp.detach()
+        options = opened.value
+        options.locator("#mru-recovery-checkbox").check()
+        self.wait_until(lambda: self.send_message({"type": "MRU_RECOVERY_STATUS"})["enabled"], "recovery opt-in")
+        self.unmount("B")
+        self.send_message({"type": "DELETE_LOGICAL_TAB", "windowId": self.window_id, "logicalId": self.logical("B")["logicalId"]})
+        self.wait_until(lambda: self.send_message({"type": "MRU_RECOVERY_STATUS"})["count"] == 1, "opted-in deleted B recovery")
+        deleted = next(row for row in self.query()["items"] if row.get("deleted"))
+        before = [node["id"] for node in self.snapshot()["bookmarks"][0]["children"]]
+        self.sidebar.locator("#recent-tabs-container [data-key='" + deleted["key"] + "']").click()
+        self.wait_until(lambda: self.send_message({"type": "MRU_RECOVERY_STATUS"})["count"] == 0, "recovery completion")
+        after = self.snapshot()
+        children = after["bookmarks"][0]["children"]
+        assert [node["id"] for node in children[:-1]] == before, "Recovery changed existing placement"
+        assert children[-1]["url"].endswith("?B") and children[-1]["id"] != self.bookmark_ids["B"], "Recovery must append a fresh canonical bookmark"
+        assert self.active_tab()["url"].endswith("?B"), "Restored logical tab was not mounted/focused"
+        self.evidence["flows"].append({"name": "recovery-opt-in-and-append", "status": "pass"})
 
 
 def main():

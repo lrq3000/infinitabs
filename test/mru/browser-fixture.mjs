@@ -17,6 +17,12 @@ export class BrowserFixture {
             runtime: { id: 'fixture', getURL: path => `chrome-extension://fixture/${path}`, sendMessage: async message => { this.messages.push(message); } },
             storage: { local: new MemoryStorage(), session: new MemoryStorage() },
             bookmarks: {
+                create: async values => {
+                    const parent = this.node(values.parentId);
+                    if (!parent) throw new Error('Parent folder missing');
+                    const node = { ...values, id: `created-${this.nextBookmarkId = (this.nextBookmarkId || 0) + 1}`, index: parent.children.length };
+                    parent.children.push(node); return structuredClone(node);
+                },
                 getSubTree: async id => this.node(id) ? [structuredClone(this.node(id))] : [],
                 get: async id => this.node(id) ? [structuredClone(this.node(id))] : [],
                 onCreated: event('created'), onChanged: event('changed'), onMoved: event('moved'), onRemoved: event('removed')
@@ -70,6 +76,10 @@ export class BrowserFixture {
     }
 
     options() {
-        return { chrome: this.chrome, initialize: async () => {}, getState: () => this.state, getRoot: async () => 'root', focusOrMount: this.mount.bind(this), bindSession: this.bind.bind(this) };
+        return { chrome: this.chrome, initialize: async () => {}, getState: () => this.state, getRoot: async () => 'root', focusOrMount: this.mount.bind(this), bindSession: this.bind.bind(this), refreshSession: async (sessionId, windowId) => {
+            const previous = new Map(this.state.sessionsById[sessionId].logicalTabs.map(tab => [tab.bookmarkId, tab.liveTabIds]));
+            this.bind(windowId, sessionId);
+            for (const logical of this.state.sessionsById[sessionId].logicalTabs) logical.liveTabIds = previous.get(logical.bookmarkId) || [];
+        } };
     }
 }

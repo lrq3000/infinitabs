@@ -77,9 +77,13 @@ export class MruChromeAdapter {
         const rootId = await this.getRoot();
         const roots = await this.chrome.bookmarks.getSubTree(rootId);
         const candidates = [];
+        this.folderSessions = new Map(); // Disposable ownership index derived from canonical folders; no persisted placement metadata.
         const visit = (node, session, ancestors) => {
             if (node.url) candidates.push({ bookmarkId: node.id, title: node.title, url: node.url, sessionId: session.id, sessionName: session.title.replace(/ \[windowId:\d+\]$/, ''), ancestorIds: ancestors, liveTabIds: [] });
-            else for (const child of node.children || []) visit(child, session, [...ancestors, node.id]);
+            else {
+                this.folderSessions.set(node.id, session.id);
+                for (const child of node.children || []) visit(child, session, [...ancestors, node.id]);
+            }
         };
         for (const session of roots[0]?.children || []) if (!session.url) visit(session, session, [rootId]);
         this.service.setCatalog(candidates);
@@ -129,22 +133,33 @@ export class MruChromeAdapter {
     }
 
     async onBookmarksRemoved(id, info) {
+        // Preserve minimal visit evidence BEFORE cold initialization prunes missing bookmarks. Chrome's removal event supplies the deleted title/URL, so no always-on deleted snapshot store is needed.
+        await this.recencyStore.ready();
+        const visits = new Map(this.recencyStore.entries().map(record => [record.bookmarkId, record]));
+        const ownership = new Map([...this.service.catalog.values()].map(candidate => [candidate.bookmarkId, candidate.sessionId]));
         await this.ready();
         const removed = new Set([id]);
-        const walk = node => { if (!node) return; removed.add(node.id); for (const child of node.children || []) walk(child); };
-        walk(info?.node);
-        const visits = new Map(this.recencyStore.entries().map(record => [record.bookmarkId, record]));
-        const snapshots = [];
+        const snapshots = new Map();
+        const rootId = await this.getRoot();
+        const walk = (node, sourceSessionId) => {
+            if (!node) return;
+            removed.add(node.id);
+            const visit = visits.get(node.id);
+            if (node.url && visit) snapshots.set(node.id, { title: node.title, url: node.url, sourceSessionId: ownership.get(node.id) || sourceSessionId, lastViewedAt: visit.lastViewedAt });
+            for (const child of node.children || []) walk(child, node.id === rootId ? child.id : sourceSessionId);
+        };
+        walk(info?.node, this.folderSessions.get(info?.parentId) || (info?.parentId === rootId ? id : null));
         for (const candidate of this.service.catalog.values()) {
             if (!removed.has(candidate.bookmarkId) && !candidate.ancestorIds.some(parent => removed.has(parent))) continue;
             removed.add(candidate.bookmarkId);
             const visit = visits.get(candidate.bookmarkId);
-            if (visit && !candidate.private) snapshots.push({ title: candidate.title, url: candidate.url, sourceSessionId: candidate.sessionId, lastViewedAt: visit.lastViewedAt });
+            if (visit && !candidate.private) snapshots.set(candidate.bookmarkId, { title: candidate.title, url: candidate.url, sourceSessionId: candidate.sessionId, lastViewedAt: visit.lastViewedAt });
+            if (candidate.private) snapshots.delete(candidate.bookmarkId);
             this.service.catalog.delete(candidate.bookmarkId);
         }
         // Purge first, before awaiting snapshot writes; in-flight native focus callbacks cannot revive a removed catalog member.
         await this.recencyStore.forget(removed);
-        for (const snapshot of snapshots) await this.recoveryStore.capture(snapshot);
+        for (const snapshot of snapshots.values()) await this.recoveryStore.capture(snapshot);
         await this.refreshCatalog();
         this.broadcast();
     }
@@ -195,8 +210,7 @@ export class MruChromeAdapter {
     }
 
     async activate(request) {
-        const context = await this.context(request.sourceWindowId);
-        if (request.sourceSessionId !== context.sourceSessionId) throw new Error('Source session changed; reopen the switcher');
+        await this.validateSource(request);
         if (!this.activations.has(request.key)) {
             const operation = this.activateTarget(request).finally(() => this.activations.delete(request.key));
             this.activations.set(request.key, operation);
@@ -206,6 +220,8 @@ export class MruChromeAdapter {
 
     async activateTarget(request) {
         await this.refreshCatalog();
+        await this.validateSource(request);
+        if (request.key?.startsWith('deleted:')) return this.restoreDeleted({ ...request, recoveryId: request.key.slice(8) });
         if (!request.key?.startsWith('tab:')) throw new Error('Recovery entry is not available');
         const bookmarkId = request.key.slice(4);
         const candidate = this.service.catalog.get(bookmarkId);
@@ -225,12 +241,46 @@ export class MruChromeAdapter {
         // Reacquire identity after binding/reload; logical IDs are intentionally ephemeral.
         const logical = state.sessionsById[candidate.sessionId]?.logicalTabs.find(tab => tab.bookmarkId === bookmarkId);
         if (!logical) throw new Error('This logical tab is no longer available');
+        await this.validateSource(request);
         await this.focusOrMount(windowId, logical.logicalId);
         const mounted = state.sessionsById[candidate.sessionId]?.logicalTabs.find(tab => tab.bookmarkId === bookmarkId);
         const native = mounted?.liveTabIds?.length ? await this.chrome.tabs.get(mounted.liveTabIds[0]).catch(() => null) : null;
         if (!native) throw new Error('Tab could not be mounted; retry from its session');
         if (bridgeIds.length) await this.chrome.tabs.remove(bridgeIds);
         await this.observeCurrent(windowId);
+        return { success: true };
+    }
+
+    async validateSource(request) {
+        const context = await this.context(request.sourceWindowId);
+        if (request.sourceSessionId !== context.sourceSessionId) throw new Error('Source session changed; reopen the switcher');
+        return context;
+    }
+
+    async restoreDeleted(request) {
+        const context = await this.validateSource(request);
+        const record = (await this.recoveryStore.list()).find(entry => entry.recoveryId === request.recoveryId);
+        if (!record) throw new Error('Recovery entry is no longer available');
+        if (!/^(https?:|about:|chrome:|edge:|file:)/i.test(record.url)) throw new Error('This URL cannot be restored as a browser tab');
+        let bookmarkId = record.restoredBookmarkId;
+        if (bookmarkId) {
+            await this.refreshCatalog();
+            if (this.service.catalog.get(bookmarkId)?.sessionId !== context.sourceSessionId) throw new Error('Previously restored tab was deleted or moved to a different session; inspect that session before retrying');
+        } else {
+            const [folder] = await this.chrome.bookmarks.get(context.sourceSessionId);
+            if (!folder || folder.url) throw new Error('Source session is no longer available');
+            await this.validateSource(request);
+            // No index/group snapshot exists: omitted index appends to the canonical session root.
+            const bookmark = await this.chrome.bookmarks.create({ parentId: context.sourceSessionId, title: record.title, url: record.url });
+            bookmarkId = bookmark.id;
+            try { await this.recoveryStore.update({ ...record, restoredBookmarkId: bookmarkId }); }
+            catch { throw new Error('A restored bookmark was created, but recovery status could not be saved. Inspect the session before retrying.'); }
+        }
+        await this.validateSource(request);
+        await this.refreshSession(context.sourceSessionId, context.sourceWindowId);
+        await this.activateTarget({ ...context, key: `tab:${bookmarkId}` });
+        await this.recoveryStore.remove(record.recoveryId);
+        this.broadcast();
         return { success: true };
     }
 
@@ -247,6 +297,15 @@ export class MruChromeAdapter {
     }
 
     async handleMessage(message) {
+        if (message.type === 'MRU_RECOVERY_STATUS' || message.type === 'MRU_RECOVERY_CONFIGURE') {
+            await this.ready();
+            if (message.type === 'MRU_RECOVERY_CONFIGURE') {
+                if (typeof message.enabled !== 'boolean') throw new Error('Recovery opt-in must be explicit');
+                await this.recoveryStore.configure(message.enabled);
+                this.broadcast();
+            }
+            return { enabled: this.recoveryStore.enabled, count: (await this.recoveryStore.list()).length };
+        }
         if (message.type === 'MRU_POPUP_CONTEXT') {
             await this.ready();
             return this.popupContext || await this.context(message.sourceWindowId);
