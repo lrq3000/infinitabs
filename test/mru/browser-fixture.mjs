@@ -42,6 +42,11 @@ export class BrowserFixture {
             },
             tabs: {
                 get: async id => { const tab = this.tabs.get(id); if (!tab) throw new Error('Tab closed'); return { ...tab }; },
+                update: async (id, values) => {
+                    const tab = this.tabs.get(id); if (!tab) throw new Error('Tab closed');
+                    if (values.active) for (const other of this.tabs.values()) if (other.windowId === tab.windowId) other.active = false;
+                    Object.assign(tab, values); return { ...tab };
+                },
                 query: async query => [...this.tabs.values()].filter(tab => (query.windowId === undefined || query.windowId === tab.windowId) && (query.active === undefined || query.active === tab.active)),
                 remove: async id => { for (const value of [id].flat()) this.tabs.delete(value); }
             },
@@ -66,13 +71,15 @@ export class BrowserFixture {
 
     async mount(windowId, logicalId) {
         const logical = this.state.sessionsById[this.state.windowToSession[windowId]].logicalTabs.find(tab => tab.logicalId === logicalId);
+        const wasMounted = logical.liveTabIds.length > 0;
         if (!logical.liveTabIds.length) {
             const id = Math.max(...this.tabs.keys()) + 1;
             this.tabs.set(id, { id, windowId, url: logical.url, active: false, groupId: -1 });
             logical.liveTabIds = [id]; this.state.tabToLogical[id] = logicalId;
         }
         for (const tab of this.tabs.values()) if (tab.windowId === windowId) tab.active = tab.id === logical.liveTabIds[0];
-        await this.chrome.windows.update(windowId, { focused: true });
+        // Match the real background helper: only its ALREADY-mounted branch focuses a window. The MRU adapter must supply focus after creating an unmounted projection.
+        if (wasMounted) await this.chrome.windows.update(windowId, { focused: true });
     }
 
     options() {

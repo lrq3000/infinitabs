@@ -701,8 +701,10 @@ async function reloadSessionAndPreserveState(sessionId, windowId) {
     if (latestSessionState) {
         // Map old Logical IDs to new Logical IDs using Bookmark ID as the key
         const oldIdToNewId = {};
+        // Canonical refresh is also used before mounting externally edited MRU results. Index once so identity preservation remains O(n), not O(n²), for large logical sessions.
+        const previousByBookmark = new Map(latestSessionState.logicalTabs.map(logical => [logical.bookmarkId, logical]));
         reloadedSession.logicalTabs.forEach(newLt => {
-            const oldLt = latestSessionState.logicalTabs.find(old => old.bookmarkId === newLt.bookmarkId);
+            const oldLt = previousByBookmark.get(newLt.bookmarkId);
             if (oldLt) {
                 const update = bookmarkUpdateTimers[newLt.bookmarkId];
                 if (update || oldLt.metadataVersion > metadataVersionAtStart ||

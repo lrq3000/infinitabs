@@ -109,3 +109,54 @@ test('a command with optional tab omitted still advances an already focused swit
     assert.equal(browser.messages.at(-1).type, 'MRU_ADVANCE');
     assert.equal(adapter.popupContext.sourceWindowId, 1);
 });
+
+test('external URL edits to saved tabs are mounted from canonical rather than cached metadata', async () => {
+    const { browser, adapter } = await fixture();
+    browser.node('b').url = 'https://edited.test/new';
+    await adapter.refreshCatalog();
+    assert.equal(adapter.service.catalog.get('b').url, 'https://edited.test/new');
+    await adapter.activate({ sourceWindowId: 1, sourceSessionId: 's', key: 'tab:b' });
+    assert.ok([...browser.tabs.values()].some(tab => tab.url === 'https://edited.test/new'));
+    assert.equal([...browser.tabs.values()].some(tab => tab.url === 'https://b.test'), false);
+});
+
+test('externally moved unmounted identities are reacquired in the destination session', async () => {
+    const { browser, adapter } = await fixture();
+    const bookmark = browser.node('b');
+    browser.node('s').children = browser.node('s').children.filter(node => node.id !== 'b');
+    bookmark.parentId = 'other'; browser.node('other').children.push(bookmark);
+    await adapter.activate({ sourceWindowId: 1, sourceSessionId: 's', key: 'tab:b' });
+    const native = [...browser.tabs.values()].find(tab => tab.url === 'https://b.test');
+    assert.equal(native?.windowId, 2);
+    assert.ok(browser.state.sessionsById.other.logicalTabs.some(tab => tab.bookmarkId === 'b' && tab.liveTabIds.includes(native.id)));
+});
+
+test('different concurrent targets share one newly opened saved-session window', async () => {
+    const { browser, adapter } = await fixture();
+    browser.node('closed').children.push({ id: 'e', parentId: 'closed', title: 'E', url: 'https://e.test' });
+    await Promise.all(['d', 'e'].map(id => adapter.activate({ sourceWindowId: 1, sourceSessionId: 's', key: `tab:${id}` })));
+    const destinations = [...browser.windows.keys()].filter(id => browser.state.windowToSession[id] === 'closed');
+    assert.equal(destinations.length, 1);
+    assert.equal([...browser.tabs.values()].find(tab => tab.url === 'https://d.test').windowId, destinations[0]);
+    assert.equal([...browser.tabs.values()].find(tab => tab.url === 'https://e.test').windowId, destinations[0]);
+});
+
+test('mounting in another existing window explicitly focuses its native destination', async () => {
+    const { browser, adapter } = await fixture();
+    const saved = browser.node('s').children.pop();
+    saved.parentId = 'other'; browser.node('other').children.push(saved);
+    await browser.options().refreshSession('other', 2);
+    await adapter.activate({ sourceWindowId: 1, sourceSessionId: 's', key: 'tab:b' });
+    assert.equal(browser.windows.get(2).focused, true);
+    assert.equal(browser.windows.get(1).focused, false);
+});
+
+test('a mounted identity moved externally is focused rather than duplicated', async () => {
+    const { browser, adapter } = await fixture();
+    const bookmark = browser.node('a');
+    browser.node('s').children = browser.node('s').children.filter(node => node.id !== 'a');
+    bookmark.parentId = 'other'; browser.node('other').children.push(bookmark);
+    await adapter.activate({ sourceWindowId: 1, sourceSessionId: 's', key: 'tab:a' });
+    assert.equal([...browser.tabs.values()].filter(tab => tab.url === 'https://a.test').length, 1);
+    assert.equal(browser.tabs.get(11).active, true);
+});

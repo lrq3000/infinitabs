@@ -12,6 +12,7 @@ export class MruChromeAdapter {
         this.privateWindows = new Set();
         this.logicalIndexes = new WeakMap();
         this.activations = new Map();
+        this.sessionActivations = new Map();
         this.windowUi = new Map();
         this.openQueue = Promise.resolve();
         this.popupWindowId = null;
@@ -234,6 +235,21 @@ export class MruChromeAdapter {
         const bookmarkId = request.key.slice(4);
         const candidate = this.service.catalog.get(bookmarkId);
         if (!candidate || !(await this.chrome.bookmarks.get(bookmarkId)).length) throw new Error('This logical tab no longer exists');
+        // Target-key deduplication is insufficient when DIFFERENT tabs share an unopened session. Serialize discovery/binding/mounting per session; unrelated sessions and native window events remain independent.
+        const sessionId = candidate.sessionId;
+        const previous = this.sessionActivations.get(sessionId) || Promise.resolve();
+        const operation = previous.catch(() => {}).then(() => this.activateInSession(request, bookmarkId, sessionId));
+        this.sessionActivations.set(sessionId, operation);
+        try { return await operation; }
+        finally { if (this.sessionActivations.get(sessionId) === operation) this.sessionActivations.delete(sessionId); }
+    }
+
+    async activateInSession(request, bookmarkId, sessionId) {
+        await this.refreshCatalog();
+        await this.validateSource(request);
+        const candidate = this.service.catalog.get(bookmarkId);
+        if (!candidate || candidate.sessionId !== sessionId) throw new Error('The logical tab moved or was deleted; refresh and try again');
+        if (await this.focusMountedCandidate(candidate, request)) return { success: true };
         const state = this.getState();
         // Persisted window IDs can outlive a browser window/restart. Validate against one native inventory instead of trusting the first historical binding or creating duplicates when a later binding is still alive.
         const nativeWindows = new Map((await this.chrome.windows.getAll()).map(window => [window.id, window]));
@@ -248,6 +264,8 @@ export class MruChromeAdapter {
         }
         const window = await this.chrome.windows.get(windowId);
         if (window.incognito) throw new Error('Cannot activate a private-window tab');
+        // Search catalog and loaded session state can diverge after external bookmark edits/moves. Reconcile through the existing metadata-preserving lifecycle before resolving an ephemeral logical ID.
+        await this.refreshSession(candidate.sessionId, windowId);
         // Reacquire identity after binding/reload; logical IDs are intentionally ephemeral.
         const logical = state.sessionsById[candidate.sessionId]?.logicalTabs.find(tab => tab.bookmarkId === bookmarkId);
         if (!logical) throw new Error('This logical tab is no longer available');
@@ -256,9 +274,27 @@ export class MruChromeAdapter {
         const mounted = state.sessionsById[candidate.sessionId]?.logicalTabs.find(tab => tab.bookmarkId === bookmarkId);
         const native = mounted?.liveTabIds?.length ? await this.chrome.tabs.get(mounted.liveTabIds[0]).catch(() => null) : null;
         if (!native) throw new Error('Tab could not be mounted; retry from its session');
+        // Chrome tabs.create({active:true}) selects within a window but does not focus an unfocused window. The existing helper supplies focus only in its already-mounted branch.
+        await this.chrome.windows.update(windowId, { focused: true });
         if (bridgeIds.length) await this.chrome.tabs.remove(bridgeIds);
         await this.observeCurrent(windowId);
         return { success: true };
+    }
+
+    async focusMountedCandidate(candidate, request) {
+        for (const tabId of candidate.liveTabIds || []) {
+            const native = await this.chrome.tabs.get(tabId).catch(() => null);
+            if (!native || this.logicalForNative(native)?.bookmarkId !== candidate.bookmarkId) continue;
+            const window = await this.chrome.windows.get(native.windowId);
+            if (window.incognito) throw new Error('Cannot activate a private-window tab');
+            await this.validateSource(request);
+            // An external bookmark move may have changed canonical ownership without relocating its existing native projection. Focus that projection, never create a duplicate just because the destination's loaded model was stale.
+            await this.chrome.tabs.update(tabId, { active: true });
+            await this.chrome.windows.update(native.windowId, { focused: true });
+            await this.observeCurrent(native.windowId);
+            return true;
+        }
+        return false;
     }
 
     async validateSource(request) {

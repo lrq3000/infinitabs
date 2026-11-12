@@ -84,6 +84,7 @@ class MruCheck(MovementCheck):
         self.shared_filter_and_mount()
         self.inert_title_and_restart()
         self.saved_session_and_concurrent_window()
+        self.external_canonical_changes()
         self.benchmark_large_history()
 
     def saved_session_and_concurrent_window(self):
@@ -109,10 +110,32 @@ class MruCheck(MovementCheck):
         bindings = self.wait_until(lambda: (lambda value: value if str(unrelated["id"]) in value and saved["sessionId"] in value.values() else None)(self.sidebar.evaluate("async () => (await chrome.storage.local.get('windowToSession')).windowToSession")), "both independent windows tracked")
         assert bindings[str(self.window_id)] == source_session, "Cross-session MRU replaced the caller's session"
         assert len(self.send_message({"type": "GET_SESSION_LIST"})["sessions"]) == count_before + 1, "Bridge created a phantom session or unrelated window was lost"
+        destination = next(int(id) for id, session_id in bindings.items() if session_id == saved["sessionId"])
+        assert self.sidebar.evaluate("id => chrome.windows.get(id)", destination)["focused"], "Mounted saved-session result did not focus its destination window"
         tree = self.sidebar.evaluate("async () => chrome.bookmarks.getSubTree((await chrome.bookmarks.search({title:'InfiniTabs Sessions'}))[0].id)")
         assert "mru/popup.html" not in json.dumps(tree), "Internal bridge became a canonical bookmark"
         self.evidence["flows"].append({"name": "saved-session-bridge-and-unrelated-window", "status": "pass"})
         self.restart_bookmarks = [self.bookmark_ids["A"], self.bookmark_ids["B"], target["bookmarkId"]]
+        self.unrelated_window_id = unrelated["id"]
+
+    def external_canonical_changes(self):
+        self.unmount("B")
+        edited_url = self.fixture.url.split("?")[0] + "?canonical-edit"
+        self.sidebar.evaluate("value => chrome.bookmarks.update(value.id,{url:value.url})", {"id": self.bookmark_ids["B"], "url": edited_url})
+        source_session = self.session()["sessionId"]
+        result = self.send_message({"type": "MRU_ACTIVATE", "sourceWindowId": self.window_id, "sourceSessionId": source_session, "key": "tab:" + self.bookmark_ids["B"]})
+        assert result.get("success"), result
+        assert self.active_tab()["url"] == edited_url, "MRU mounted stale URL after canonical bookmark edit"
+        self.live_ids["B"] = self.logical("B")["liveTabIds"][0]
+        self.unmount("B")
+        destination = self.send_message({"type": "GET_CURRENT_SESSION_STATE", "windowId": self.unrelated_window_id})["session"]["sessionId"]
+        self.sidebar.evaluate("value => chrome.bookmarks.move(value.id,{parentId:value.parentId})", {"id": self.bookmark_ids["B"], "parentId": destination})
+        result = self.send_message({"type": "MRU_ACTIVATE", "sourceWindowId": self.window_id, "sourceSessionId": source_session, "key": "tab:" + self.bookmark_ids["B"]})
+        assert result.get("success"), result
+        tabs = self.sidebar.evaluate("windowId => chrome.tabs.query({windowId,active:true})", self.unrelated_window_id)
+        assert tabs[0]["url"] == edited_url, "Externally moved logical tab did not mount in its canonical destination"
+        assert self.sidebar.evaluate("id => chrome.windows.get(id)", self.unrelated_window_id)["focused"], "Existing destination window was not focused"
+        self.evidence["flows"].append({"name": "external-url-edit-and-canonical-session-move", "status": "pass"})
 
     def benchmark_large_history(self):
         self.evidence["benchmark"] = self.sidebar.evaluate("""async () => {
