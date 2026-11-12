@@ -13,6 +13,7 @@ export class MruChromeAdapter {
         this.logicalIndexes = new WeakMap();
         this.activations = new Map();
         this.windowUi = new Map();
+        this.openQueue = Promise.resolve();
         this.popupWindowId = null;
         this.popupContext = null;
         this.loading = null;
@@ -178,7 +179,14 @@ export class MruChromeAdapter {
         return { sourceWindowId: window.id, sourceSessionId, liveOnly, excludeBookmarkId: active ? this.logicalForNative(active)?.bookmarkId : null };
     }
 
-    async openSwitcher({ sourceWindowId }) {
+    openSwitcher(request) {
+        // Windows.create resolves after lifecycle events; queue requests so rapid shortcuts cannot both observe a missing popup and create duplicate windows.
+        const operation = this.openQueue.then(() => this.openSwitcherNow(request));
+        this.openQueue = operation.catch(() => {});
+        return operation;
+    }
+
+    async openSwitcherNow({ sourceWindowId }) {
         const context = await this.context(sourceWindowId);
         this.popupContext = context;
         await this.chrome.storage.session?.set({ 'mru.switcher': context });
@@ -227,7 +235,9 @@ export class MruChromeAdapter {
         const candidate = this.service.catalog.get(bookmarkId);
         if (!candidate || !(await this.chrome.bookmarks.get(bookmarkId)).length) throw new Error('This logical tab no longer exists');
         const state = this.getState();
-        let windowId = Number(Object.keys(state.windowToSession).find(id => state.windowToSession[id] === candidate.sessionId));
+        // Persisted window IDs can outlive a browser window/restart. Validate against one native inventory instead of trusting the first historical binding or creating duplicates when a later binding is still alive.
+        const nativeWindows = new Map((await this.chrome.windows.getAll()).map(window => [window.id, window]));
+        let windowId = Number(Object.keys(state.windowToSession).find(id => state.windowToSession[id] === candidate.sessionId && nativeWindows.has(Number(id))));
         let bridgeIds = [];
         if (!windowId) {
             // The internal bridge URL identifies the new window from its FIRST event, before windows.create resolves. Binding imports no bridge bookmark and never suppresses unrelated windows.
@@ -287,8 +297,8 @@ export class MruChromeAdapter {
     async command(command, tab) {
         if (!['open-mru-switcher', 'previous-mru-tab'].includes(command)) return;
         await this.ready();
-        if (tab?.windowId === this.popupWindowId) { this.broadcast({ type: 'MRU_ADVANCE' }); return; }
         const sourceWindowId = tab?.windowId ?? (await this.chrome.windows.getLastFocused()).id;
+        if (sourceWindowId === this.popupWindowId) { this.broadcast({ type: 'MRU_ADVANCE' }); return; }
         if (command === 'open-mru-switcher') return this.openSwitcher({ sourceWindowId });
         const context = await this.context(sourceWindowId);
         this.syncLiveCatalog();

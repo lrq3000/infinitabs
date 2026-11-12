@@ -18,7 +18,9 @@ global.chrome = {
         onCreated: { addListener: (fn) => listeners['windows.onCreated'] = fn },
         onRemoved: { addListener: (fn) => listeners['windows.onRemoved'] = fn },
         onBoundsChanged: { addListener: (fn) => listeners['windows.onBoundsChanged'] = fn },
-        getAll: async () => windows,
+        getAll: async (options = {}) => options.populate
+            ? windows.map(win => ({ ...win, tabs: tabs.filter(tab => tab.windowId === win.id).map(tab => ({ ...tab })) }))
+            : windows,
         create: async (data) => {
             const win = { id: data.id || Date.now(), ...data };
             windows.push(win);

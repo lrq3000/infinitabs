@@ -1101,7 +1101,8 @@ function init(options = {}) {
             const shouldSkipBinding = options.isStartup && state.reloadOnRestart && state.lastKnownWorkspace;
 
             if (!shouldSkipBinding) {
-                const windows = await chrome.windows.getAll();
+                // Classify internal switchers from this existing window snapshot, rather than adding a tabs.query round trip for every browser window during startup.
+                const windows = await chrome.windows.getAll({ populate: true });
                 const rootId = await ensureRootFolder();
                 const sessionFolders = await chrome.bookmarks.getChildren(rootId);
 

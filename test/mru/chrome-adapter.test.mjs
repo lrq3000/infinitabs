@@ -83,3 +83,29 @@ test('Live Only state is shared per source window and survives worker reload', a
     const reloaded = new MruChromeAdapter(browser.options()); await reloaded.ready();
     assert.equal((await reloaded.context(1)).liveOnly, true);
 });
+
+test('a stale persisted window binding does not prevent reopening its saved session', async () => {
+    const { browser, adapter } = await fixture();
+    browser.windows.delete(2); browser.tabs.delete(22);
+    await adapter.activate({ sourceWindowId: 1, sourceSessionId: 's', key: 'tab:c' });
+    assert.equal(browser.state.windowToSession[1], 's');
+    assert.equal([...browser.tabs.values()].filter(tab => tab.url === 'https://c.test').length, 1);
+    const reopened = [...browser.tabs.values()].find(tab => tab.url === 'https://c.test');
+    assert.ok(browser.windows.has(reopened.windowId));
+});
+
+test('simultaneous switcher invocations create one popup and the latest source wins', async () => {
+    const { browser, adapter } = await fixture();
+    await Promise.all([adapter.openSwitcher({ sourceWindowId: 1 }), adapter.openSwitcher({ sourceWindowId: 2 })]);
+    assert.equal(browser.windows.size, 3);
+    assert.equal(adapter.popupContext.sourceWindowId, 2);
+});
+
+test('a command with optional tab omitted still advances an already focused switcher', async () => {
+    const { browser, adapter } = await fixture();
+    await adapter.openSwitcher({ sourceWindowId: 1 });
+    browser.chrome.windows.getLastFocused = async () => browser.windows.get(adapter.popupWindowId);
+    await adapter.command('open-mru-switcher');
+    assert.equal(browser.messages.at(-1).type, 'MRU_ADVANCE');
+    assert.equal(adapter.popupContext.sourceWindowId, 1);
+});

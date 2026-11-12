@@ -76,3 +76,21 @@ Pre-flight: Task 1 stores feed Tasks 2/5; Task 2 service/search feed Tasks 3/4; 
 Baseline: refreshed to origin/main 4bad7cc; existing test_history_switch.js, test_active_tab_sync.js and test_switch_session.js all pass. Existing Node MODULE_TYPELESS_PACKAGE_JSON warnings are baseline; do not change package type and break mixed CommonJS tests just to silence them.
 
 Ruling: Native worktree API exposes no exact destination path; use the approved git worktree bootstrap and session_move to honor mandatory project-local worktree placement. Root .worktrees is already untracked; do not modify root ignore configuration, and stage explicit task paths only. Cost if wrong: root status continues showing its pre-existing worktree directory, without any task files being staged there.
+
+### Execution status
+
+- [x] Task 1: 9d34a6a — durable recency/recovery storage; five RED→GREEN tests.
+- [x] Task 2: bd7d21b — scoped logical queries and fuzzy search; eleven cumulative tests.
+- [x] Task 3: 35e633d — Chrome lifecycle and public routing; nineteen cumulative tests and three original regressions.
+- [x] Task 4: f51209c — shared sidebar/popup UI and commands; twenty-three cumulative tests plus real sidebar/popup/keyboard checks.
+- [x] Task 5: 6ba623c — explicit recovery settings, cold-event deletion and resumable append-at-end restore; thirty cumulative tests plus actual Chromium recovery.
+- [x] Task 6 functional verification/documentation: thirty-three MRU tests, twenty Python tests, eight Chromium workflows, targeted original history/active/session/drag/group/movement regressions, README and one-line deferred-feature checklist.
+- [ ] Fresh whole-branch review, important-findings fix pass, final rerun and clean committed status.
+
+Browser evidence is retained at C:/Users/33632/AppData/Local/Temp/opencode/mru-qa-rebema76: isolated Chromium 153.0.8010.12 (installed Playwright revision 1243), light/dark popup and 360px sidebar screenshots, worker/browser-process restart, transparent unmounted restore and cross-session bridge with concurrent unrelated window creation. Synthetic production-service/view benchmark: 10,000 candidates, twenty queries, median 5.80ms, p95 12.40ms, initial fifty-row render 35.50ms; these are local fixture measurements, not a promise for every profile or 10,000 native browser tabs.
+
+Ruling: The installed Python Playwright expects missing Chromium revision 1217; reuse the already installed revision 1243 through --executable rather than download anything. Cost if wrong: possible protocol incompatibility, addressed by running the actual flows and reporting the browser version.
+
+Ruling: Existing persisted windowToSession storage can lag a quick window closure; validate MRU activation destinations against the current native window inventory instead of changing unrelated legacy persistence policy. Cost if wrong: an extra native inventory query per activation, but no per-result/keystroke API scan. RED→GREEN tests cover stale bindings, concurrent popup creation and optional command-tab omission.
+
+Ruling: Legacy quick-drag VM tests hard-code static import replacement; inject the real new MRU module into that VM. Populated native window snapshots are now supported by the shared Chrome mock, preserving existing startup query-count guarantees. Cost if wrong: VM coverage remains weaker than browser evidence, so actual rendered flows are tested separately.
