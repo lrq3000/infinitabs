@@ -133,7 +133,7 @@ export class MruChromeAdapter {
         this.broadcast();
     }
 
-    async onBookmarksRemoved(id, info) {
+    async onBookmarksRemoved(id, info, consent = this.recoveryStore.consentAtReceipt()) {
         // Preserve minimal visit evidence BEFORE cold initialization prunes missing bookmarks. Chrome's removal event supplies the deleted title/URL, so no always-on deleted snapshot store is needed.
         await this.recencyStore.ready();
         const visits = new Map(this.recencyStore.entries().map(record => [record.bookmarkId, record]));
@@ -160,7 +160,7 @@ export class MruChromeAdapter {
         }
         // Purge first, before awaiting snapshot writes; in-flight native focus callbacks cannot revive a removed catalog member.
         await this.recencyStore.forget(removed);
-        for (const snapshot of snapshots.values()) await this.recoveryStore.capture(snapshot);
+        for (const snapshot of snapshots.values()) await this.recoveryStore.capture(snapshot, consent);
         await this.refreshCatalog();
         this.broadcast();
     }
@@ -273,6 +273,7 @@ export class MruChromeAdapter {
         if (!record) throw new Error('Recovery entry is no longer available');
         if (!/^(https?:|about:|chrome:|edge:|file:)/i.test(record.url)) throw new Error('This URL cannot be restored as a browser tab');
         let bookmarkId = record.restoredBookmarkId;
+        if (record.restoring && !bookmarkId) throw new Error('A prior restoration has uncertain completion. Inspect the session before recovering this entry; it will not create another bookmark automatically.');
         if (bookmarkId) {
             await this.refreshCatalog();
             if (this.service.catalog.get(bookmarkId)?.sessionId !== context.sourceSessionId) throw new Error('Previously restored tab was deleted or moved to a different session; inspect that session before retrying');
@@ -280,10 +281,19 @@ export class MruChromeAdapter {
             const [folder] = await this.chrome.bookmarks.get(context.sourceSessionId);
             if (!folder || folder.url) throw new Error('Source session is no longer available');
             await this.validateSource(request);
+            // Bookmark creation and local storage cannot share a transaction. Persist intent BEFORE the native effect so a cold worker fails closed if the identity journal is lost afterward.
+            const attempt = { ...record, restoring: true };
+            await this.recoveryStore.update(attempt);
             // No index/group snapshot exists: omitted index appends to the canonical session root.
-            const bookmark = await this.chrome.bookmarks.create({ parentId: context.sourceSessionId, title: record.title, url: record.url });
+            let bookmark;
+            try { bookmark = await this.chrome.bookmarks.create({ parentId: context.sourceSessionId, title: record.title, url: record.url }); }
+            catch (error) {
+                // A rejected native API call created nothing. Clear intent when possible; a failed cleanup retains the conservative uncertain state across restart.
+                await this.recoveryStore.update({ ...record, restoring: false });
+                throw error;
+            }
             bookmarkId = bookmark.id;
-            try { await this.recoveryStore.update({ ...record, restoredBookmarkId: bookmarkId }); }
+            try { await this.recoveryStore.update({ ...attempt, restoredBookmarkId: bookmarkId }); }
             catch { throw new Error('A restored bookmark was created, but recovery status could not be saved. Inspect the session before retrying.'); }
         }
         await this.validateSource(request);

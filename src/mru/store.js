@@ -62,12 +62,18 @@ export class RecoveryStore extends StorageQueue {
         this.clock = clock;
         this.records = new Map();
         this.enabled = false;
+        this.policyEpoch = 0;
+        this.hydrated = false;
+        this.acceptingCaptures = false;
         this.loading = this.hydrate();
     }
 
     async hydrate() {
         const values = await this.storage.get(null);
         this.enabled = values[ENABLED] === true;
+        this.initialEnabled = this.enabled;
+        this.hydrated = true;
+        this.acceptingCaptures = this.enabled && this.policyEpoch === 0;
         for (const [key, value] of Object.entries(values)) {
             if (key.startsWith(RECOVERY) && value && key === RECOVERY + value.recoveryId) this.records.set(value.recoveryId, value);
         }
@@ -76,6 +82,15 @@ export class RecoveryStore extends StorageQueue {
     }
 
     ready() { return this.loading; }
+
+    consentAtReceipt() {
+        const epoch = this.policyEpoch;
+        // Cold listeners use the persisted policy read that preceded later configuration, not whatever policy happens to be enabled when an awaited deletion resumes.
+        if (!this.hydrated) return this.ready().then(() => ({ enabled: epoch === 0 && this.initialEnabled, epoch }));
+        return Promise.resolve({ enabled: this.acceptingCaptures, epoch });
+    }
+
+    permits(consent) { return consent.enabled && this.enabled && this.acceptingCaptures && consent.epoch === this.policyEpoch; }
 
     async prune() {
         const cutoff = this.clock() - 30 * 86400000;
@@ -86,18 +101,29 @@ export class RecoveryStore extends StorageQueue {
     }
 
     async configure(enabled) {
+        const epoch = ++this.policyEpoch;
+        // Consent changes invalidate pending captures immediately; an opt-in is not effective until its own persistence operation succeeds.
+        this.acceptingCaptures = false;
         await this.ready();
-        await this.enqueue(() => this.storage.set({ [ENABLED]: Boolean(enabled) }));
-        this.enabled = Boolean(enabled);
+        await this.enqueue(async () => {
+            await this.storage.set({ [ENABLED]: Boolean(enabled) });
+            this.enabled = Boolean(enabled);
+            this.acceptingCaptures = this.enabled && epoch === this.policyEpoch;
+        });
         await this.prune();
     }
 
-    async capture({ title, url, sourceSessionId, lastViewedAt }) {
+    async capture({ title, url, sourceSessionId, lastViewedAt }, receipt = this.consentAtReceipt()) {
+        const consent = await receipt;
         await this.ready();
-        if (!this.enabled) return null;
-        const record = { recoveryId: crypto.randomUUID(), title, url, sourceSessionId, lastViewedAt, deletedAt: this.clock(), ordinal: Math.max(0, ...[...this.records.values()].map(value => value.ordinal || 0)) + 1 };
-        await this.enqueue(() => this.storage.set({ [RECOVERY + record.recoveryId]: record }));
-        this.records.set(record.recoveryId, record);
+        if (!this.permits(consent)) return null;
+        const record = await this.enqueue(async () => {
+            if (!this.permits(consent)) return null;
+            const value = { recoveryId: crypto.randomUUID(), title, url, sourceSessionId, lastViewedAt, deletedAt: this.clock(), ordinal: Math.max(0, ...[...this.records.values()].map(entry => entry.ordinal || 0)) + 1 };
+            await this.storage.set({ [RECOVERY + value.recoveryId]: value });
+            this.records.set(value.recoveryId, value);
+            return value;
+        });
         await this.prune();
         return record;
     }
@@ -109,11 +135,15 @@ export class RecoveryStore extends StorageQueue {
     }
 
     async update(record) {
+        const receipt = this.consentAtReceipt();
         await this.ready();
-        if (!this.enabled || !this.records.has(record.recoveryId)) throw new Error('Recovery entry is no longer available');
-        // Remember a successfully created bookmark even if journaling fails. Retrying in this worker must not create a second bookmark.
-        this.records.set(record.recoveryId, record);
-        await this.enqueue(() => this.storage.set({ [RECOVERY + record.recoveryId]: record }));
+        const consent = await receipt;
+        await this.enqueue(async () => {
+            if (!this.permits(consent) || !this.records.has(record.recoveryId)) throw new Error('Recovery entry is no longer available');
+            // Remember a successfully created bookmark even if journaling fails. Retrying in this worker must not create a second bookmark.
+            this.records.set(record.recoveryId, record);
+            await this.storage.set({ [RECOVERY + record.recoveryId]: record });
+        });
     }
 
     async remove(recoveryId) {

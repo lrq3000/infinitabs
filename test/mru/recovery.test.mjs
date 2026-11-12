@@ -91,3 +91,48 @@ test('cold deletion of a leaf retains current-session recovery scope from its ca
     await cold.onBookmarksRemoved('a', { parentId: 's', node });
     assert.equal((await cold.recoveryStore.list())[0].sourceSessionId, 's');
 });
+
+test('enabling recovery cannot authorize a deletion already waiting in its handler', async () => {
+    const { browser, adapter } = await fixture();
+    await adapter.observeCurrent(1);
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    adapter.getRoot = async () => { await gate; return 'root'; };
+    const node = structuredClone(browser.node('a'));
+    browser.node('s').children = browser.node('s').children.filter(child => child.id !== 'a');
+    const deletion = adapter.onBookmarksRemoved('a', { parentId: 's', node });
+    await adapter.recoveryStore.configure(true);
+    release(); await deletion;
+    assert.deepEqual(await adapter.recoveryStore.list(), []);
+    assert.equal(JSON.stringify(browser.chrome.storage.local.values).includes('https://a.test'), false);
+});
+
+test('opt-out and later opt-in invalidate a previously pending deletion consent', async () => {
+    const { browser, adapter } = await fixture();
+    await adapter.recoveryStore.configure(true); await adapter.observeCurrent(1);
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    adapter.getRoot = async () => { await gate; return 'root'; };
+    const node = structuredClone(browser.node('a'));
+    browser.node('s').children = browser.node('s').children.filter(child => child.id !== 'a');
+    const deletion = adapter.onBookmarksRemoved('a', { parentId: 's', node });
+    await adapter.recoveryStore.configure(false); await adapter.recoveryStore.configure(true);
+    release(); await deletion;
+    assert.deepEqual(await adapter.recoveryStore.list(), []);
+});
+
+test('a lost post-create journal cannot produce another bookmark after worker restart', async () => {
+    const { browser, adapter } = await fixture();
+    const record = await snapshot(adapter);
+    const set = browser.chrome.storage.local.set.bind(browser.chrome.storage.local);
+    browser.chrome.storage.local.set = async values => {
+        if (Object.values(values).some(value => value?.restoredBookmarkId)) throw new Error('journal unavailable');
+        return set(values);
+    };
+    const request = { sourceWindowId: 1, sourceSessionId: 's', key: `deleted:${record.recoveryId}` };
+    await assert.rejects(adapter.activate(request), /created.*status|uncertain/i);
+    browser.chrome.storage.local.set = set;
+    const cold = new MruChromeAdapter(browser.options()); await cold.ready();
+    await assert.rejects(cold.activate(request), /uncertain|inspect/i);
+    assert.equal(browser.node('s').children.filter(node => node.title === 'Recovered A').length, 1);
+});
