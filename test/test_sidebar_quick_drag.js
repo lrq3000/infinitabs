@@ -29,13 +29,15 @@ function createElementStub(id) {
     };
 }
 
-function runSidebarScenario(scenarioScript) {
+function runSidebarScenario(scenarioScript, mruModule) {
     const sidebarPath = path.join(__dirname, '..', 'src', 'sidebar.js');
     const sidebarSource = fs.readFileSync(sidebarPath, 'utf8')
         .replace("import { parseGroupTitle } from './utils.js';", "function parseGroupTitle(title) { return { name: title, color: 'grey' }; }")
+        .replace("import { MruClient, MruView } from './mru/view.js';", '')
         .replace(/\/\/ Start\s*init\(\);\s*$/m, '// Start disabled in VM tests');
 
     const context = {
+        ...mruModule, // Exercise the real imported transport/view classes; the VM cannot parse ESM imports itself.
         console,
         setTimeout,
         clearTimeout,
@@ -100,9 +102,10 @@ function runSidebarScenario(scenarioScript) {
     return context.__results;
 }
 
-function runTest() {
+async function runTest() {
     console.log('Starting test_sidebar_quick_drag.js...');
 
+    const mruModule = await import('../src/mru/view.js');
     const result = runSidebarScenario(`
         const dragStartClassList = { added: [], add(...classNames) { this.added.push(...classNames); } };
         const dragStartRoot = { dataset: { type: 'tab', id: 'tab-start-1' }, classList: dragStartClassList };
@@ -142,7 +145,7 @@ function runTest() {
             messagesAfterChildTarget,
             allMessages: __messages.slice()
         };
-    `);
+    `, mruModule);
 
     assert.deepStrictEqual(Array.from(result.dragStartAddedClasses), ['dragging'], 'dragstart should add dragging on the draggable root even when the event target is a child');
     assert.strictEqual(result.childTargetThrew, false, 'dragend should use the draggable root when the event target is a child');
@@ -154,4 +157,4 @@ function runTest() {
     console.log('test_sidebar_quick_drag.js passed.');
 }
 
-runTest();
+runTest().catch(error => { console.error(error); process.exitCode = 1; });

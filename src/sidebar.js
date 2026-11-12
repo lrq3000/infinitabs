@@ -1,5 +1,6 @@
 // sidebar.js
 import { parseGroupTitle } from './utils.js';
+import { MruClient, MruView } from './mru/view.js';
 
 const sessionSelector = document.getElementById('session-selector');
 const renameSessionBtn = document.getElementById('rename-session-btn');
@@ -39,6 +40,10 @@ let currentMatches = [];
 let currentMatchIndex = -1;
 let lastScrolledActiveId = null;
 let showLiveOnly = false;
+let recentActive = false;
+let mruAvailable = true;
+let recentView = null;
+const mruClient = new MruClient(chrome);
 
 // Selection & Drag State
 let selectedLogicalIds = new Set();
@@ -59,6 +64,13 @@ async function init() {
     // Get current window
     const window = await chrome.windows.getCurrent();
     currentWindowId = window.id;
+    mruAvailable = !window.incognito;
+    document.getElementById('recent-tabs-btn').disabled = !mruAvailable;
+    document.getElementById('open-switcher-btn').disabled = !mruAvailable;
+    document.getElementById('recent-tabs-btn').addEventListener('click', toggleRecentView);
+    document.getElementById('open-switcher-btn').addEventListener('click', () => {
+        mruClient.request({ type: 'MRU_OPEN', sourceWindowId: currentWindowId }).catch(error => console.error('Failed to open MRU:', error));
+    });
 
     // Setup Listeners
     renameSessionBtn.addEventListener('click', onRenameSession);
@@ -115,6 +127,7 @@ async function init() {
     // Initial Data Load
     await loadSessionsList();
     await refreshCurrentSession();
+    if (mruAvailable) await syncMruFilter();
     await loadPastWorkspaces();
     await checkCrashStatus();
     chrome.storage.local.get({ activeTabBg: '', selectedTabBg: '' }, (items) => {
@@ -440,6 +453,10 @@ function haveTabsChanged(s1, s2) {
 }
 
 function onMessage(message, sender, sendResponse) {
+    if (message.type === 'MRU_UPDATED') {
+        if (mruAvailable) syncMruFilter().then(() => { if (recentActive) recentView?.refresh(); });
+        return;
+    }
     if (message.type === "STATE_UPDATED") {
         if (message.windowId === currentWindowId) {
             const newSession = message.session;
@@ -606,6 +623,7 @@ function onKeyDown(e) {
 
 function onShowLiveOnlyToggle() {
     showLiveOnly = !showLiveOnly;
+    if (mruAvailable) mruClient.request({ type: 'MRU_SET_LIVE_ONLY', sourceWindowId: currentWindowId, value: showLiveOnly }).catch(error => console.error('Failed to share Live Only:', error));
 
     if (showLiveOnly) {
         showLiveOnlyBtn.classList.add('active');
@@ -623,6 +641,32 @@ function onShowLiveOnlyToggle() {
             scrollToActiveTab();
         });
     }
+}
+
+async function syncMruFilter() {
+    try {
+        const context = await mruClient.request({ type: 'MRU_CONTEXT', sourceWindowId: currentWindowId });
+        if (context.liveOnly !== showLiveOnly) {
+            showLiveOnly = context.liveOnly;
+            showLiveOnlyBtn.classList.toggle('active', showLiveOnly);
+            if (currentSession) renderSession(currentSession);
+        }
+    } catch (error) { console.warn('MRU filter unavailable:', error.message); }
+}
+
+async function toggleRecentView() {
+    recentActive = !recentActive;
+    const root = document.getElementById('recent-tabs-container');
+    root.hidden = !recentActive;
+    tabsContainer.style.display = recentActive ? 'none' : '';
+    document.querySelector('.search-container').hidden = recentActive;
+    document.getElementById('recent-tabs-btn').setAttribute('aria-pressed', String(recentActive));
+    if (!recentActive) return;
+    if (!recentView) {
+        recentView = new MruView({ root, client: mruClient, context: { sourceWindowId: currentWindowId }, onDismiss: toggleRecentView });
+        await recentView.mount();
+    } else await recentView.refresh();
+    recentView.focus();
 }
 
 function onAddNewTab(event) {

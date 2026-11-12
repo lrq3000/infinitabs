@@ -43,11 +43,16 @@
           <button id="search-next" title="Next Result">▼</button>
           <button id="locate-current" title="Locate Current Tab">⦿</button>
         </div>
+        <div class="session-view-controls">
+          <button type="button" id="recent-tabs-btn" aria-pressed="false" title="Toggle recently viewed tabs">Recent</button>
+          <button type="button" id="open-switcher-btn" title="Open keyboard switcher (Alt+Shift+Q)">Open switcher ↗</button>
+        </div>
       </header>
 
       <div id="tabs-container" class="tabs-list">
         <!-- Tabs will be rendered here -->
       </div>
+      <div id="recent-tabs-container" class="mru-root" hidden></div>
     </div>
 
     <div id="global-content" class="tab-content">

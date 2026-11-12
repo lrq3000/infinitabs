@@ -23,6 +23,15 @@
   "action": {
     "default_title": "Open InfiniTabs Sidebar"
   },
+  "commands": {
+    "open-mru-switcher": {
+      "suggested_key": { "default": "Alt+Shift+Q" },
+      "description": "Open recent logical tabs"
+    },
+    "previous-mru-tab": {
+      "description": "Switch to the previous recently viewed logical tab"
+    }
+  },
   "options_ui": {
     "page": "options.html",
     "open_in_tab": true
