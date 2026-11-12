@@ -36,7 +36,7 @@ export class MruService {
         let i = 0, j = 0;
         while (i < visits.length || j < deleted.length) {
             const item = i < visits.length && (j >= deleted.length || visits[i].lastViewedAt >= deleted[j].lastViewedAt) ? visits[i++] : deleted[j++];
-            if ((!allSessions && item.sessionId !== sourceSessionId) || (!item.deleted && item.bookmarkId === excludeBookmarkId) || (liveOnly && !item.liveTabIds?.length)) continue;
+            if (item.private || (!allSessions && item.sessionId !== sourceSessionId) || (!item.deleted && item.bookmarkId === excludeBookmarkId) || (liveOnly && !item.liveTabIds?.length)) continue;
             const tier = MruSearch.match(terms, item);
             if (tier !== null) buckets[tier].push(item);
         }
