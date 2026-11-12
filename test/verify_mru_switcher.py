@@ -44,6 +44,7 @@ class MruCheck(MovementCheck):
         bookmarks_before = self.snapshot()["bookmarks"]
         popup = self.open_popup()
         expect(popup.locator("[role=option]").first).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
+        assert popup.get_by_role("combobox", name="Search recent tabs").evaluate("input => input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,cancelable:true,bubbles:true}))"), "IME confirmation was intercepted instead of being left to composition"
         popup.screenshot(path=str(self.artifacts / "switcher-popup.png"))
         assert len(self.send_message({"type": "GET_SESSION_LIST"})["sessions"]) == len(sessions_before), "Switcher created a phantom session"
         assert self.snapshot()["bookmarks"] == bookmarks_before, "Switcher altered canonical bookmarks"

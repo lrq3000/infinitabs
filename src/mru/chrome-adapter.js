@@ -18,6 +18,8 @@ export class MruChromeAdapter {
         this.popupWindowId = null;
         this.popupContext = null;
         this.loading = null;
+        this.readyComplete = false;
+        this.removedBeforeReady = new Set();
     }
 
     start() {
@@ -58,7 +60,13 @@ export class MruChromeAdapter {
             }
             const saved = await this.chrome.storage.session?.get('mru.switcher');
             this.popupContext = saved?.['mru.switcher'] || null;
+            if (this.popupWindowId && this.popupContext) {
+                const source = windows.find(window => window.id === this.popupContext.sourceWindowId);
+                if (!source || this.removedBeforeReady.has(source.id) || source.incognito || source.type !== 'normal' || this.getState().windowToSession[source.id] !== this.popupContext.sourceSessionId) await this.closeSwitcher();
+            }
             await this.refreshCatalog();
+            this.readyComplete = true;
+            this.removedBeforeReady.clear();
         })().catch(error => { this.loading = null; throw error; });
         return this.loading;
     }
@@ -118,7 +126,7 @@ export class MruChromeAdapter {
         if (!this.chrome.windows.get || this.internalWindows.has(windowId)) return;
         await this.ready();
         const window = await this.chrome.windows.get(windowId).catch(() => null);
-        if (!window?.focused || window.incognito || this.internalWindows.has(windowId)) return;
+        if (!window?.focused || window.incognito || window.type !== 'normal' || this.internalWindows.has(windowId)) return;
         const [tab] = await this.chrome.tabs.query({ windowId, active: true });
         if (!tab || this.isInternalTab(tab)) return;
         const logical = this.logicalForNative(tab);
@@ -169,7 +177,7 @@ export class MruChromeAdapter {
     async context(sourceWindowId) {
         await this.ready();
         const window = await this.chrome.windows.get(Number(sourceWindowId));
-        if (window.incognito) throw new Error('MRU is unavailable in private windows');
+        this.assertNormalWindow(window);
         if (await this.isInternalWindow(window)) throw new Error('Choose a browsing window first');
         const sourceSessionId = this.getState().windowToSession[window.id];
         if (!sourceSessionId) throw new Error('Source session is no longer available');
@@ -178,6 +186,12 @@ export class MruChromeAdapter {
         const liveOnly = stored?.[key]?.liveOnly ?? this.windowUi.get(window.id)?.liveOnly ?? false;
         const [active] = await this.chrome.tabs.query({ windowId: window.id, active: true });
         return { sourceWindowId: window.id, sourceSessionId, liveOnly, excludeBookmarkId: active ? this.logicalForNative(active)?.bookmarkId : null };
+    }
+
+    assertNormalWindow(window) {
+        if (!window) throw new Error('The browser window is no longer available');
+        if (window.incognito) throw new Error('MRU is unavailable in private windows');
+        if (window.type !== 'normal') throw new Error('MRU supports normal browser windows only');
     }
 
     openSwitcher(request) {
@@ -211,6 +225,8 @@ export class MruChromeAdapter {
     }
 
     windowRemoved(id) {
+        // The source relationship may not be hydrated when this is the first MV3 wake event. Retain only pre-readiness removals, then validate/discard them when context is loaded.
+        if (!this.readyComplete) this.removedBeforeReady.add(id);
         const internal = this.internalWindows.delete(id);
         this.privateWindows.delete(id); this.windowUi.delete(id);
         if (id === this.popupWindowId) { this.popupWindowId = null; this.popupContext = null; }
@@ -263,7 +279,7 @@ export class MruChromeAdapter {
             await this.bindSession(windowId, candidate.sessionId);
         }
         const window = await this.chrome.windows.get(windowId);
-        if (window.incognito) throw new Error('Cannot activate a private-window tab');
+        this.assertNormalWindow(window);
         // Search catalog and loaded session state can diverge after external bookmark edits/moves. Reconcile through the existing metadata-preserving lifecycle before resolving an ephemeral logical ID.
         await this.refreshSession(candidate.sessionId, windowId);
         // Reacquire identity after binding/reload; logical IDs are intentionally ephemeral.
@@ -286,7 +302,7 @@ export class MruChromeAdapter {
             const native = await this.chrome.tabs.get(tabId).catch(() => null);
             if (!native || this.logicalForNative(native)?.bookmarkId !== candidate.bookmarkId) continue;
             const window = await this.chrome.windows.get(native.windowId);
-            if (window.incognito) throw new Error('Cannot activate a private-window tab');
+            this.assertNormalWindow(window);
             await this.validateSource(request);
             // An external bookmark move may have changed canonical ownership without relocating its existing native projection. Focus that projection, never create a duplicate just because the destination's loaded model was stale.
             await this.chrome.tabs.update(tabId, { active: true });

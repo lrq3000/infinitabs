@@ -30,6 +30,7 @@ export class MruController {
             this.error = '';
         } catch (error) { if (generation === this.generation) this.error = error.message; }
         if (generation === this.generation) this.onChange();
+        return generation === this.generation && !this.error;
     }
 
     search(query) { this.query = query; this.offset = 0; this.selectedKey = null; return this.refresh(); }
@@ -43,7 +44,10 @@ export class MruController {
 
     async page(offset, selectLast = false) {
         this.offset = Math.max(0, offset); this.selectedKey = null;
-        await this.refresh();
+        const generation = this.generation + 1;
+        const applied = await this.refresh();
+        // Refresh rejects stale rows, but paging has a second selection effect after awaiting it. Guard that continuation too, including a newer search/retarget/dispose.
+        if (!applied || generation !== this.generation) return;
         if (selectLast) this.selectedKey = this.items.at(-1)?.key || null;
         this.onChange();
     }
@@ -57,7 +61,8 @@ export class MruController {
         this.onChange();
     }
 
-    async keyDown(key, shift = false) {
+    async keyDown(key, shift = false, isComposing = false) {
+        if (isComposing) return false;
         if (key === 'Escape') { this.onDismiss(); return true; }
         if (key === 'Enter') { await this.activate(); return true; }
         if (key === 'ArrowDown' || key === 'ArrowUp' || key === 'Tab') {
@@ -108,6 +113,8 @@ export class MruView {
         this.input.setAttribute('role', 'combobox'); this.input.setAttribute('aria-expanded', 'true'); this.input.setAttribute('aria-autocomplete', 'list');
         this.listen(this.input, 'input', () => this.controller.search(this.input.value));
         this.listen(this.input, 'keydown', event => {
+            // Enter/arrows belong to the input method while composing. Do not even prevent their default action, or committing East Asian text can switch tabs instead.
+            if (event.isComposing || event.keyCode === 229) return;
             if (['Escape', 'Enter', 'ArrowDown', 'ArrowUp', 'Tab', 'Home', 'End', 'PageDown', 'PageUp'].includes(event.key)) {
                 event.preventDefault(); event.stopPropagation(); this.controller.keyDown(event.key, event.shiftKey);
             }

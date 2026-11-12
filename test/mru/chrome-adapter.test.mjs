@@ -160,3 +160,34 @@ test('a mounted identity moved externally is focused rather than duplicated', as
     assert.equal([...browser.tabs.values()].filter(tab => tab.url === 'https://a.test').length, 1);
     assert.equal(browser.tabs.get(11).active, true);
 });
+
+test('source closure on a cold worker closes the persisted switcher after hydration', async () => {
+    const { browser, adapter } = await fixture();
+    await adapter.openSwitcher({ sourceWindowId: 1 });
+    const popupId = adapter.popupWindowId;
+    await browser.chrome.windows.remove(1);
+    const cold = new MruChromeAdapter(browser.options());
+    cold.windowRemoved(1); await cold.ready();
+    assert.equal(browser.windows.has(popupId), false);
+    assert.equal(cold.popupWindowId, null);
+});
+
+test('website popups are not collected or accepted as normal MRU sources', async () => {
+    const { browser, adapter } = await fixture();
+    browser.windows.get(1).type = 'popup';
+    await adapter.observeCurrent(1);
+    assert.deepEqual(adapter.recencyStore.entries(), []);
+    await assert.rejects(adapter.context(1), /normal/i);
+});
+
+test('non-normal destination windows are rejected before either focus or mounting', async () => {
+    const { browser, adapter } = await fixture();
+    browser.windows.get(2).type = 'popup';
+    await assert.rejects(adapter.activate({ sourceWindowId: 1, sourceSessionId: 's', key: 'tab:c' }), /normal/i);
+    const bookmark = browser.node('b');
+    browser.node('s').children = browser.node('s').children.filter(node => node.id !== 'b');
+    browser.node('other').children.push(bookmark); bookmark.parentId = 'other';
+    await assert.rejects(adapter.activate({ sourceWindowId: 1, sourceSessionId: 's', key: 'tab:b' }), /normal/i);
+    assert.equal(browser.windows.get(1).focused, true);
+    assert.equal(browser.tabs.size, 2);
+});

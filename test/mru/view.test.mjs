@@ -53,3 +53,23 @@ test('Live Only changes use shared worker state rather than a separate local fil
     assert.ok(requests.some(request => request.type === 'MRU_SET_LIVE_ONLY' && request.value === true && request.sourceWindowId === 1));
     assert.equal(requests.at(-1).type, 'MRU_QUERY');
 });
+
+test('a stale backward-page completion cannot select the last item of a newer query', async () => {
+    const { controller, client } = fixture();
+    const pending = [];
+    client.request = message => new Promise(resolve => pending.push({ message, resolve }));
+    const page = controller.page(0, true);
+    const search = controller.search('new');
+    pending[1].resolve({ items: [{ key: 'tab:new1' }, { key: 'tab:new2' }], total: 2 }); await search;
+    assert.equal(controller.selectedKey, 'tab:new1');
+    pending[0].resolve({ items: [{ key: 'tab:old1' }, { key: 'tab:old2' }], total: 2 }); await page;
+    assert.equal(controller.selectedKey, 'tab:new1');
+});
+
+test('IME confirmation and navigation do not activate or move the MRU selection', async () => {
+    const { controller, requests } = fixture(); await controller.refresh();
+    await controller.keyDown('Enter', false, true);
+    await controller.keyDown('ArrowDown', false, true);
+    assert.equal(controller.selectedKey, 'tab:a');
+    assert.equal(requests.some(request => request.type === 'MRU_ACTIVATE'), false);
+});
