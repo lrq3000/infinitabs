@@ -1,6 +1,7 @@
 // background.js
 import { formatGroupTitle, parseGroupTitle } from './utils.js';
 import { WORD_LIST } from './words.js';
+import { MruChromeAdapter } from './mru/chrome-adapter.js';
 
 // --- Constants ---
 const ROOT_FOLDER_TITLE = "InfiniTabs Sessions";
@@ -51,6 +52,14 @@ const state = {
 // Global flag to suppress auto-session creation during restore
 // Kept outside 'state' object to ensure it's not accidentally reset or lost during state operations
 let isRestoring = false;
+
+// MRU is an optional metadata layer over the existing bookmark/session machinery, not a second tab or placement model.
+const mru = new MruChromeAdapter({
+    chrome, initialize: init, getState: () => state, getRoot: ensureRootFolder,
+    focusOrMount: focusOrMountLogicalTab, bindSession: bindWindowToSession,
+    refreshSession: reloadSessionAndPreserveState
+});
+mru.start();
 
 // --- Helper Functions ---
 // Queue for serializing move operations to handle group moves (SHIFT+Drag)
@@ -603,6 +612,8 @@ function notifySidebarStateUpdated(windowId, sessionId) {
     const session = state.sessionsById[sessionId];
     if (!session) return;
 
+    mru.stateChanged(windowId, sessionId);
+
     chrome.runtime.sendMessage({
         type: "STATE_UPDATED",
         windowId: windowId,
@@ -623,6 +634,8 @@ function attachLiveTabToLogical(tab, logical) {
     if (tab.favIconUrl) {
         logical.favIconUrl = tab.favIconUrl;
     }
+    // A foreground activation can precede bookmark creation/attachment. Reconcile from actual focus once identity is available.
+    mru.run(mru.observeCurrent(tab.windowId));
 }
 
 /**
@@ -688,8 +701,10 @@ async function reloadSessionAndPreserveState(sessionId, windowId) {
     if (latestSessionState) {
         // Map old Logical IDs to new Logical IDs using Bookmark ID as the key
         const oldIdToNewId = {};
+        // Canonical refresh is also used before mounting externally edited MRU results. Index once so identity preservation remains O(n), not O(n²), for large logical sessions.
+        const previousByBookmark = new Map(latestSessionState.logicalTabs.map(logical => [logical.bookmarkId, logical]));
         reloadedSession.logicalTabs.forEach(newLt => {
-            const oldLt = latestSessionState.logicalTabs.find(old => old.bookmarkId === newLt.bookmarkId);
+            const oldLt = previousByBookmark.get(newLt.bookmarkId);
             if (oldLt) {
                 const update = bookmarkUpdateTimers[newLt.bookmarkId];
                 if (update || oldLt.metadataVersion > metadataVersionAtStart ||
@@ -733,7 +748,7 @@ async function reloadSessionAndPreserveState(sessionId, windowId) {
  * Creates new logical tabs (bookmarks) for unmapped live tabs.
  */
 async function syncExistingTabsInWindowToSession(windowId, sessionId) {
-    const tabs = await chrome.tabs.query({ windowId });
+    const tabs = (await chrome.tabs.query({ windowId })).filter(tab => !mru.isInternalTab(tab));
     // Operation-local ownership, not a browsing-time index. A just-created
     // bookmark must not be claimed by another same-URL tab if another callback
     // reloads the session during import. Stable IDs also make the final attach
@@ -824,6 +839,7 @@ function getCurrentWorkspaceSnapshot() {
     const sessions = [];
     // Only include sessions that are currently bound to a window
     for (const windowId of Object.keys(state.windowToSession)) {
+        if (mru.isInternalWindowId(Number(windowId))) continue;
         const sessionId = state.windowToSession[windowId];
         if (sessionId && state.sessionsById[sessionId]) {
             // We store the session ID. 
@@ -1087,7 +1103,8 @@ function init(options = {}) {
             const shouldSkipBinding = options.isStartup && state.reloadOnRestart && state.lastKnownWorkspace;
 
             if (!shouldSkipBinding) {
-                const windows = await chrome.windows.getAll();
+                // Classify internal switchers from this existing window snapshot, rather than adding a tabs.query round trip for every browser window during startup.
+                const windows = await chrome.windows.getAll({ populate: true });
                 const rootId = await ensureRootFolder();
                 const sessionFolders = await chrome.bookmarks.getChildren(rootId);
 
@@ -1107,6 +1124,7 @@ function init(options = {}) {
                 }
 
                 for (const win of windows) {
+                    if (await mru.isInternalWindow(win)) continue;
                     const storedSessionId = state.windowToSession[win.id];
                     if (storedSessionId) {
                         try {
@@ -1192,6 +1210,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
 chrome.windows.onCreated.addListener(async (window) => {
     console.log(`onCreated: Window ${window.id} created. isRestoring=${isRestoring}`);
+    if (await mru.isInternalWindow(window)) return;
     if (!state.initialized) await init();
 
     // Suppress if we are in the middle of a restore operation
@@ -1221,12 +1240,14 @@ chrome.windows.onCreated.addListener(async (window) => {
 });
 
 chrome.windows.onBoundsChanged.addListener(async (window) => {
+    if (mru.isInternalWindowId(window.id)) return;
     if (!state.initialized) await init();
     // Track workspace when window is moved or resized
     scheduleWorkspaceUpdate();
 });
 
 chrome.windows.onRemoved.addListener(async (windowId) => {
+    if (mru.windowRemoved(windowId)) return;
     if (!state.initialized) await init();
 
     // If the window was tracking a session, we need to update state
@@ -1370,6 +1391,7 @@ chrome.tabGroups.onRemoved.addListener(async (group) => {
 const pendingMounts = []; // Queue of { logicalId, windowId }
 
 chrome.tabs.onCreated.addListener(async (tab) => {
+    if (mru.isInternalTab(tab)) return;
     // Ensure init if SW woke up just for this event
     if (!state.initialized) await init();
 
@@ -1525,6 +1547,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 });
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    if (mru.isInternalTab(tab)) return;
     if (!state.initialized) await init();
 
     // Consume independent metadata before ANY group-related await. Replaying
@@ -1671,6 +1694,7 @@ function updateLogicalTabMetadata(tabId, changeInfo, tab) {
 }
 
 chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
+    if (mru.isInternalWindowId(removeInfo.windowId)) return;
     if (!state.initialized) await init();
 
     const logicalId = state.tabToLogical[tabId];
@@ -1815,6 +1839,7 @@ chrome.tabs.onMoved.addListener(async (tabId, moveInfo) => {
 });
 
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
+    if (!state.windowToSession[activeInfo.windowId] && await mru.isInternalWindow({ id: activeInfo.windowId })) return;
     if (!state.initialized) await init();
 
     const windowId = activeInfo.windowId;
@@ -1853,6 +1878,11 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
+        if (message.type?.startsWith('MRU_')) {
+            try { sendResponse(await mru.handleMessage(message)); }
+            catch (error) { sendResponse({ error: error.message }); }
+            return;
+        }
         if (!state.initialized) await init();
         try {
             switch (message.type) {

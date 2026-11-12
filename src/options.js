@@ -99,3 +99,25 @@ reloadOnRestartCheckbox.addEventListener('change', saveOptions);
 activeTabColorInput.addEventListener('input', debouncedSaveOptions);
 selectedTabColorInput.addEventListener('input', debouncedSaveOptions);
 nameSessionsWithWordsCheckbox.addEventListener('change', saveOptions);
+
+// Keep recovery policy behind the worker-owned store: writing a raw checkbox preference must never bypass opt-out cleanup or accidentally retain deleted URLs.
+const mruRecoveryCheckbox = document.getElementById('mru-recovery-checkbox');
+const mruRecoveryStatus = document.getElementById('mru-recovery-status');
+async function configureMruRecovery(message = { type: 'MRU_RECOVERY_STATUS' }) {
+  mruRecoveryCheckbox.disabled = true;
+  try {
+    const response = await chrome.runtime.sendMessage(message);
+    if (response?.error || !response) throw new Error(response?.error || 'MRU background is unavailable');
+    mruRecoveryCheckbox.checked = response.enabled;
+    mruRecoveryStatus.textContent = response.enabled ? `${response.count} deleted tab(s) available for recovery.` : 'Deleted-tab recovery is off; deleted tabs are not retained by MRU.';
+  } catch (error) { mruRecoveryStatus.textContent = error.message; }
+  finally { mruRecoveryCheckbox.disabled = false; }
+}
+document.addEventListener('DOMContentLoaded', () => configureMruRecovery());
+mruRecoveryCheckbox.addEventListener('change', () => {
+  if (!mruRecoveryCheckbox.checked && !confirm('Turn off recovery and clear its saved deleted-tab entries? Existing logical tabs will not be deleted.')) {
+    mruRecoveryCheckbox.checked = true;
+    return;
+  }
+  configureMruRecovery({ type: 'MRU_RECOVERY_CONFIGURE', enabled: mruRecoveryCheckbox.checked });
+});

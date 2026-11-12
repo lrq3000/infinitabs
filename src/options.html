@@ -108,6 +108,14 @@
 
   <div id="status" class="status">Saved!</div>
 
+  <div class="option-group">
+    <h2 style="font-size: 16px;">Recent tabs</h2>
+    <label><input type="checkbox" id="mru-recovery-checkbox" disabled>Enable recovery history for deleted logical tabs</label>
+    <p style="font-size: 12px; color: #666;">Off by default: deleted tabs are not retained by MRU. When enabled, retain up to 100 future deletions for 30 days. Restored tabs append at the current session’s end without their former groups or positions. Turning this off clears saved recovery entries, not existing logical tabs.</p>
+    <p id="mru-recovery-status" role="status" style="font-size: 12px;"></p>
+    <p style="font-size: 12px;">MRU follows the sidebar’s Live Only toggle. Configure the switcher and Previous tab shortcuts at chrome://extensions/shortcuts. Private-window MRU is not supported in this release.</p>
+  </div>
+
   <script src="options.js"></script>
 </body>
 

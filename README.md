@@ -150,6 +150,20 @@ For best usage, it is recommended to keep the native tabstrip horizontal, not ve
 
 ## Core Innovations and design choices
 
+### Recent tabs and quick switching
+
+Click **Recent** in the Session sidebar, or **Open switcher** for a compact keyboard-first window. The suggested opening shortcut is **Alt+Shift+Q**; configure it and the initially unbound **Previous tab** shortcut at `chrome://extensions/shortcuts`. The toolbar icon continues opening the sidebar. Browser/OS-reserved shortcuts are not overridden.
+
+Recent lists distinct logical tabs that were actually viewed, newest first, excluding the current tab. Type part of a title or URL for fuzzy finding, use arrows or Tab/Shift+Tab to select, Enter to switch and Escape to close the popup. Home/End and Page Up/Down navigate paged results. The default scope is the current session; choose **All sessions** to find previously viewed tabs elsewhere.
+
+The existing **Live Only** toggle is shared by the ordinary tab tree and both Recent interfaces: on shows mounted/native tabs only, while off also includes unmounted logical tabs. Selecting a mounted tab focuses it; selecting an unmounted tab mounts only that tab in its canonical position/group. A result in an unopened saved session opens that session in another window without replacing the caller's session.
+
+Recency survives worker/browser restarts and is keyed by bookmark identity, not URL. Background-opened tabs are not considered viewed, same-URL logical tabs stay distinct, and viewing history from before this feature was installed is not reconstructed. MRU supports standard non-private browser windows, not website popup windows or Chrome's full browsing history; InfiniTabs' existing management of ordinary website-popup sessions is unchanged.
+
+**Deleted-tab recovery is off by default.** Deleted logical tabs are removed from MRU, with no deleted title/URL snapshot retained unless recovery was already enabled in Settings when deletion arrived. Opt-in retains up to 100 future deletions for 30 days in a separate recovery store, visible only when Live Only is off. Restoring creates a fresh bookmark at the current session's end; old groups/positions are deliberately not retained. Disabling recovery clears its saved recovery entries, not existing logical tabs or Chrome's own browsing history. A known partially restored bookmark is reused on retry. A durable pre-create intent marker blocks automatic retries after uncertain completion across a worker restart; inspect the session rather than create duplicates because bookmark and local-storage APIs have no shared transaction.
+
+The implementation is isolated in `src/mru/`; future Quick Tabs-inspired capabilities and their InfiniTabs-specific implementation ideas are listed in [`todo.md`](todo.md).
+
 ### Logical Tabs vs Live Tabs
 
 InfiniTabs introduces a new browsing model by reconceptualizing two different types of tabs:
