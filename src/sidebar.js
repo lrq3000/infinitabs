@@ -7,6 +7,8 @@ const renameSessionBtn = document.getElementById('rename-session-btn');
 const refreshSessionsBtn = document.getElementById('refresh-sessions');
 const unmountOthersBtn = document.getElementById('unmount-others-btn');
 const showLiveOnlyBtn = document.getElementById('show-live-only-btn');
+const recentTabsBtn = document.getElementById('recent-tabs-btn');
+const openSwitcherBtn = document.getElementById('open-switcher-btn');
 const addNewTabBtn = document.getElementById('add-new-tab-btn');
 const themeToggleBtn = document.getElementById('theme-toggle-btn');
 const settingsBtn = document.getElementById('settings-btn');
@@ -65,10 +67,10 @@ async function init() {
     const window = await chrome.windows.getCurrent();
     currentWindowId = window.id;
     mruAvailable = !window.incognito;
-    document.getElementById('recent-tabs-btn').disabled = !mruAvailable;
-    document.getElementById('open-switcher-btn').disabled = !mruAvailable;
-    document.getElementById('recent-tabs-btn').addEventListener('click', toggleRecentView);
-    document.getElementById('open-switcher-btn').addEventListener('click', () => {
+    recentTabsBtn.disabled = !mruAvailable;
+    openSwitcherBtn.disabled = !mruAvailable;
+    recentTabsBtn.addEventListener('click', toggleRecentView);
+    openSwitcherBtn.addEventListener('click', () => {
         mruClient.request({ type: 'MRU_OPEN', sourceWindowId: currentWindowId }).catch(error => console.error('Failed to open MRU:', error));
     });
 
@@ -84,6 +86,7 @@ async function init() {
 
     // Search Listeners
     searchInput.addEventListener('input', performSearch);
+    searchInput.parentElement.addEventListener('input', updateSearchClearButton);
     searchInput.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
             e.preventDefault();
@@ -511,20 +514,28 @@ function parseSearchQuery(query) {
     return terms;
 }
 
+function getActiveSearchInput() {
+    return recentActive && recentView?.input ? recentView.input : searchInput;
+}
+
+function updateSearchClearButton() {
+    searchClearBtn.style.display = getActiveSearchInput().value.length ? 'block' : 'none';
+}
+
 function clearSearch() {
-    searchInput.value = '';
-    performSearch();
+    const input = getActiveSearchInput();
+    input.value = '';
+    if (recentActive) recentView?.controller.search('');
+    else performSearch();
+    updateSearchClearButton();
+    input.focus();
 }
 
 function performSearch() {
     const query = searchInput.value;
 
-    // Toggle clear button visibility
-    if (query.length > 0) {
-        searchClearBtn.style.display = 'block';
-    } else {
-        searchClearBtn.style.display = 'none';
-    }
+    // Background tree refreshes may reapply its query while Recent is visible. Only the visible input should control the shared clear button.
+    updateSearchClearButton();
 
     currentMatches = [];
     currentMatchIndex = -1;
@@ -568,12 +579,14 @@ function performSearch() {
         }
     });
 
-    if (currentMatches.length > 0) {
+    // A hidden tree refresh may rebuild normal matches, but must never route its automatic first-match selection into Recent's shared navigation buttons.
+    if (currentMatches.length > 0 && !recentActive) {
         navigateSearch(1); // Go to first match
     }
 }
 
 function navigateSearch(direction) {
+    if (recentActive) return recentView?.advanceSelection(direction);
     if (currentMatches.length === 0) return;
 
     // Clear active style on current
@@ -617,7 +630,7 @@ function onKeyDown(e) {
     // Ctrl+Shift+F
     if (e.ctrlKey && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
         e.preventDefault();
-        searchInput.focus();
+        getActiveSearchInput().focus();
     }
 }
 
@@ -659,14 +672,21 @@ async function toggleRecentView() {
     const root = document.getElementById('recent-tabs-container');
     root.hidden = !recentActive;
     tabsContainer.style.display = recentActive ? 'none' : '';
-    document.querySelector('.search-container').hidden = recentActive;
-    document.getElementById('recent-tabs-btn').setAttribute('aria-pressed', String(recentActive));
-    if (!recentActive) return;
+    // Swap only the owned input and trailing action, keeping the existing search row's geometry and each mode's query intact.
+    searchInput.hidden = recentActive;
+    locateCurrentBtn.hidden = recentActive;
+    openSwitcherBtn.hidden = !recentActive;
+    if (recentView) recentView.input.hidden = !recentActive;
+    recentTabsBtn.setAttribute('aria-pressed', String(recentActive));
+    recentTabsBtn.classList.toggle('active', recentActive);
+    updateSearchClearButton();
+    if (!recentActive) { performSearch(); searchInput.focus(); return; }
     if (!recentView) {
-        recentView = new MruView({ root, client: mruClient, context: { sourceWindowId: currentWindowId }, onDismiss: toggleRecentView });
+        recentView = new MruView({ root, client: mruClient, context: { sourceWindowId: currentWindowId }, searchHost: searchInput.parentElement, onDismiss: toggleRecentView });
         await recentView.mount();
     } else await recentView.refresh();
-    recentView.focus();
+    // A second toggle can close Recent before its asynchronous query finishes. Do not steal focus or re-show its input on that stale continuation.
+    if (recentActive) { updateSearchClearButton(); recentView.focus(); }
 }
 
 function onAddNewTab(event) {

@@ -8,11 +8,28 @@ function fixture() {
     const rows = ['a', 'b', 'c'].map(key => ({ key: `tab:${key}`, title: key }));
     const client = { request: async message => {
         requests.push(message);
-        if (message.type === 'MRU_QUERY') return { items: rows, total: 3, context: { sourceWindowId: 1, sourceSessionId: 's', liveOnly: false } };
+        if (message.type === 'MRU_QUERY') return { items: rows, total: rows.length, context: { sourceWindowId: 1, sourceSessionId: 's', liveOnly: false } };
         return { success: true };
     } };
     const controller = new MruController({ client, context: { sourceWindowId: 1, sourceSessionId: 's' }, onChange: () => {} });
     return { controller, requests, client, rows };
+}
+
+// Delay only the worker transport, keeping the actual controller/paging logic under test. Responses capture the requested query and offset before a newer request can change them.
+class DelayedMruClient {
+    constructor(count) {
+        this.rows = Array.from({ length: count }, (_, index) => ({ key: `tab:${index}`, title: `Tab ${index}` }));
+        this.delay = false; this.pending = []; this.requests = [];
+    }
+
+    request(message) {
+        this.requests.push(message);
+        if (message.type !== 'MRU_QUERY') return Promise.resolve({ success: true });
+        const matches = message.query === 'only' ? this.rows.slice(0, 1) : this.rows;
+        const result = { items: matches.slice(message.offset, message.offset + message.limit), total: matches.length };
+        if (!this.delay) return Promise.resolve(result);
+        return new Promise((resolve, reject) => this.pending.push({ message, resolve: () => resolve(result), reject }));
+    }
 }
 
 test('keyboard highlight never activates until Enter and survives MRU refresh by identity', async () => {
@@ -72,4 +89,128 @@ test('IME confirmation and navigation do not activate or move the MRU selection'
     await controller.keyDown('ArrowDown', false, true);
     assert.equal(controller.selectedKey, 'tab:a');
     assert.equal(requests.some(request => request.type === 'MRU_ACTIVATE'), false);
+});
+
+test('previous/next selection crosses pages and wraps the full matching result set', async () => {
+    const { controller, client, requests } = fixture();
+    const rows = ['a', 'b', 'c', 'd', 'e'].map(key => ({ key: `tab:${key}`, title: key }));
+    controller.pageSize = 2;
+    client.request = async message => {
+        requests.push(message);
+        return { items: rows.slice(message.offset, message.offset + message.limit), total: rows.length };
+    };
+    await controller.search('matching tabs');
+    const selected = [controller.selectedKey];
+    for (const direction of [1, 1, 1, 1, 1, -1, -1, -1, -1, -1]) {
+        await controller.advanceSelection(direction);
+        selected.push(controller.selectedKey);
+    }
+    assert.deepEqual(selected, ['tab:a', 'tab:b', 'tab:c', 'tab:d', 'tab:e', 'tab:a', 'tab:e', 'tab:d', 'tab:c', 'tab:b', 'tab:a']);
+    assert.equal(requests.some(message => message.type === 'MRU_ACTIVATE'), false);
+    assert.ok(requests.every(message => message.query === 'matching tabs'));
+});
+
+test('previous/next selection is inert for empty matches and stable for one match', async () => {
+    const { controller, rows, requests } = fixture();
+    rows.splice(0);
+    await controller.refresh();
+    await controller.advanceSelection(-1);
+    await controller.advanceSelection(1);
+    assert.equal(controller.selectedKey, null);
+    rows.push({ key: 'tab:only', title: 'Only match' });
+    await controller.refresh();
+    await controller.advanceSelection(-1);
+    await controller.advanceSelection(1);
+    assert.equal(controller.selectedKey, 'tab:only');
+    assert.equal(requests.some(message => message.type === 'MRU_ACTIVATE'), false);
+});
+
+test('Previous during a narrowing query cannot supersede its first page with stale offsets', async () => {
+    const client = new DelayedMruClient(60);
+    const controller = new MruController({ client, context: { sourceWindowId: 1 } });
+    await controller.refresh();
+    client.delay = true;
+    const search = controller.search('only');
+    const navigation = controller.advanceSelection(-1);
+    assert.equal(client.pending.length, 1, 'pending search must not issue stale page navigation');
+    assert.equal(client.pending[0].message.offset, 0);
+    client.pending[0].resolve();
+    await Promise.all([search, navigation]);
+    assert.equal(controller.total, 1);
+    assert.equal(controller.offset, 0);
+    assert.deepEqual(controller.items.map(item => item.key), ['tab:0']);
+    assert.equal(controller.selectedKey, 'tab:0');
+});
+
+test('rapid Previous/Next on a short last page never indexes rows from a pending page', async () => {
+    const client = new DelayedMruClient(5);
+    const controller = new MruController({ client, context: { sourceWindowId: 1 } });
+    controller.pageSize = 2;
+    await controller.page(4);
+    assert.equal(controller.selectedKey, 'tab:4');
+    client.delay = true;
+    const previous = controller.advanceSelection(-1);
+    const next = controller.advanceSelection(1);
+    const anotherNext = controller.advanceSelection(1);
+    await assert.doesNotReject(Promise.all([next, anotherNext]));
+    assert.equal(client.pending.length, 1);
+    assert.equal(client.pending[0].message.offset, 2);
+    client.pending[0].resolve();
+    await previous;
+    assert.equal(controller.offset, 2);
+    assert.deepEqual(controller.items.map(item => item.key), ['tab:2', 'tab:3']);
+    assert.equal(controller.selectedKey, 'tab:3');
+});
+
+test('a stale query completion cannot unlock navigation while the latest query is pending', async () => {
+    const client = new DelayedMruClient(60);
+    const controller = new MruController({ client, context: { sourceWindowId: 1 } });
+    await controller.refresh();
+    client.delay = true;
+    const old = controller.search('old');
+    const current = controller.search('only');
+    client.pending[0].resolve();
+    await old;
+    const navigation = controller.advanceSelection(-1);
+    assert.equal(client.pending.length, 2, 'stale completion must not unlock current query navigation');
+    client.pending[1].resolve();
+    await Promise.all([current, navigation]);
+    assert.equal(controller.selectedKey, 'tab:0');
+    assert.equal(controller.total, 1);
+});
+
+test('failed queries cannot navigate stale rows and a successful retry restores navigation', async () => {
+    const client = new DelayedMruClient(60);
+    const controller = new MruController({ client, context: { sourceWindowId: 1 } });
+    await controller.refresh();
+    client.delay = true;
+    const search = controller.search('only');
+    client.pending[0].reject(new Error('Worker unavailable'));
+    await search;
+    assert.equal(controller.error, 'Worker unavailable');
+    const navigation = controller.advanceSelection(-1);
+    assert.equal(client.pending.length, 1, 'failed query must not page its stale result set');
+    await navigation;
+    client.delay = false;
+    await controller.search('');
+    await controller.advanceSelection(1);
+    assert.equal(controller.selectedKey, 'tab:1');
+    assert.equal(controller.error, '');
+});
+
+test('paging buttons and positional keys cannot navigate old rows during a query load', async () => {
+    const client = new DelayedMruClient(60);
+    const controller = new MruController({ client, context: { sourceWindowId: 1 } });
+    await controller.page(50);
+    client.delay = true;
+    const search = controller.search('only');
+    const navigation = [controller.page(50), controller.page(0, true)];
+    for (const key of ['Home', 'End', 'PageUp', 'PageDown']) navigation.push(controller.keyDown(key));
+    assert.equal(client.pending.length, 1, 'all navigation paths must leave the pending first-page query intact');
+    assert.equal(controller.selectedKey, null);
+    client.pending[0].resolve();
+    await Promise.all([search, ...navigation]);
+    assert.equal(controller.selectedKey, 'tab:0');
+    assert.equal(controller.offset, 0);
+    assert.equal(controller.total, 1);
 });

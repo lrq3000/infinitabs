@@ -15,11 +15,15 @@ export class MruController {
         Object.assign(this, { client, context, onChange, onActivated, onDismiss });
         this.items = []; this.total = 0; this.query = ''; this.allSessions = false;
         this.offset = 0; this.pageSize = 50; this.selectedKey = null;
-        this.generation = 0; this.error = ''; this.busy = false;
+        this.generation = 0; this.error = ''; this.busy = false; this.loading = false;
     }
+
+    // Search/page parameters change before the worker answers, while the visible rows still belong to the previous response. Never combine those snapshots for navigation; a failed query also leaves only stale rows until a successful retry.
+    get canNavigate() { return !this.loading && !this.error; }
 
     async refresh() {
         const generation = ++this.generation;
+        this.loading = true;
         try {
             const result = await this.client.request({ ...this.context, type: 'MRU_QUERY', query: this.query, allSessions: this.allSessions, offset: this.offset, limit: this.pageSize });
             if (generation !== this.generation) return;
@@ -29,7 +33,8 @@ export class MruController {
             if (!this.items.some(item => item.key === this.selectedKey)) this.selectedKey = this.items[0]?.key || null;
             this.error = '';
         } catch (error) { if (generation === this.generation) this.error = error.message; }
-        if (generation === this.generation) this.onChange();
+        // Only the latest request can unlock navigation. An older completion must not make a newer in-flight query's stale rows navigable.
+        if (generation === this.generation) { this.loading = false; this.onChange(); }
         return generation === this.generation && !this.error;
     }
 
@@ -43,6 +48,7 @@ export class MruController {
     }
 
     async page(offset, selectLast = false) {
+        if (!this.canNavigate) return;
         this.offset = Math.max(0, offset); this.selectedKey = null;
         const generation = this.generation + 1;
         const applied = await this.refresh();
@@ -53,11 +59,13 @@ export class MruController {
     }
 
     async advanceSelection(direction) {
-        if (!this.items.length) return;
-        const index = this.items.findIndex(item => item.key === this.selectedKey) + direction;
-        if (index >= this.items.length && this.offset + this.items.length < this.total) return this.page(this.offset + this.pageSize);
-        if (index < 0 && this.offset > 0) return this.page(this.offset - this.pageSize, true);
-        this.selectedKey = this.items[(index + this.items.length) % this.items.length].key;
+        if (!this.canNavigate || !this.items.length) return;
+        // Wrap in the complete filtered result set, not the loaded page: the last page can contain only one match. Only query another page when crossing its boundary.
+        const index = this.items.findIndex(item => item.key === this.selectedKey);
+        const target = (this.offset + index + direction + this.total) % this.total;
+        const offset = Math.floor(target / this.pageSize) * this.pageSize;
+        if (offset !== this.offset) return this.page(offset, direction < 0);
+        this.selectedKey = this.items[target - this.offset].key;
         this.onChange();
     }
 
@@ -69,6 +77,7 @@ export class MruController {
             await this.advanceSelection(key === 'ArrowUp' || (key === 'Tab' && shift) ? -1 : 1); return true;
         }
         if (!['Home', 'End', 'PageDown', 'PageUp'].includes(key)) return false;
+        if (!this.canNavigate) return true;
         if (key === 'Home' && this.offset) await this.page(0);
         else if (key === 'End' && this.offset + this.items.length < this.total) await this.page(Math.floor((this.total - 1) / this.pageSize) * this.pageSize, true);
         else if (key === 'PageDown' && this.offset + this.items.length < this.total) await this.page(this.offset + this.pageSize);
@@ -89,8 +98,8 @@ export class MruController {
 }
 
 export class MruView {
-    constructor({ root, client, context, showLiveToggle = false, onActivated, onDismiss }) {
-        Object.assign(this, { root, client, showLiveToggle });
+    constructor({ root, client, context, showLiveToggle = false, searchHost = null, onActivated, onDismiss }) {
+        Object.assign(this, { root, client, showLiveToggle, searchHost });
         this.controller = new MruController({ client, context, onChange: () => this.render(), onActivated, onDismiss });
         this.abort = new AbortController();
     }
@@ -108,7 +117,9 @@ export class MruView {
         this.root.classList.add('mru-root');
         const controls = this.element('div', 'mru-controls');
         this.input = this.element('input', 'mru-search');
-        this.input.type = 'search'; this.input.placeholder = 'Find a recently viewed tab…';
+        this.input.type = this.searchHost ? 'text' : 'search';
+        this.input.placeholder = this.searchHost ? 'Search recent tabs...' : 'Find a recently viewed tab…';
+        if (this.searchHost) this.input.classList.add('sidebar-search-input');
         this.input.setAttribute('aria-label', 'Search recent tabs');
         this.input.setAttribute('role', 'combobox'); this.input.setAttribute('aria-expanded', 'true'); this.input.setAttribute('aria-autocomplete', 'list');
         this.listen(this.input, 'input', () => this.controller.search(this.input.value));
@@ -136,7 +147,10 @@ export class MruView {
         this.listen(this.previous, 'click', () => this.controller.page(this.controller.offset - this.controller.pageSize));
         this.listen(this.next, 'click', () => this.controller.page(this.controller.offset + this.controller.pageSize));
         paging.append(this.previous, this.next);
-        this.root.replaceChildren(this.input, controls, this.list, this.status, paging);
+        // The sidebar supplies its existing search slot; the popup keeps its self-contained input. Each mode owns its query and keyboard/combobox semantics without duplicate search rows.
+        this.root.replaceChildren(controls, this.list, this.status, paging);
+        if (this.searchHost) this.searchHost.prepend(this.input);
+        else this.root.prepend(this.input);
         await this.controller.refresh();
     }
 
@@ -173,5 +187,5 @@ export class MruView {
     refresh() { return this.controller.refresh(); }
     focus() { this.input.focus(); }
     advanceSelection(direction) { return this.controller.advanceSelection(direction); }
-    dispose() { this.controller.generation++; this.abort.abort(); this.root.replaceChildren(); }
+    dispose() { this.controller.generation++; this.abort.abort(); this.input?.remove(); this.root.replaceChildren(); }
 }

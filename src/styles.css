@@ -166,6 +166,8 @@ body.dark-mode .top-level-tab.active {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
 }
 
 .header-left-group {
@@ -178,6 +180,9 @@ body.dark-mode .top-level-tab.active {
   display: flex;
   align-items: center;
   gap: 5px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-left: auto;
 }
 
 #theme-toggle-btn,
@@ -196,6 +201,7 @@ body.dark-mode .top-level-tab.active {
 }
 
 #show-live-only-btn,
+#recent-tabs-btn,
 #unmount-others-btn {
   font-size: 12px;
   padding: 4px 8px;
@@ -207,11 +213,13 @@ body.dark-mode .top-level-tab.active {
 }
 
 #show-live-only-btn:hover,
+#recent-tabs-btn:hover,
 #unmount-others-btn:hover {
   background-color: var(--btn-hover);
 }
 
-#show-live-only-btn.active {
+#show-live-only-btn.active,
+#recent-tabs-btn.active {
   background-color: var(--active-bg);
   color: var(--text-color);
   border-color: var(--active-border);
@@ -247,12 +255,13 @@ body.dark-mode .top-level-tab.active {
 
 .search-input-wrapper {
   flex: 1;
+  min-width: 0;
   position: relative;
   display: flex;
   align-items: center;
 }
 
-#search-input {
+.sidebar-search-input {
   width: 100%;
   padding: 4px 28px 4px 4px;
   /* Right padding for clear button */
@@ -290,7 +299,13 @@ body.dark-mode .top-level-tab.active {
 
 #search-prev,
 #search-next,
+#open-switcher-btn,
 #locate-current {
+  /* Fixed icon slots prevent different glyph widths and fallback-font heights from moving/resizing the search row when the view changes. */
+  box-sizing: border-box;
+  flex: 0 0 24px;
+  height: 20px;
+  line-height: 1;
   cursor: pointer;
   background: none;
   border: 1px solid #ccc;
@@ -302,6 +317,7 @@ body.dark-mode .top-level-tab.active {
 
 #search-prev:hover,
 #search-next:hover,
+#open-switcher-btn:hover,
 #locate-current:hover {
   background-color: var(--hover-bg);
 }

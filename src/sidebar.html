@@ -31,21 +31,19 @@
           <div class="header-right-group">
             <button type="button" id="unmount-others-btn" title="Unmount all tabs except current/selected">Unmount Others</button>
             <button type="button" id="show-live-only-btn" title="Toggle: Show only mounted tabs">Live Only</button>
+            <button type="button" id="recent-tabs-btn" aria-pressed="false" title="Toggle recently viewed tabs">Recent</button>
             <button type="button" id="add-new-tab-btn" title="Add new tab">＋</button>
           </div>
         </div>
         <div class="search-container">
           <div class="search-input-wrapper">
-            <input type="text" id="search-input" placeholder="Search tabs..." />
+            <input type="text" id="search-input" class="sidebar-search-input" placeholder="Search tabs..." />
             <button id="search-clear" title="Clear Search">×</button>
           </div>
           <button id="search-prev" title="Previous Result">▲</button>
           <button id="search-next" title="Next Result">▼</button>
+          <button type="button" id="open-switcher-btn" title="Open recent tabs switcher in a separate window" aria-label="Open recent tabs switcher in a separate window" hidden>↗</button>
           <button id="locate-current" title="Locate Current Tab">⦿</button>
-        </div>
-        <div class="session-view-controls">
-          <button type="button" id="recent-tabs-btn" aria-pressed="false" title="Toggle recently viewed tabs">Recent</button>
-          <button type="button" id="open-switcher-btn" title="Open keyboard switcher (Alt+Shift+Q)">Open switcher ↗</button>
         </div>
       </header>
 
