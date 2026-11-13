@@ -91,8 +91,8 @@ export class MruController {
 }
 
 export class MruView {
-    constructor({ root, client, context, showLiveToggle = false, onActivated, onDismiss }) {
-        Object.assign(this, { root, client, showLiveToggle });
+    constructor({ root, client, context, showLiveToggle = false, searchHost = null, onActivated, onDismiss }) {
+        Object.assign(this, { root, client, showLiveToggle, searchHost });
         this.controller = new MruController({ client, context, onChange: () => this.render(), onActivated, onDismiss });
         this.abort = new AbortController();
     }
@@ -110,7 +110,9 @@ export class MruView {
         this.root.classList.add('mru-root');
         const controls = this.element('div', 'mru-controls');
         this.input = this.element('input', 'mru-search');
-        this.input.type = 'search'; this.input.placeholder = 'Find a recently viewed tab…';
+        this.input.type = this.searchHost ? 'text' : 'search';
+        this.input.placeholder = this.searchHost ? 'Search recent tabs...' : 'Find a recently viewed tab…';
+        if (this.searchHost) this.input.classList.add('sidebar-search-input');
         this.input.setAttribute('aria-label', 'Search recent tabs');
         this.input.setAttribute('role', 'combobox'); this.input.setAttribute('aria-expanded', 'true'); this.input.setAttribute('aria-autocomplete', 'list');
         this.listen(this.input, 'input', () => this.controller.search(this.input.value));
@@ -138,7 +140,10 @@ export class MruView {
         this.listen(this.previous, 'click', () => this.controller.page(this.controller.offset - this.controller.pageSize));
         this.listen(this.next, 'click', () => this.controller.page(this.controller.offset + this.controller.pageSize));
         paging.append(this.previous, this.next);
-        this.root.replaceChildren(this.input, controls, this.list, this.status, paging);
+        // The sidebar supplies its existing search slot; the popup keeps its self-contained input. Each mode owns its query and keyboard/combobox semantics without duplicate search rows.
+        this.root.replaceChildren(controls, this.list, this.status, paging);
+        if (this.searchHost) this.searchHost.prepend(this.input);
+        else this.root.prepend(this.input);
         await this.controller.refresh();
     }
 
@@ -175,5 +180,5 @@ export class MruView {
     refresh() { return this.controller.refresh(); }
     focus() { this.input.focus(); }
     advanceSelection(direction) { return this.controller.advanceSelection(direction); }
-    dispose() { this.controller.generation++; this.abort.abort(); this.root.replaceChildren(); }
+    dispose() { this.controller.generation++; this.abort.abort(); this.input?.remove(); this.root.replaceChildren(); }
 }

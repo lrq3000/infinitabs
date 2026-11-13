@@ -2,7 +2,7 @@
 .mru-root[hidden], .search-container[hidden] { display: none; }
 .mru-root input, .mru-root select, .mru-root button { font: inherit; color: var(--text-color); background: var(--header-bg); border: 1px solid var(--border-color); border-radius: 5px; }
 .mru-search { box-sizing: border-box; padding: 9px 10px; width: 100%; outline-color: var(--active-border); }
-.mru-controls, .mru-paging, .session-view-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mru-controls, .mru-paging { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .mru-controls select { flex: 1; padding: 5px; min-width: 0; }
 .mru-controls button, .mru-paging button { padding: 5px 8px; cursor: pointer; }
 .mru-live-toggle[aria-pressed="true"] { background: var(--active-bg); border-color: var(--active-border); }
@@ -19,7 +19,6 @@
 .mru-status[data-error="true"] { color: var(--btn-text); }
 .mru-paging { justify-content: space-between; }
 .mru-paging button:disabled { opacity: .45; cursor: default; }
-.session-view-controls button[aria-pressed="true"] { color: var(--active-border); border-color: var(--active-border); background: var(--active-bg); }
 .mru-popup-header { display: flex; align-items: center; justify-content: space-between; background: var(--header-bg); padding: 10px 12px; border-bottom: 1px solid var(--border-color); }
 .mru-popup-header h1 { margin: 0; font-size: 1em; font-weight: 600; }
 .mru-popup-header button { color: var(--text-color); background: transparent; border: none; font-size: 1.3em; cursor: pointer; }

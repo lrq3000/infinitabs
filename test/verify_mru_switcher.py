@@ -30,12 +30,142 @@ class MruCheck(MovementCheck):
         self.sidebar.evaluate("async id => { const tab = await chrome.tabs.get(id); await chrome.windows.update(tab.windowId, {focused:true}); await chrome.tabs.update(id, {active:true}); }", self.live_ids[name])
         self.wait_until(lambda: self.query().get("context", {}).get("excludeBookmarkId") == self.bookmark_ids[name], "native focus")
 
+    def appearance(self, selector):
+        return self.sidebar.locator(selector).evaluate("""element => {
+            const style = getComputedStyle(element);
+            return Object.fromEntries(['fontSize', 'padding', 'borderRadius', 'borderColor', 'backgroundColor', 'color', 'height'].map(key => [key, style[key]]));
+        }""")
+
+    def sidebar_toolbar(self):
+        # These checks fail if Recent gets a separate toolbar/input layout again, or if the shared arrows still navigate the hidden normal tree.
+        recent_button = self.sidebar.locator("#recent-tabs-btn")
+        normal_input = self.sidebar.locator("#search-input")
+        recent_input = self.sidebar.get_by_role("combobox", name="Search recent tabs")
+        rows = self.sidebar.locator("#recent-tabs-container [role=option]")
+        selected = self.sidebar.locator("#recent-tabs-container [aria-selected=true]")
+        arrow = self.sidebar.locator("#open-switcher-btn")
+        assert recent_button.evaluate("button => button.previousElementSibling?.id") == "show-live-only-btn", "Recent is not immediately after Live Only"
+        expect(arrow).to_be_hidden()
+        self.sidebar.mouse.move(0, 0)
+        assert self.appearance("#recent-tabs-btn") == self.appearance("#show-live-only-btn") == self.appearance("#unmount-others-btn")
+
+        # Both clicks run before the first mount's asynchronous query can finish. Its completion must not re-show or focus the now-hidden Recent search.
+        normal_input.focus()
+        recent_button.evaluate("button => { button.click(); button.click(); }")
+        expect(rows).to_have_count(2)
+        expect(self.sidebar.locator("#recent-tabs-container")).to_be_hidden()
+        expect(normal_input).to_be_visible()
+        focus = self.sidebar.evaluate("document.activeElement.id || document.activeElement.tagName")
+        assert focus == "search-input", f"Rapid mode restoration left focus on {focus} instead of visible search"
+        expect(arrow).to_be_hidden()
+
+        active_before = self.active_tab()["id"]
+        for dark in (False, True):
+            if self.sidebar.locator("body").evaluate("body => body.classList.contains('dark-mode')") != dark:
+                self.sidebar.locator("#theme-toggle-btn").click()
+            for width in (420, 320):
+                self.sidebar.set_viewport_size({"width": width, "height": 780})
+                normal_input.fill("PR40 active")
+                normal_bounds = normal_input.bounding_box()
+                normal_style = self.appearance("#search-input")
+                self.sidebar.screenshot(path=str(self.artifacts / f"toolbar-normal-{'dark' if dark else 'light'}-{width}.png"))
+                recent_button.click()
+                expect(recent_input).to_be_visible()
+                expect(recent_input).to_have_attribute("placeholder", "Search recent tabs...")
+                expect(normal_input).to_be_hidden()
+                expect(self.sidebar.locator("#locate-current")).to_be_hidden()
+                expect(self.sidebar.locator(".search-input-wrapper input:visible")).to_have_count(1)
+                recent_bounds = recent_input.bounding_box()
+                assert recent_bounds == normal_bounds, f"Recent search moved or resized: normal={normal_bounds}, recent={recent_bounds}"
+                assert self.appearance(".search-input-wrapper .mru-search") == normal_style, "Recent search style differs from normal search"
+                expect(arrow).to_be_visible()
+                expect(arrow).to_have_text("↗")
+                expect(arrow).to_have_attribute("title", "Open recent tabs switcher in a separate window")
+                expect(arrow).to_have_accessible_name("Open recent tabs switcher in a separate window")
+                assert arrow.evaluate("button => button.previousElementSibling.id") == "search-next"
+                self.sidebar.mouse.move(0, 0)
+                icon_styles = {selector: self.appearance(selector) for selector in ("#open-switcher-btn", "#search-next", "#search-prev")}
+                assert len({json.dumps(style, sort_keys=True) for style in icon_styles.values()}) == 1, f"Search icon styles differ: {icon_styles}"
+                self.sidebar.locator("#show-live-only-btn").click()
+                self.wait_until(lambda: self.query()["context"]["liveOnly"], "Live Only active toolbar styling")
+                self.sidebar.mouse.move(0, 0)
+                assert self.appearance("#recent-tabs-btn") == self.appearance("#show-live-only-btn"), "Recent active style differs from Live Only"
+                self.sidebar.locator("#show-live-only-btn").click()
+                self.wait_until(lambda: not self.query()["context"]["liveOnly"], "restore shared filter")
+                recent_input.fill("PR40")
+                expect(rows).to_have_count(2)
+                expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
+                self.sidebar.locator("#search-next").click()
+                expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["A"])
+                self.sidebar.locator("#search-prev").click()
+                expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
+                self.sidebar.locator("#search-prev").click()
+                expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["A"])
+                self.sidebar.locator("#search-next").click()
+                expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
+                self.sidebar.keyboard.press("Control+Shift+f")
+                expect(recent_input).to_be_focused()
+                recent_input.press("ArrowDown")
+                expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["A"])
+                recent_input.press("ArrowUp")
+                expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
+                assert self.active_tab()["id"] == active_before, "Result navigation activated a tab"
+                assert self.sidebar.evaluate("document.documentElement.scrollWidth <= innerWidth"), "Toolbar overflows horizontally"
+                self.sidebar.screenshot(path=str(self.artifacts / f"toolbar-recent-{'dark' if dark else 'light'}-{width}.png"))
+                recent_button.click()
+                expect(normal_input).to_have_value("PR40 active")
+                expect(arrow).to_be_hidden()
+                expect(self.sidebar.locator("#locate-current")).to_be_visible()
+
+        # A real background title update rerenders the hidden normal tree. Reapplying its preserved query must not advance the Recent selection through the shared arrows.
+        recent_button.click()
+        recent_input.press("ArrowDown")
+        expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["A"])
+        normal_title = self.sidebar.locator(".tab-item[data-id='" + self.logical("A")["logicalId"] + "'] .tab-title")
+        self.fixture.evaluate("document.title = 'PR40 toolbar update'")
+        expect(normal_title).to_have_text("PR40 toolbar update")
+        expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["A"])
+        self.fixture.evaluate("document.title = 'PR40 active tab'")
+        expect(normal_title).to_have_text("PR40 active tab")
+        expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["A"])
+        recent_button.click()
+
+        # Normal/hover styles remain shared after toggling, and clear acts on the visible input without destroying the other mode's query.
+        for selector in ("#recent-tabs-btn", "#show-live-only-btn", "#unmount-others-btn"):
+            self.sidebar.locator(selector).hover()
+            style = self.appearance(selector)
+            if selector == "#recent-tabs-btn":
+                hover_style = style
+            else:
+                assert style == hover_style, "Recent hover style differs from the other actions"
+        recent_button.click()
+        expect(recent_input).to_have_value("PR40")
+        recent_input.fill("no-such-recent-tab-987654")
+        expect(rows).to_have_count(0)
+        self.sidebar.locator("#search-next").click()
+        self.sidebar.locator("#search-prev").click()
+        assert self.active_tab()["id"] == active_before
+        self.sidebar.locator("#search-clear").click()
+        expect(recent_input).to_have_value("")
+        expect(rows).to_have_count(2)
+        expect(self.sidebar.locator("#search-clear")).to_be_hidden()
+        recent_button.click()
+        expect(normal_input).to_have_value("PR40 active")
+        self.sidebar.locator("#search-clear").click()
+        expect(normal_input).to_have_value("")
+        recent_button.click()
+        expect(recent_input).to_have_value("")
+        # Leave the existing end-to-end scenarios in their original light, wide, unfiltered Recent state.
+        self.sidebar.locator("#theme-toggle-btn").click()
+        self.sidebar.set_viewport_size({"width": 1100, "height": 800})
+        self.evidence["flows"].append({"name": "shared-sidebar-toolbar-layout-navigation-and-mode-state", "status": "pass", "widths": [320, 420], "themes": ["light", "dark"]})
+
     def run(self):
         self.select_native("A")
         self.select_native("B")
         self.select_native("C")
+        self.sidebar_toolbar()
         expect(self.sidebar.locator("#recent-tabs-btn")).to_be_visible()
-        self.sidebar.locator("#recent-tabs-btn").click()
         expect(self.sidebar.locator("#recent-tabs-container")).to_be_visible()
         expect(self.sidebar.locator("#recent-tabs-container [role=option]").first).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
         self.sidebar.screenshot(path=str(self.artifacts / "recent-sidebar.png"))

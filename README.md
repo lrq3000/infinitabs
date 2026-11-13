@@ -152,7 +152,7 @@ For best usage, it is recommended to keep the native tabstrip horizontal, not ve
 
 ### Recent tabs and quick switching
 
-Click **Recent** in the Session sidebar, or **Open switcher** for a compact keyboard-first window. The suggested opening shortcut is **Alt+Shift+Q**; configure it and the initially unbound **Previous tab** shortcut at `chrome://extensions/shortcuts`. The toolbar icon continues opening the sidebar. Browser/OS-reserved shortcuts are not overridden.
+Click **Recent** beside **Live Only** in the Session sidebar to search recently viewed tabs with the usual search row and previous/next result buttons. In Recent mode, the **↗** button beside Next opens the compact keyboard-first switcher in a separate window. The suggested opening shortcut is **Alt+Shift+Q**; configure it and the initially unbound **Previous tab** shortcut at `chrome://extensions/shortcuts`. The toolbar icon continues opening the sidebar. Browser/OS-reserved shortcuts are not overridden.
 
 Recent lists distinct logical tabs that were actually viewed, newest first, excluding the current tab. Type part of a title or URL for fuzzy finding, use arrows or Tab/Shift+Tab to select, Enter to switch and Escape to close the popup. Home/End and Page Up/Down navigate paged results. The default scope is the current session; choose **All sessions** to find previously viewed tabs elsewhere.
 
