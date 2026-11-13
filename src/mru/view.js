@@ -15,11 +15,15 @@ export class MruController {
         Object.assign(this, { client, context, onChange, onActivated, onDismiss });
         this.items = []; this.total = 0; this.query = ''; this.allSessions = false;
         this.offset = 0; this.pageSize = 50; this.selectedKey = null;
-        this.generation = 0; this.error = ''; this.busy = false;
+        this.generation = 0; this.error = ''; this.busy = false; this.loading = false;
     }
+
+    // Search/page parameters change before the worker answers, while the visible rows still belong to the previous response. Never combine those snapshots for navigation; a failed query also leaves only stale rows until a successful retry.
+    get canNavigate() { return !this.loading && !this.error; }
 
     async refresh() {
         const generation = ++this.generation;
+        this.loading = true;
         try {
             const result = await this.client.request({ ...this.context, type: 'MRU_QUERY', query: this.query, allSessions: this.allSessions, offset: this.offset, limit: this.pageSize });
             if (generation !== this.generation) return;
@@ -29,7 +33,8 @@ export class MruController {
             if (!this.items.some(item => item.key === this.selectedKey)) this.selectedKey = this.items[0]?.key || null;
             this.error = '';
         } catch (error) { if (generation === this.generation) this.error = error.message; }
-        if (generation === this.generation) this.onChange();
+        // Only the latest request can unlock navigation. An older completion must not make a newer in-flight query's stale rows navigable.
+        if (generation === this.generation) { this.loading = false; this.onChange(); }
         return generation === this.generation && !this.error;
     }
 
@@ -43,6 +48,7 @@ export class MruController {
     }
 
     async page(offset, selectLast = false) {
+        if (!this.canNavigate) return;
         this.offset = Math.max(0, offset); this.selectedKey = null;
         const generation = this.generation + 1;
         const applied = await this.refresh();
@@ -53,7 +59,7 @@ export class MruController {
     }
 
     async advanceSelection(direction) {
-        if (!this.items.length) return;
+        if (!this.canNavigate || !this.items.length) return;
         // Wrap in the complete filtered result set, not the loaded page: the last page can contain only one match. Only query another page when crossing its boundary.
         const index = this.items.findIndex(item => item.key === this.selectedKey);
         const target = (this.offset + index + direction + this.total) % this.total;
@@ -71,6 +77,7 @@ export class MruController {
             await this.advanceSelection(key === 'ArrowUp' || (key === 'Tab' && shift) ? -1 : 1); return true;
         }
         if (!['Home', 'End', 'PageDown', 'PageUp'].includes(key)) return false;
+        if (!this.canNavigate) return true;
         if (key === 'Home' && this.offset) await this.page(0);
         else if (key === 'End' && this.offset + this.items.length < this.total) await this.page(Math.floor((this.total - 1) / this.pageSize) * this.pageSize, true);
         else if (key === 'PageDown' && this.offset + this.items.length < this.total) await this.page(this.offset + this.pageSize);
