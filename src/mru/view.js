@@ -54,10 +54,12 @@ export class MruController {
 
     async advanceSelection(direction) {
         if (!this.items.length) return;
-        const index = this.items.findIndex(item => item.key === this.selectedKey) + direction;
-        if (index >= this.items.length && this.offset + this.items.length < this.total) return this.page(this.offset + this.pageSize);
-        if (index < 0 && this.offset > 0) return this.page(this.offset - this.pageSize, true);
-        this.selectedKey = this.items[(index + this.items.length) % this.items.length].key;
+        // Wrap in the complete filtered result set, not the loaded page: the last page can contain only one match. Only query another page when crossing its boundary.
+        const index = this.items.findIndex(item => item.key === this.selectedKey);
+        const target = (this.offset + index + direction + this.total) % this.total;
+        const offset = Math.floor(target / this.pageSize) * this.pageSize;
+        if (offset !== this.offset) return this.page(offset, direction < 0);
+        this.selectedKey = this.items[target - this.offset].key;
         this.onChange();
     }
 

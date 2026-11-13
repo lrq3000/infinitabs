@@ -8,7 +8,7 @@ function fixture() {
     const rows = ['a', 'b', 'c'].map(key => ({ key: `tab:${key}`, title: key }));
     const client = { request: async message => {
         requests.push(message);
-        if (message.type === 'MRU_QUERY') return { items: rows, total: 3, context: { sourceWindowId: 1, sourceSessionId: 's', liveOnly: false } };
+        if (message.type === 'MRU_QUERY') return { items: rows, total: rows.length, context: { sourceWindowId: 1, sourceSessionId: 's', liveOnly: false } };
         return { success: true };
     } };
     const controller = new MruController({ client, context: { sourceWindowId: 1, sourceSessionId: 's' }, onChange: () => {} });
@@ -72,4 +72,38 @@ test('IME confirmation and navigation do not activate or move the MRU selection'
     await controller.keyDown('ArrowDown', false, true);
     assert.equal(controller.selectedKey, 'tab:a');
     assert.equal(requests.some(request => request.type === 'MRU_ACTIVATE'), false);
+});
+
+test('previous/next selection crosses pages and wraps the full matching result set', async () => {
+    const { controller, client, requests } = fixture();
+    const rows = ['a', 'b', 'c', 'd', 'e'].map(key => ({ key: `tab:${key}`, title: key }));
+    controller.pageSize = 2;
+    client.request = async message => {
+        requests.push(message);
+        return { items: rows.slice(message.offset, message.offset + message.limit), total: rows.length };
+    };
+    await controller.search('matching tabs');
+    const selected = [controller.selectedKey];
+    for (const direction of [1, 1, 1, 1, 1, -1, -1, -1, -1, -1]) {
+        await controller.advanceSelection(direction);
+        selected.push(controller.selectedKey);
+    }
+    assert.deepEqual(selected, ['tab:a', 'tab:b', 'tab:c', 'tab:d', 'tab:e', 'tab:a', 'tab:e', 'tab:d', 'tab:c', 'tab:b', 'tab:a']);
+    assert.equal(requests.some(message => message.type === 'MRU_ACTIVATE'), false);
+    assert.ok(requests.every(message => message.query === 'matching tabs'));
+});
+
+test('previous/next selection is inert for empty matches and stable for one match', async () => {
+    const { controller, rows, requests } = fixture();
+    rows.splice(0);
+    await controller.refresh();
+    await controller.advanceSelection(-1);
+    await controller.advanceSelection(1);
+    assert.equal(controller.selectedKey, null);
+    rows.push({ key: 'tab:only', title: 'Only match' });
+    await controller.refresh();
+    await controller.advanceSelection(-1);
+    await controller.advanceSelection(1);
+    assert.equal(controller.selectedKey, 'tab:only');
+    assert.equal(requests.some(message => message.type === 'MRU_ACTIVATE'), false);
 });
