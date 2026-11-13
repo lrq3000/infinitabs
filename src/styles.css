@@ -141,10 +141,20 @@ body.dark-mode .top-level-tab.active {
 
 .session-selector-container {
   display: flex;
+  align-items: center;
   gap: 5px;
+  min-width: 0;
+}
+
+.session-selector-container > button {
+  /* Keep all actions reachable at narrow sidebar widths; only the session selector should absorb the width change. */
+  flex-shrink: 0;
 }
 
 #session-selector {
+  /* Native selects otherwise keep their longest option's intrinsic minimum width and push the trailing controls out of view. */
+  flex: 1;
+  min-width: 0;
   padding: 4px;
   border-radius: 4px;
   border: 1px solid #ccc;
@@ -168,12 +178,6 @@ body.dark-mode .top-level-tab.active {
   align-items: center;
   flex-wrap: wrap;
   gap: 5px;
-}
-
-.header-left-group {
-  display: flex;
-  align-items: center;
-  gap: 2px;
 }
 
 .header-right-group {
