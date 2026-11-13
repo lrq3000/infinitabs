@@ -36,6 +36,62 @@ class MruCheck(MovementCheck):
             return Object.fromEntries(['fontSize', 'padding', 'borderRadius', 'borderColor', 'backgroundColor', 'color', 'height'].map(key => [key, style[key]]));
         }""")
 
+    def sidebar_header(self):
+        selector = self.sidebar.locator("#session-selector")
+        button_ids = ["rename-session-btn", "refresh-sessions", "theme-toggle-btn", "settings-btn"]
+        original_name = self.session()["name"]
+        long_name = "A long session name that must shrink within the sidebar instead of hiding Rename, Refresh, Theme or Settings"
+        self.sidebar.once("dialog", lambda dialog: dialog.accept(long_name))
+        self.sidebar.locator("#rename-session-btn").click()
+        expect(selector.locator("option:checked")).to_have_text(long_name)
+        expect(self.sidebar).to_have_title("InfiniTabs Sidebar")
+        self.evidence["header_layout"] = []
+        for dark in (False, True):
+            if self.sidebar.locator("body").evaluate("body => body.classList.contains('dark-mode')") != dark:
+                self.sidebar.locator("#theme-toggle-btn").click()
+            wide_selector_width = None
+            button_sizes = None
+            for width in (420, 320, 280, 240):
+                self.sidebar.set_viewport_size({"width": width, "height": 780})
+                boxes = {"session-selector": selector.bounding_box()}
+                boxes.update({button_id: self.sidebar.locator("#" + button_id).bounding_box() for button_id in button_ids})
+                self.evidence["header_layout"].append({"width": width, "dark": dark, "boxes": boxes})
+                right = 0
+                center = boxes["session-selector"]["y"] + boxes["session-selector"]["height"] / 2
+                for control_id, box in boxes.items():
+                    assert box and box["x"] >= right and box["x"] + box["width"] <= width, f"Header control clipped or out of order at {width}px: {control_id} {box}"
+                    assert abs(box["y"] + box["height"] / 2 - center) <= 0.5, f"Header control is not on the selector row: {control_id}"
+                    right = box["x"] + box["width"]
+                assert abs(right - (width - 10)) <= 1, "Settings is not aligned with the header's right edge"
+                sizes = {button_id: (boxes[button_id]["width"], boxes[button_id]["height"]) for button_id in button_ids}
+                if button_sizes is None:
+                    button_sizes = sizes
+                    wide_selector_width = boxes["session-selector"]["width"]
+                assert sizes == button_sizes, "Header buttons shrank while resizing the sidebar"
+                assert abs(wide_selector_width - boxes["session-selector"]["width"] - (420 - width)) <= 1, "Selector does not absorb sidebar width changes"
+                assert boxes["session-selector"]["width"] >= 40, "Selector became unusably narrow"
+                assert self.sidebar.evaluate("document.documentElement.scrollWidth <= innerWidth"), "Header overflows horizontally"
+                self.sidebar.screenshot(path=str(self.artifacts / f"header-{'dark' if dark else 'light'}-{width}.png"))
+
+        # A stale UI-only entry makes the refresh's real response observable without mocking Chrome or depending on a timing delay.
+        selector.evaluate("select => select.add(new Option('Stale session entry', 'stale-header-fixture'))")
+        self.sidebar.locator("#refresh-sessions").click()
+        expect(selector.locator("option[value='stale-header-fixture']")).to_have_count(0)
+        expect(selector.locator("option:checked")).to_have_text(long_name)
+        with self.context.expect_page() as opened:
+            self.sidebar.locator("#settings-btn").click()
+        options = opened.value
+        options.on("pageerror", lambda error: self.evidence["page_errors"].append(str(error)))
+        options.wait_for_url("**/options.html")
+        options.close()
+        self.sidebar.once("dialog", lambda dialog: dialog.accept(original_name))
+        self.sidebar.locator("#rename-session-btn").click()
+        expect(selector.locator("option:checked")).to_have_text(original_name)
+        self.sidebar.locator("#theme-toggle-btn").click()
+        expect(self.sidebar.locator("body")).not_to_have_class("dark-mode")
+        self.sidebar.set_viewport_size({"width": 1100, "height": 800})
+        self.evidence["flows"].append({"name": "responsive-header-controls-and-real-actions", "status": "pass", "widths": [240, 280, 320, 420], "themes": ["light", "dark"]})
+
     def sidebar_toolbar(self):
         # These checks fail if Recent gets a separate toolbar/input layout again, or if the shared arrows still navigate the hidden normal tree.
         recent_button = self.sidebar.locator("#recent-tabs-btn")
@@ -197,6 +253,7 @@ class MruCheck(MovementCheck):
         options = opened.value
         options.locator("#mru-recovery-checkbox").check()
         self.wait_until(lambda: self.send_message({"type": "MRU_RECOVERY_STATUS"})["enabled"], "recovery opt-in")
+        options.close()
         self.unmount("B")
         self.send_message({"type": "DELETE_LOGICAL_TAB", "windowId": self.window_id, "logicalId": self.logical("B")["logicalId"]})
         self.wait_until(lambda: self.send_message({"type": "MRU_RECOVERY_STATUS"})["count"] == 1, "opted-in deleted B recovery")
@@ -217,6 +274,8 @@ class MruCheck(MovementCheck):
         self.saved_session_and_concurrent_window()
         self.external_canonical_changes()
         self.benchmark_large_history()
+        # Opening/closing the real options page can activate the harness's own sidebar tab. Exercise header actions after the strict A/B/C MRU-order fixtures, not during their setup.
+        self.sidebar_header()
 
     def saved_session_and_concurrent_window(self):
         source_session = self.session()["sessionId"]
