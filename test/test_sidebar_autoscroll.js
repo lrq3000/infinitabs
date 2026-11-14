@@ -107,3 +107,36 @@ test('context cannot push the selected row below a short viewport', () => {
     fixture.schedule(); fixture.flush();
     assert.deepEqual(fixture.calls, [{ id: 'selected', behavior: 'smooth', block: 'start' }]);
 });
+
+class SearchScrollFixture extends ScrollFixture {
+    constructor() {
+        super(500, 530);
+        Object.assign(this.row, {
+            title: 'https://example.test/match',
+            querySelector: () => ({ textContent: 'Matching tab' }),
+            classList: { add() {}, remove() {} }
+        });
+        this.container.querySelectorAll = () => [this.row];
+        Object.assign(this.context, { searchInput: { value: 'Matching' }, searchClearBtn: { style: {} } });
+        const search = source.slice(source.indexOf('function parseSearchQuery('), source.indexOf('function scrollToActiveTab('));
+        vm.runInContext(`let currentMatches = []; let currentMatchIndex = -1; let recentActive = false;\n${search}`, this.context);
+    }
+}
+
+test('passive search refresh never reveals an off-screen match during visible tab selection', () => {
+    const fixture = new SearchScrollFixture();
+    fixture.context.performSearch({ navigate: false });
+    fixture.flush();
+    assert.deepEqual(fixture.calls, []);
+    // The passive refresh must still populate matches for the next intentional navigation.
+    fixture.context.navigateSearch(1);
+    fixture.flush();
+    assert.equal(fixture.calls.length, 1);
+});
+
+test('explicit search input retains first-match reveal', () => {
+    const fixture = new SearchScrollFixture();
+    fixture.context.performSearch();
+    fixture.flush();
+    assert.equal(fixture.calls.length, 1);
+});

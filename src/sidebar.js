@@ -497,8 +497,8 @@ function onMessage(message, sender, sendResponse) {
                 }
             }
             renderSession(currentSession);
-            // Re-apply search if exists
-            if (searchInput.value) performSearch();
+            // Background updates refresh highlights only; restarting search navigation here can scroll away from a fully visible selected tab.
+            if (searchInput.value) performSearch({ navigate: false });
         }
     } else if (message.type === "HISTORY_UPDATED") {
         loadPastWorkspaces();
@@ -540,7 +540,7 @@ function clearSearch() {
     input.focus();
 }
 
-function performSearch() {
+function performSearch({ navigate = true } = {}) {
     const query = searchInput.value;
 
     // Background tree refreshes may reapply its query while Recent is visible. Only the visible input should control the shared clear button.
@@ -589,7 +589,7 @@ function performSearch() {
     });
 
     // A hidden tree refresh may rebuild normal matches, but must never route its automatic first-match selection into Recent's shared navigation buttons.
-    if (currentMatches.length > 0 && !recentActive) {
+    if (currentMatches.length > 0 && !recentActive && navigate) {
         navigateSearch(1); // Go to first match
     }
 }

@@ -12,6 +12,8 @@ Selecting a fully visible tab must preserve the list's scroll position, whether 
 
 Compare the actual selected row, not its context siblings, with the scroll container's inner viewport. Fully visible rows require no scroll call. Off-screen rows retain the current two-row context; Locate retains centering. Reuse the existing helper with optional context/alignment parameters rather than introducing a subsystem. Ignore disconnected or non-rendered targets, and preserve existing drag suppression, search navigation, collapsed groups, and compact/domain/full-URL display modes. No dependencies, configuration changes, or page-content injection are needed.
 
+Independent review found a second source of selection-driven movement: background updates reapply an active search and navigate to its first match. Refresh those highlights without navigating; keep first-match reveal for user-entered queries and Previous/Next navigation. This is part of the same visible-selection requirement, not a change to search matching or activation semantics.
+
 ## Verification and scope
 
 Exercise the production helper with deterministic DOM-boundary inputs in Node, then use an isolated Chromium profile with the actual unpacked extension and generated localhost/bookmark fixtures. Cover mounted and unmounted clicks, automatic selection after close/unmount, clipped top/bottom edges, Locate, collapsed groups, hidden normal view, and compact/detailed rows. Keep screenshots, evidence, and the isolated browser profile in the approved temporary directory. Make only local commits; do not push, merge, delete artifacts, or interact with the personal browser.

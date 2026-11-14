@@ -190,6 +190,34 @@ class SidebarScrollCheck(ActiveTabReloadCheck):
                         "off-screen native replacement")
         self.record("auto-select-off-screen-after-unmount", before, self.sidebar.locator("#tabs-container .tab-item.active-live"))
 
+    def search_selections(self):
+        self.activate(20)
+        self.activate(21)
+        self.sidebar.locator("#search-input").fill("Scroll fixture 0")
+        self.settle()
+        for index, kind in ((21, "mounted"), (23, "unmounted")):
+            self.activate(20)
+            before = self.position(index)
+            assert before["fullyVisible"]
+            self.row(index).click()
+            self.wait_active(index)
+            self.record(f"search-click-{kind}-visible", before, self.row(index), stationary=True)
+
+        self.activate(22)
+        before = self.position(21, offset=110)
+        self.row(22).locator(".live-indicator-wrapper").click()
+        self.wait_until(lambda: self.sidebar.locator("#tabs-container .tab-item.active-live").count() == 1
+                        and self.sidebar.locator("#tabs-container .tab-item.active-live").get_attribute("title") != self.url(22),
+                        "replacement with an active search")
+        self.record("search-auto-select-visible-after-unmount", before, self.sidebar.locator("#tabs-container .tab-item.active-live"), stationary=True)
+
+        self.position(21)
+        before = self.metrics(self.row(0))
+        assert not before["fullyVisible"]
+        self.sidebar.locator("#search-next").click()
+        self.record("explicit-search-navigation", before, self.row(0))
+        self.sidebar.locator("#search-input").fill("")
+
     def clipped_selections(self):
         for edge in ("top", "bottom", "off-screen"):
             self.activate(20)
@@ -246,12 +274,16 @@ class SidebarScrollCheck(ActiveTabReloadCheck):
         self.evidence["flows"].append({"name": "popup-nearest-scroll", "before": before, "after": after})
         popup.close()
 
-    def run(self, mode, width):
+    def run(self, mode, width, flow="all"):
         self.mode, self.width = mode, width
         self.sidebar.set_viewport_size({"width": width, "height": 650})
         self.sidebar.evaluate("mode => chrome.storage.local.set({tabDisplayMode: mode})", mode)
         expect(self.sidebar.locator("body")).to_have_attribute("data-tab-display", mode)
+        if flow == "search":
+            self.search_selections()
+            return
         self.visible_selections()
+        self.search_selections()
         self.clipped_selections()
         self.auto_selection()
         self.collapsed_and_hidden()
@@ -266,6 +298,7 @@ def main():
     parser.add_argument("--artifacts-dir", type=Path, required=True)
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--mode", choices=["all", "compact", "url", "domain"], default="all", help="Isolate a display mode for focused reruns")
+    parser.add_argument("--flow", choices=["all", "search"], default="all", help="Isolate the competing passive-search scrolling regression")
     parser.add_argument("--executable-path", type=Path, help="Use an already installed Chromium when Playwright's pinned revision is absent")
     args = parser.parse_args()
     if not args.artifacts_dir.is_dir():
@@ -294,7 +327,7 @@ def main():
                 check.evidence.update(extension=str(extension), chromium=context.browser.version, isolated_profile=str(profile))
                 try:
                     check.prepare_rows(f"http://127.0.0.1:{server.server_port}/fixture")
-                    check.run(mode, width)
+                    check.run(mode, width, args.flow)
                     print(f"PASS {mode}: {len(check.evidence['flows'])} real-extension scroll flows", flush=True)
                 except Exception as error:
                     check.evidence["failure"] = str(error)
