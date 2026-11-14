@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 from urllib import error as urlerror, parse, request
+import unicodedata
 import zipfile
 
 
@@ -16,6 +17,11 @@ class ReleasePackager:
     """Read Git blobs in one batch so packaging is linear in the source size and ignores local edits."""
 
     TAG = re.compile(r'v?(?P<base>(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))(?P<pre>-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?')
+    MIT_NOTICES = (
+        'Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:',
+        'The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.',
+        'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.',
+    )
 
     def __init__(self, repository: Path, tag: str):
         self.repository = Path(repository)
@@ -42,7 +48,27 @@ class ReleasePackager:
         # ZIP entry names must be portable to Windows as well as Unix; never extract/link outside the extension.
         if not isinstance(name, str) or not name or '\\' in name or ':' in name or '\0' in name or any(part in {'', '.', '..'} for part in name.split('/')):
             raise ValueError(f'Unsafe extension path: {name!r}')
+        for part in name.split('/'):
+            if part.endswith((' ', '.')) or any(ord(char) < 32 or char in '<>"|?*' for char in part):
+                raise ValueError(f'Nonportable extension path: {name!r}')
+            if re.fullmatch(r'(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])', part.split('.')[0], re.IGNORECASE):
+                raise ValueError(f'Windows-reserved extension path: {name!r}')
         return name
+
+    @staticmethod
+    def _validate_paths(names):
+        # A trie catches file/directory conflicts and case/Unicode aliases in linear path-component work.
+        # Validate after injecting LICENSE: a source file named License or LICENSE/child must never replace the notice on extraction.
+        root = {}
+        for name in names:
+            node = root
+            for part in ReleasePackager.safe_path(name).split('/'):
+                if None in node:
+                    raise ValueError(f'File/directory conflict in release ZIP: {name}')
+                node = node.setdefault(unicodedata.normalize('NFC', part).casefold(), {})
+            if node:
+                raise ValueError(f'Conflicting or aliased release ZIP path: {name}')
+            node[None] = name
 
     def _committed_files(self):
         entries = []
@@ -78,10 +104,26 @@ class ReleasePackager:
         except (KeyError, ValueError, UnicodeError) as error:
             raise ValueError(f'Missing or invalid committed {name}') from error
 
+    @staticmethod
+    def _validate_license(content):
+        # Tolerate line-ending/wrapping changes, but never distribute an empty/truncated or unrelated notice as MIT.
+        text = content.decode('utf-8-sig')
+        normalized = ' '.join(text.casefold().split())
+        if not re.search(r'(?im)^copyright\s+(?:\(c\)\s+)?\S[^\r\n]*', text) or any(' '.join(notice.casefold().split()) not in normalized for notice in ReleasePackager.MIT_NOTICES):
+            raise ValueError('MIT LICENSE must retain its copyright, permission, inclusion, and warranty notices')
+
+    @staticmethod
+    def _validate_manifest(manifest):
+        if not isinstance(manifest, dict) or type(manifest.get('manifest_version')) is not int or manifest['manifest_version'] != 3:
+            raise ValueError('Extension manifest_version must be the integer 3')
+        if not isinstance(manifest.get('name'), str) or not manifest['name'].strip():
+            raise ValueError('Extension manifest must have a nonempty name')
+
     def _extension_files(self, files):
         package = self._json(files, 'package.json')
         lock = self._json(files, 'package-lock.json')
         manifest = self._json(files, 'src/manifest.json')
+        self._validate_manifest(manifest)
         packages = lock.get('packages')
         locked_root = packages.get('') if isinstance(packages, dict) else None
         versions = [package.get('version'), lock.get('version'), manifest.get('version'),
@@ -91,8 +133,7 @@ class ReleasePackager:
         name = package.get('name')
         if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', name):
             raise ValueError('Package name must be a safe unscoped filename prefix')
-        if not files.get('LICENSE', b'').strip():
-            raise ValueError('Committed MIT LICENSE is missing or empty')
+        self._validate_license(files.get('LICENSE', b''))
         extension = {}
         for path, content in files.items():
             if not path.startswith('src/'):
@@ -104,6 +145,7 @@ class ReleasePackager:
         if 'LICENSE' in extension and extension['LICENSE'] != files['LICENSE']:
             raise ValueError('src/LICENSE conflicts with the root MIT LICENSE')
         extension['LICENSE'] = files['LICENSE']
+        self._validate_paths(extension)
         for section, key in [('background', 'service_worker'), ('side_panel', 'default_path'),
                              ('options_ui', 'page'), ('action', 'default_popup')]:
             value = manifest.get(section, {})
@@ -122,10 +164,11 @@ class ReleasePackager:
                 names = zipped.namelist()
                 if len(names) != len(set(names)) or zipped.testzip() is not None:
                     raise ValueError('ZIP contains duplicate or corrupt entries')
-                for name in names:
-                    ReleasePackager.safe_path(name)
+                ReleasePackager._validate_paths(names)
                 if 'manifest.json' not in names or not zipped.read('LICENSE').strip():
                     raise ValueError('ZIP must contain manifest.json and MIT LICENSE at root')
+                ReleasePackager._validate_license(zipped.read('LICENSE'))
+                ReleasePackager._validate_manifest(json.loads(zipped.read('manifest.json')))
                 if expected is not None and {name: zipped.read(name) for name in names} != expected:
                     raise ValueError('ZIP does not match the committed source and MIT LICENSE')
         except (zipfile.BadZipFile, KeyError) as error:
