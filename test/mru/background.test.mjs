@@ -5,11 +5,13 @@ import { MemoryStorage } from './storage-fixture.mjs';
 
 test('background routes MRU queries and excludes its UI from startup/session creation', async () => {
     chrome.runtime.getURL = path => `chrome-extension://fixture/${path}`;
+    chrome.storage.local = new MemoryStorage();
     chrome.storage.session = new MemoryStorage();
     chrome.windows.get = async id => (await chrome.windows.getAll()).find(win => win.id === id);
     const root = await chrome.bookmarks.create({ title: 'InfiniTabs Sessions' });
     const session = await chrome.bookmarks.create({ parentId: root.id, title: 'Session [windowId:1]' });
-    await chrome.bookmarks.create({ parentId: session.id, title: 'A', url: 'https://a.test' });
+    const bookmark = await chrome.bookmarks.create({ parentId: session.id, title: 'A', url: 'https://a.test' });
+    const saved = await chrome.bookmarks.create({ parentId: session.id, title: 'B', url: 'https://b.test' });
     await chrome.windows.create({ id: 1, focused: true, type: 'normal' });
     await chrome.tabs.create({ id: 11, windowId: 1, url: 'https://a.test', title: 'A', active: true, groupId: -1 });
     await chrome.windows.create({ id: 99, focused: false, type: 'popup' });
@@ -26,4 +28,28 @@ test('background routes MRU queries and excludes its UI from startup/session cre
     assert.equal(sessions.sessions.length, 1, 'Switcher UI must not become a saved session');
     const allBookmarks = await chrome.bookmarks.getSubTree(root.id);
     assert.equal(JSON.stringify(allBookmarks).includes('chrome-extension://'), false);
+    const broadcasts = [];
+    chrome.runtime.sendMessage = async value => { broadcasts.push(structuredClone(value)); };
+    const nativeGet = chrome.windows.get;
+    let sourceReads = 0;
+    chrome.windows.get = async (id, options) => {
+        // Fail the final source validation, after canonical target reconciliation has already replaced the normal sidebar's logical IDs.
+        if (options?.populate && ++sourceReads === 3) throw new Error('Source disappeared after reconciliation');
+        return nativeGet(id, options);
+    };
+    const aborted = await message({ ...result.context, type: 'MRU_DELETE', key: `tab:${saved.id}` });
+    chrome.windows.get = nativeGet;
+    assert.match(aborted.error, /Source disappeared/);
+    const published = broadcasts.filter(value => value.type === 'STATE_UPDATED').at(-1);
+    assert.ok(published, 'a canonical reload must publish its new logical IDs even if the action later aborts');
+    const refreshed = (await message({ type: 'GET_CURRENT_SESSION_STATE', windowId: 1 })).session;
+    assert.deepEqual(published.session.logicalTabs.map(tab => tab.logicalId), refreshed.logicalTabs.map(tab => tab.logicalId));
+    await message({ type: 'FOCUS_OR_MOUNT_TAB', windowId: 1, logicalId: published.session.logicalTabs.find(tab => tab.bookmarkId === saved.id).logicalId });
+    assert.ok((await chrome.tabs.query({ windowId: 1 })).some(tab => tab.url === 'https://b.test'), 'normal activation must work with the published replacement ID');
+    const target = { ...result.context, key: `tab:${bookmark.id}` };
+    assert.deepEqual(await message({ ...target, type: 'MRU_UNMOUNT' }), { success: true });
+    assert.equal((await chrome.tabs.query({ windowId: 1 })).some(tab => tab.id === 11), false, 'MRU must invoke the native unmount lifecycle');
+    assert.equal((await chrome.bookmarks.get(bookmark.id))[0].id, bookmark.id, 'unmount must preserve the bookmark');
+    assert.deepEqual(await message({ ...target, type: 'MRU_DELETE' }), { success: true });
+    assert.deepEqual(await chrome.bookmarks.get(bookmark.id), []);
 });

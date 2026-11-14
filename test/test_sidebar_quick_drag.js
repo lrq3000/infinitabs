@@ -34,6 +34,7 @@ function runSidebarScenario(scenarioScript, mruModule) {
     const sidebarSource = fs.readFileSync(sidebarPath, 'utf8')
         .replace("import { parseGroupTitle } from './utils.js';", "function parseGroupTitle(title) { return { name: title, color: 'grey' }; }")
         .replace("import { MruClient, MruView } from './mru/view.js';", '')
+        .replace(/^import \{.*\} from '\.\/ui\/[^']+';$/gm, '')
         .replace(/\/\/ Start\s*init\(\);\s*$/m, '// Start disabled in VM tests');
 
     const context = {
@@ -60,6 +61,7 @@ function runSidebarScenario(scenarioScript, mruModule) {
             }
         },
         window: {
+            addEventListener() {},
             requestAnimationFrame(callback) {
                 callback();
             }
@@ -105,7 +107,9 @@ function runSidebarScenario(scenarioScript, mruModule) {
 async function runTest() {
     console.log('Starting test_sidebar_quick_drag.js...');
 
-    const mruModule = await import('../src/mru/view.js');
+    const mruModule = Object.assign({}, ...await Promise.all([
+        import('../src/mru/view.js'), import('../src/ui/tab-row.js'), import('../src/ui/tab-display-settings.js')
+    ]));
     const result = runSidebarScenario(`
         const dragStartClassList = { added: [], add(...classNames) { this.added.push(...classNames); } };
         const dragStartRoot = { dataset: { type: 'tab', id: 'tab-start-1' }, classList: dragStartClassList };

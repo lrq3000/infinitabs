@@ -1,3 +1,6 @@
+import { TabRow } from '../ui/tab-row.js';
+import { TabDisplaySettings } from '../ui/tab-display-settings.js';
+
 // Worker transport is shared too: popup and sidebar cannot silently develop different error/filter semantics.
 export class MruClient {
     constructor(chrome) { this.chrome = chrome; }
@@ -19,7 +22,7 @@ export class MruController {
     }
 
     // Search/page parameters change before the worker answers, while the visible rows still belong to the previous response. Never combine those snapshots for navigation; a failed query also leaves only stale rows until a successful retry.
-    get canNavigate() { return !this.loading && !this.error; }
+    get canNavigate() { return !this.loading && !this.error && !this.busy; }
 
     // Current is derived from the authoritative source snapshot, not copied into a second selection model.
     get currentKey() { return this.context.currentBookmarkId ? `tab:${this.context.currentBookmarkId}` : null; }
@@ -39,6 +42,11 @@ export class MruController {
             }
             this.items = result.items;
             this.total = result.total;
+            // Deleting/unmounting with Live Only can empty the last page. Requery a real page rather than leaving surviving earlier results stranded behind an empty pane.
+            if (this.offset && this.offset >= this.total) {
+                this.offset = Math.floor(Math.max(0, this.total - 1) / this.pageSize) * this.pageSize;
+                return this.refresh();
+            }
             // Preserve the switcher's quick Enter-to-previous behavior while current remains visibly highlighted above that target.
             if (!this.items.some(item => item.key === this.selectedKey)) this.selectedKey = (this.items.find(item => item.key !== this.currentKey) || this.items[0])?.key || null;
             this.error = '';
@@ -106,6 +114,16 @@ export class MruController {
         } catch (error) { this.error = error.message; }
         finally { this.busy = false; this.onChange(); }
     }
+
+    async mutate(type, key) {
+        if (!key || this.busy || this.loading) return;
+        this.busy = true; this.onChange();
+        try {
+            await this.client.request({ ...this.context, type, key });
+            await this.refresh();
+        } catch (error) { this.error = error.message; }
+        finally { this.busy = false; this.onChange(); }
+    }
 }
 
 export class MruView {
@@ -113,6 +131,12 @@ export class MruView {
         Object.assign(this, { root, client, showLiveToggle, searchHost });
         this.controller = new MruController({ client, context, onChange: () => this.render(), onActivated, onDismiss });
         this.abort = new AbortController();
+        this.chrome = client.chrome || root.ownerDocument.defaultView.chrome;
+        this.display = new TabDisplaySettings({ chrome: this.chrome, onChange: mode => {
+            root.ownerDocument.body.dataset.tabDisplay = mode;
+            this.render();
+        } });
+        root.ownerDocument.body.dataset.tabDisplay = this.display.mode;
     }
 
     element(tag, className, text) {
@@ -162,6 +186,7 @@ export class MruView {
         this.root.replaceChildren(controls, this.list, this.status, paging);
         if (this.searchHost) this.searchHost.prepend(this.input);
         else this.root.prepend(this.input);
+        await this.display.ready();
         await this.controller.refresh();
     }
 
@@ -171,21 +196,20 @@ export class MruView {
         this.list.replaceChildren();
         let selected;
         for (const [index, item] of controller.items.entries()) {
-            const row = this.element('button', 'mru-result'); row.type = 'button'; row.dataset.key = item.key;
-            row.id = `${this.list.id}-${index}`; row.setAttribute('role', 'option'); row.setAttribute('aria-selected', String(item.key === controller.selectedKey)); row.disabled = controller.busy;
+            const tabRow = new TabRow({ document: this.root.ownerDocument, chrome: this.chrome,
+                onActivate: () => { controller.selectedKey = item.key; controller.activate(item.key); },
+                onUnmount: item.deleted ? undefined : () => controller.mutate('MRU_UNMOUNT', item.key),
+                onDelete: item.deleted ? undefined : () => controller.mutate('MRU_DELETE', item.key)
+            });
+            const row = tabRow.element; row.dataset.key = item.key;
+            row.id = `${this.list.id}-${index}`; row.setAttribute('role', 'option'); row.setAttribute('aria-selected', String(item.key === controller.selectedKey));
             const isCurrent = item.key === controller.currentKey;
+            tabRow.update(item, { current: isCurrent, disabled: controller.busy, displayMode: this.display.mode,
+                description: item.deleted ? 'Deleted · Restore' : undefined,
+                contextLabel: controller.allSessions ? `Session: ${item.sessionName || 'Previous session'}` : '' });
+            row.classList.add('mru-result');
             if (isCurrent) row.setAttribute('aria-current', 'page');
-            const icon = this.element('img', 'mru-favicon'); icon.alt = ''; icon.src = this.client.faviconUrl(item.url || '');
-            const text = this.element('span', 'mru-result-text');
-            // Never interpolate bookmark titles or URLs into HTML: bookmarks can contain arbitrary markup-like strings.
-            text.append(this.element('span', 'mru-result-title', item.title || item.url));
-            let domain; try { domain = new URL(item.url).hostname || item.url; } catch { domain = item.url; }
-            const state = isCurrent ? 'Current' : item.deleted ? 'Deleted · Restore' : item.liveTabIds?.length ? 'Mounted' : 'Unmounted';
-            const context = controller.allSessions ? ` · ${item.sessionName || 'Previous session'}` : '';
-            text.append(this.element('span', 'mru-result-meta', `${state} · ${domain}${context}`));
-            row.title = item.url; row.append(icon, text);
-            this.listen(row, 'mousedown', event => event.preventDefault());
-            this.listen(row, 'click', () => { controller.selectedKey = item.key; controller.activate(item.key); });
+            row.addEventListener('mousedown', event => event.preventDefault());
             this.list.append(row);
             if (item.key === controller.selectedKey) selected = row;
         }
@@ -200,5 +224,5 @@ export class MruView {
     refresh() { return this.controller.refresh(); }
     focus() { this.input.focus(); }
     advanceSelection(direction) { return this.controller.advanceSelection(direction); }
-    dispose() { this.controller.generation++; this.abort.abort(); this.input?.remove(); this.root.replaceChildren(); }
+    dispose() { this.controller.generation++; this.abort.abort(); this.display.dispose(); this.input?.remove(); this.root.replaceChildren(); }
 }

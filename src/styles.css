@@ -339,6 +339,8 @@ body.dark-mode .top-level-tab.active {
   cursor: pointer;
   border-left: 3px solid transparent;
   position: relative;
+  box-sizing: border-box;
+  min-width: 0;
   /* For absolute positioning of delete button */
 }
 
@@ -383,7 +385,8 @@ body.dark-mode .tab-item.logical {
   line-height: 1;
 }
 
-.tab-item:hover .tab-delete-btn {
+.tab-item:hover .tab-delete-btn:not([hidden]),
+.tab-item:focus-within .tab-delete-btn:not([hidden]) {
   display: block;
 }
 
@@ -462,10 +465,14 @@ body.dark-mode .group-header.dragging {
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 13px;
-  flex: 1;
-  padding-right: 20px;
-  /* Ensure title doesn't overlap with delete btn on hover if text is long */
 }
+
+/* Both row layouts use the same text slot and reserve room for the hover delete control. */
+.tab-text { display: flex; flex: 1; min-width: 0; flex-direction: column; padding-right: 20px; }
+.tab-description { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-weight: normal; color: var(--group-text); }
+.tab-description[hidden] { display: none; }
+.tab-detailed { padding-top: 9px; padding-bottom: 9px; }
+.tab-detailed .tab-text { gap: 3px; }
 
 .group-header {
   padding: 8px 10px;
@@ -574,7 +581,13 @@ body.dark-mode .group-delete-btn:hover {
   cursor: pointer;
   border-radius: 4px;
   flex-shrink: 0;
+  background: transparent;
+  border: none;
+  padding-right: 0;
 }
+
+.live-indicator-wrapper:disabled { cursor: default; }
+.live-indicator-wrapper:disabled:hover { background: transparent; }
 
 .live-indicator-wrapper:hover {
   background-color: rgba(0, 0, 0, 0.05);

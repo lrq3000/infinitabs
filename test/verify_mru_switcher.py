@@ -1,6 +1,7 @@
 """Exercise the unpacked MRU extension in a retained, isolated Chromium profile; never touch the ordinary browser profile."""
 import argparse
 import json
+import re
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
@@ -12,6 +13,173 @@ from verify_active_tab_reload import FixtureHandler, ActiveTabReloadCheck
 
 
 class MruCheck(MovementCheck):
+    def tab_rows(self):
+        # Use the shipped options UI and real extension pages: this catches divergent DOM/CSS and preference propagation, not merely matching helper outputs.
+        target = next(tab for tab in self.session()["logicalTabs"] if tab["liveTabIds"] and tab["url"].startswith("http"))
+        self.sidebar.evaluate("id => chrome.tabs.group({tabIds:[id]})", target["liveTabIds"][0])
+        self.wait_until(lambda: next(tab for tab in self.session()["logicalTabs"] if tab["bookmarkId"] == target["bookmarkId"])["groupId"], "normal group fixture")
+        self.sidebar.evaluate("id => chrome.tabs.update(id, {active:true})", target["liveTabIds"][0])
+        self.wait_until(lambda: any(item.get("bookmarkId") == target["bookmarkId"] for item in self.query()["items"]), "row fixture recorded")
+        recent_button = self.sidebar.locator("#recent-tabs-btn")
+        if self.sidebar.locator("#recent-tabs-container").is_hidden():
+            recent_button.click()
+        recent = self.sidebar.locator("#recent-tabs-container [data-key='tab:" + target["bookmarkId"] + "']")
+        expect(recent).to_have_class("tab-item live active-live mru-result")
+        expect(self.sidebar.locator("#recent-tabs-container .group-header, #recent-tabs-container .group-color-line, #recent-tabs-container .indented")).to_have_count(0)
+        # Opening options can regenerate ephemeral logical IDs during canonical reload. Match this deterministic fixture URL rather than retaining the old ID.
+        normal = self.sidebar.locator("#tabs-container .tab-item[title=" + json.dumps(target["url"]) + "]")
+        expect(normal.locator(".group-color-line")).to_have_count(1)
+        popup = self.open_popup()
+        popup_row = popup.locator("[data-key='tab:" + target["bookmarkId"] + "']")
+        options = self.context.new_page()
+        options.goto(self.sidebar_url.replace("sidebar.html", "options.html"))
+        display = options.get_by_label("Tab display", exact=True)
+        expect(display).to_have_value("compact")
+        self.evidence["tab_row_layouts"] = []
+        for mode in ("compact", "domain", "url"):
+            display.select_option(mode)
+            for page in (self.sidebar, popup):
+                expect(page.locator("body")).to_have_attribute("data-tab-display", mode)
+            expected_description = "" if mode == "compact" else urlparse(target["url"]).hostname if mode == "domain" else target["url"]
+            for row in (normal, recent, popup_row):
+                expect(row.locator(".tab-description")).to_have_text(expected_description)
+                assert "Mounted" not in row.inner_text() and "Unmounted" not in row.inner_text()
+                expect(row.locator(".live-indicator-wrapper")).to_be_enabled()
+            for width in (420, 320):
+                self.sidebar.set_viewport_size({"width": width, "height": 780})
+                for dark in (False, True):
+                    self.sidebar.locator("body").evaluate("(body, dark) => body.classList.toggle('dark-mode', dark)", dark)
+                    recent_style = recent.evaluate("row => {const s=getComputedStyle(row); return [s.height,s.padding,s.borderRadius,s.fontSize]}")
+                    recent_button.click()
+                    normal_style = normal.evaluate("row => {const s=getComputedStyle(row); return [s.height,s.padding,s.borderRadius,s.fontSize]}")
+                    assert recent_style == normal_style, f"Row geometry differs for {mode}: {recent_style} != {normal_style}"
+                    recent_button.click()
+                    assert self.sidebar.evaluate("document.documentElement.scrollWidth <= innerWidth"), f"Row overflow at {width}px, {mode}"
+                    self.sidebar.screenshot(path=str(self.artifacts / f"rows-{mode}-{'dark' if dark else 'light'}-{width}.png"))
+            self.evidence["tab_row_layouts"].append({"mode": mode, "description": expected_description, "geometry": recent_style})
+        options.reload()
+        expect(display).to_have_value("url")
+        display.select_option("compact")
+        expect(self.sidebar.locator("body")).to_have_attribute("data-tab-display", "compact")
+        options.close()
+        popup.close()
+        # Settle the group fixture before the deliberate browser shutdown/restart. Otherwise Chrome can abort its onRemoved handler during process teardown.
+        self.sidebar.evaluate("id => chrome.tabs.ungroup(id)", target["liveTabIds"][0])
+        self.wait_until(lambda: not next(tab for tab in self.session()["logicalTabs"] if tab["bookmarkId"] == target["bookmarkId"])["groupId"], "normal group fixture ungrouped")
+        self.evidence["flows"].append({"name": "shared-tab-rows-global-display-and-responsive-layout", "status": "pass"})
+
+    def row_controls(self):
+        base_url = self.fixture.url.split("?")[0]
+        # Any mounted fixture can be closed by the controls under test. Keep condition polling on the surviving sidebar throughout this scenario.
+        self.fixture = self.sidebar
+        source_session_id = self.session()["sessionId"]
+        for name in "ABC":
+            self.select_native(name)
+        self.sidebar.locator("#recent-tabs-btn").click()
+        rows = self.sidebar.locator("#recent-tabs-container")
+        row = lambda name: rows.locator("[data-key='tab:" + self.bookmark_ids[name] + "']")
+        active_id = self.live_ids["C"]
+        self.sidebar.evaluate("() => { globalThis.rowActivations=[]; chrome.tabs.onActivated.addListener(info => rowActivations.push(info.tabId)); }")
+        self.sidebar.mouse.move(0, 0)
+        expect(row("B").locator(".tab-delete-btn")).to_be_hidden()
+        row("B").hover()
+        expect(row("B").locator(".tab-delete-btn")).to_be_visible()
+        self.sidebar.screenshot(path=str(self.artifacts / "recent-hover-controls.png"))
+        row("B").locator(".live-indicator-wrapper").click()
+        self.wait_until(lambda: not self.logical("B")["liveTabIds"], "Recent B unmounted")
+        expect(row("B").locator(".live-indicator-wrapper")).to_be_disabled()
+        assert self.sidebar.evaluate("id => chrome.bookmarks.get(id)", self.bookmark_ids["B"])
+        assert self.active_tab()["id"] == active_id
+        assert self.sidebar.evaluate("rowActivations") == [], "Unmounting an inactive row activated a tab"
+        original_a_id = self.logical("A")["logicalId"]
+        stale_unmount = self.send_message({**self.query()["context"], "type": "MRU_UNMOUNT", "key": "tab:" + self.bookmark_ids["B"]})
+        assert stale_unmount.get("success"), stale_unmount
+        assert self.logical("A")["logicalId"] == original_a_id, "A no-op unmount invalidated normal row identities"
+
+        # Normal uses the same widgets, but retains its existing activation/selection path.
+        self.sidebar.locator("#recent-tabs-btn").click()
+        normal_b = self.sidebar.locator("#tabs-container .tab-item[title=" + json.dumps(base_url + "?B") + "]")
+        normal_b.click()
+        self.wait_until(lambda: bool(self.logical("B")["liveTabIds"]), "normal B remounted")
+        self.select_native("C")
+        normal_b.locator(".live-indicator-wrapper").click()
+        self.wait_until(lambda: not self.logical("B")["liveTabIds"], "normal shared unmount")
+        self.sidebar.locator("#recent-tabs-btn").click()
+        self.sidebar.locator("#show-live-only-btn").click()
+        expect(row("B")).to_have_count(0)
+        row("A").locator(".live-indicator-wrapper").click()
+        self.wait_until(lambda: not self.logical("A")["liveTabIds"], "Recent A unmounted with Live Only")
+        expect(row("A")).to_have_count(0)
+        assert self.active_tab()["id"] == active_id
+        self.sidebar.locator("#show-live-only-btn").click()
+        expect(row("A")).to_be_visible()
+
+        self.sidebar.once("dialog", lambda dialog: dialog.dismiss())
+        row("B").hover()
+        row("B").locator(".tab-delete-btn").click()
+        expect(row("B")).to_be_visible()
+        assert self.sidebar.evaluate("id => chrome.bookmarks.get(id)", self.bookmark_ids["B"])
+        assert self.active_tab()["id"] == active_id
+        self.sidebar.once("dialog", lambda dialog: dialog.accept())
+        row("B").locator(".tab-delete-btn").click()
+        expect(row("B")).to_have_count(0)
+        assert not self.sidebar.evaluate("id => chrome.bookmarks.get(id).catch(() => [])", self.bookmark_ids["B"])
+        row("A").click()
+        self.wait_until(lambda: bool(self.logical("A")["liveTabIds"]), "Recent A remounted for live deletion")
+        mounted_a = self.logical("A")["liveTabIds"][0]
+        self.select_native("C")
+        self.sidebar.once("dialog", lambda dialog: dialog.accept())
+        row("A").hover()
+        row("A").locator(".tab-delete-btn").click()
+        expect(row("A")).to_have_count(0)
+        assert not self.sidebar.evaluate("id => chrome.tabs.get(id).catch(() => null)", mounted_a)
+        assert self.active_tab()["id"] == active_id
+        assert self.send_message({"type": "MRU_RECOVERY_STATUS"}) == {"enabled": False, "count": 0}
+
+        # Same title and URL in two sessions must still identify the destructive target without adding group headers or taller compact rows.
+        other = self.sidebar.evaluate("url => chrome.windows.create({url, focused:true})", base_url + "?C")
+        other_tab_id = other["tabs"][0]["id"]
+        other_target = self.wait_until(lambda: next((item for item in self.query(allSessions=True)["items"] if item.get("liveTabIds") == [other_tab_id]), None), "cross-session viewed row")
+        self.select_native("C")
+        popup = self.open_popup()
+        popup.get_by_label("Recent tab scope").select_option("all")
+        other_row = popup.locator("[data-key='" + other_target["key"] + "']")
+        source_target = next(item for item in self.query(allSessions=True)["items"] if item["key"] == "tab:" + self.bookmark_ids["C"])
+        source_row = popup.locator("[data-key='" + source_target["key"] + "']")
+        for target, candidate_row in ((other_target, other_row), (source_target, source_row)):
+            expect(candidate_row).to_have_attribute("title", target["url"] + "\nSession: " + target["sessionName"])
+            expect(candidate_row).to_have_accessible_name(re.compile(re.escape(target["sessionName"])))
+            candidate_row.hover()
+            expect(candidate_row.locator(".tab-delete-btn")).to_have_accessible_name(re.compile(re.escape(target["sessionName"])))
+        assert source_target["sessionName"] != other_target["sessionName"]
+        other_row.locator(".live-indicator-wrapper").click()
+        self.wait_until(lambda: not self.sidebar.evaluate("id => chrome.tabs.get(id).catch(() => null)", other_tab_id), "cross-session native projection closed")
+        expect(other_row.locator(".live-indicator-wrapper")).to_be_disabled()
+        assert not popup.is_closed(), "Row actions dismissed the switcher"
+        assert self.active_tab()["id"] == active_id
+        self.send_message({"type": "MRU_RECOVERY_CONFIGURE", "enabled": True})
+        windows_before = self.sidebar.evaluate("async () => (await chrome.windows.getAll()).map(window => window.id).sort()")
+        popup.once("dialog", lambda dialog: dialog.accept())
+        other_row.hover()
+        other_row.locator(".tab-delete-btn").click()
+        expect(other_row).to_have_count(0)
+        self.wait_until(lambda: self.send_message({"type": "MRU_RECOVERY_STATUS"})["count"] == 1, "saved-session deletion captured only after recovery opt-in")
+        assert self.sidebar.evaluate("async () => (await chrome.windows.getAll()).map(window => window.id).sort()") == windows_before, "Saved deletion opened a session"
+        assert self.session()["sessionId"] == source_session_id, "Cross-session row action replaced the source session"
+        deleted_row = popup.locator("[data-key^='deleted:']")
+        expect(deleted_row).to_have_count(1)
+        expect(deleted_row.locator(".tab-delete-btn")).to_be_hidden()
+        expect(deleted_row.locator(".live-indicator-wrapper")).to_be_disabled()
+        self.sidebar.evaluate("() => chrome.storage.local.set({confirmDeleteLogicalTab:false})")
+        popup_c = popup.locator("[data-key='tab:" + self.bookmark_ids["C"] + "']")
+        popup_c.hover()
+        popup_c.locator(".tab-delete-btn").click()
+        expect(popup_c).to_have_count(0)
+        assert not popup.is_closed(), "Delete with confirmation disabled dismissed the switcher"
+        popup.screenshot(path=str(self.artifacts / "popup-after-row-actions.png"))
+        popup.close()
+        self.evidence["flows"].append({"name": "shared-row-controls-confirmation-live-only-and-cross-session-lifecycle", "status": "pass"})
+
     def open_popup(self):
         with self.context.expect_page() as opened:
             self.sidebar.locator("#open-switcher-btn").click()
@@ -153,7 +321,6 @@ class MruCheck(MovementCheck):
                 expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
                 current = self.sidebar.locator('#recent-tabs-container [aria-current="page"]')
                 expect(current).to_have_attribute("data-key", "tab:" + self.bookmark_ids["C"])
-                expect(current.locator(".mru-result-meta")).to_contain_text("Current")
                 self.sidebar.locator("#search-next").click()
                 expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["A"])
                 self.sidebar.locator("#search-prev").click()
@@ -416,7 +583,7 @@ class MruCheck(MovementCheck):
     def inert_title_and_restart(self):
         title = '<img src=x onerror="globalThis.mruInjected=true">'
         self.sidebar.evaluate("value => chrome.bookmarks.update(value.id, {title:value.title})", {"id": self.bookmark_ids["A"], "title": title})
-        row = self.sidebar.locator("#recent-tabs-container [data-key='tab:" + self.bookmark_ids["A"] + "'] .mru-result-title")
+        row = self.sidebar.locator("#recent-tabs-container [data-key='tab:" + self.bookmark_ids["A"] + "'] .tab-title")
         expect(row).to_have_text(title)
         assert row.locator("img").count() == 0, "Bookmark markup was parsed as HTML"
         assert self.sidebar.evaluate("globalThis.mruInjected === undefined")
@@ -446,6 +613,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts-dir", type=Path, required=True)
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--scenario", choices=("full", "tab-rows", "tab-controls"), default="full")
     parser.add_argument("--executable", type=Path, help="Reuse an installed full Chromium instead of downloading the revision expected by Python Playwright")
     args = parser.parse_args()
     artifacts = Path(tempfile.mkdtemp(prefix="mru-qa-", dir=args.artifacts_dir))
@@ -466,7 +634,13 @@ def main():
                 check = MruCheck(context, artifacts)
                 check.evidence.update(extension_path=str(extension), isolated_profile=str(profile), chromium=context.browser.version, headless=args.headless, executable=str(args.executable) if args.executable else "Playwright bundled Chromium")
                 check.prepare(f"http://127.0.0.1:{server.server_port}/fixture", names="ABC")
+                if args.scenario != "full":
+                    (check.tab_rows if args.scenario == "tab-rows" else check.row_controls)()
+                    assert not check.evidence["page_errors"], check.evidence["page_errors"]
+                    print("Shared tab row browser checks passed", flush=True)
+                    return
                 check.run()
+                check.tab_rows()
                 assert not check.evidence["page_errors"], check.evidence["page_errors"]
                 # Reopen only the fresh profile created by THIS run: this is a real process restart, not another worker evaluation or the user's browser.
                 context.close()

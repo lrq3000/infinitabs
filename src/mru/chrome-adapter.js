@@ -3,8 +3,8 @@ import { MruService } from './service.js';
 
 // Chrome-specific effects live here; the stores, search and view do not own native tabs or bookmark placement.
 export class MruChromeAdapter {
-    constructor({ chrome, initialize, getState, getRoot, focusOrMount, bindSession, refreshSession }) {
-        Object.assign(this, { chrome, initialize, getState, getRoot, focusOrMount, bindSession, refreshSession });
+    constructor({ chrome, initialize, getState, getRoot, focusOrMount, bindSession, refreshSession, unmountLogicalTab, deleteLogicalTab }) {
+        Object.assign(this, { chrome, initialize, getState, getRoot, focusOrMount, bindSession, refreshSession, unmountLogicalTab, deleteLogicalTab });
         this.recencyStore = new RecencyStore({ storage: chrome.storage.local });
         this.recoveryStore = new RecoveryStore({ storage: chrome.storage.local });
         this.service = new MruService({ recencyStore: this.recencyStore, recoveryStore: this.recoveryStore });
@@ -324,6 +324,53 @@ export class MruChromeAdapter {
         return context;
     }
 
+    async mutate(request) {
+        await this.validateSource(request);
+        if (!request.key?.startsWith('tab:')) throw new Error('This entry is not an existing logical tab');
+        const bookmarkId = request.key.slice(4);
+        await this.refreshCatalog();
+        const candidate = this.service.catalog.get(bookmarkId);
+        if (!candidate) throw new Error('This logical tab no longer exists');
+        const state = this.getState();
+        // Inspect native inventory once. A bookmark can have moved externally while its live projection still belongs to the original loaded session.
+        const windows = await this.chrome.windows.getAll({ populate: true });
+        const windowsById = new Map(windows.map(window => [window.id, window]));
+        const tabsById = new Map(windows.flatMap(window => (window.tabs || []).map(tab => [tab.id, tab])));
+        let targetWindowId, targetSessionId;
+        for (const [id, sessionId] of Object.entries(state.windowToSession)) {
+            const logical = state.sessionsById[sessionId]?.logicalTabs.find(tab => tab.bookmarkId === bookmarkId);
+            if (logical?.liveTabIds?.some(tabId => tabsById.get(tabId)?.windowId === Number(id) && state.tabToLogical[tabId] === logical.logicalId)) {
+                targetWindowId = Number(id); targetSessionId = sessionId; break;
+            }
+        }
+        if (targetWindowId === undefined) {
+            // A stale green-dot click can arrive after another view unmounted the tab. There is no native effect left; do not regenerate every normal-row ID for this no-op.
+            if (request.type === 'MRU_UNMOUNT') return { success: true };
+            targetSessionId = candidate.sessionId;
+            const binding = Object.keys(state.windowToSession).find(id => state.windowToSession[id] === targetSessionId && windowsById.has(Number(id)));
+            if (binding !== undefined) {
+                targetWindowId = Number(binding);
+                this.assertNormalWindow(windowsById.get(targetWindowId));
+                await this.refreshSession(targetSessionId, targetWindowId);
+            }
+        }
+        await this.validateSource(request);
+        if (targetWindowId !== undefined) {
+            this.assertNormalWindow(windowsById.get(targetWindowId));
+            // Reacquire after awaited reconciliation/source validation: logical IDs are ephemeral, bookmark IDs are not.
+            const logical = state.sessionsById[targetSessionId]?.logicalTabs.find(tab => tab.bookmarkId === bookmarkId);
+            if (state.windowToSession[targetWindowId] !== targetSessionId || !logical) throw new Error('The logical tab moved; refresh and try again');
+            const action = request.type === 'MRU_UNMOUNT' ? this.unmountLogicalTab : this.deleteLogicalTab;
+            await action(targetWindowId, logical.logicalId);
+        } else if (request.type === 'MRU_DELETE') {
+            // An unopened session has no native lifecycle to close. Remove its canonical bookmark directly, without creating/binding a window; the existing removal observer owns opt-in recovery.
+            await this.chrome.bookmarks.remove(bookmarkId);
+        }
+        await this.refreshCatalog();
+        this.broadcast();
+        return { success: true };
+    }
+
     async restoreDeleted(request) {
         const context = await this.validateSource(request);
         const record = (await this.recoveryStore.list()).find(entry => entry.recoveryId === request.recoveryId);
@@ -403,6 +450,8 @@ export class MruChromeAdapter {
             }
             case 'MRU_OPEN': await this.openSwitcher(context); return { success: true };
             case 'MRU_ACTIVATE': return this.activate(message);
+            case 'MRU_UNMOUNT':
+            case 'MRU_DELETE': return this.mutate(message);
             default: throw new Error('Unknown MRU request');
         }
     }

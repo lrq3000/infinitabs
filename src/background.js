@@ -60,7 +60,12 @@ let workspaceGeneration = 0;
 const mru = new MruChromeAdapter({
     chrome, initialize: init, getState: () => state, getRoot: ensureRootFolder,
     focusOrMount: focusOrMountLogicalTab, bindSession: bindWindowToSession,
-    refreshSession: reloadSessionAndPreserveState
+    refreshSession: async (sessionId, windowId) => {
+        await reloadSessionAndPreserveState(sessionId, windowId);
+        // Reload regenerates logical IDs. Publish immediately, even when a later MRU source validation aborts before an action can issue its own notification.
+        notifySidebarStateUpdated(windowId, sessionId);
+    },
+    unmountLogicalTab: handleUnmountLogicalTab, deleteLogicalTab: handleDeleteLogicalTab
 });
 mru.start();
 
