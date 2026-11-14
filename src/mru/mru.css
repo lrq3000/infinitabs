@@ -9,7 +9,9 @@
 .mru-results { flex: 1; min-height: 0; overflow-y: auto; }
 .mru-root .mru-result { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 8px; margin-bottom: 3px; text-align: left; border-color: transparent; cursor: pointer; }
 .mru-root .mru-result:hover { background: var(--hover-bg); }
-.mru-root .mru-result[aria-selected="true"] { background: var(--active-bg); border-color: var(--active-border); }
+/* Current is the browsing location; selected is only the keyboard's pending activation target. Keep both visible without implying that moving the cursor switched tabs. */
+.mru-root .mru-result[aria-current="page"] { background: var(--active-bg); border-color: var(--active-border); }
+.mru-root .mru-result[aria-selected="true"] { box-shadow: inset 0 0 0 2px var(--active-border); }
 .mru-result-text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
 .mru-result-title, .mru-result-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mru-result-title { font-size: .95em; }

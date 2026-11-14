@@ -21,16 +21,26 @@ export class MruController {
     // Search/page parameters change before the worker answers, while the visible rows still belong to the previous response. Never combine those snapshots for navigation; a failed query also leaves only stale rows until a successful retry.
     get canNavigate() { return !this.loading && !this.error; }
 
+    // Current is derived from the authoritative source snapshot, not copied into a second selection model.
+    get currentKey() { return this.context.currentBookmarkId ? `tab:${this.context.currentBookmarkId}` : null; }
+
     async refresh() {
         const generation = ++this.generation;
         this.loading = true;
         try {
             const result = await this.client.request({ ...this.context, type: 'MRU_QUERY', query: this.query, allSessions: this.allSessions, offset: this.offset, limit: this.pageSize });
             if (generation !== this.generation) return;
+            const previousCurrentKey = this.currentKey;
             this.context = result.context || this.context;
+            if (this.currentKey !== previousCurrentKey) {
+                this.selectedKey = null;
+                // A real tab change returns the navigation pane to current. Mere background refreshes must not steal a cursor or page the user is browsing.
+                if (this.offset) { this.offset = 0; return this.refresh(); }
+            }
             this.items = result.items;
             this.total = result.total;
-            if (!this.items.some(item => item.key === this.selectedKey)) this.selectedKey = this.items[0]?.key || null;
+            // Preserve the switcher's quick Enter-to-previous behavior while current remains visibly highlighted above that target.
+            if (!this.items.some(item => item.key === this.selectedKey)) this.selectedKey = (this.items.find(item => item.key !== this.currentKey) || this.items[0])?.key || null;
             this.error = '';
         } catch (error) { if (generation === this.generation) this.error = error.message; }
         // Only the latest request can unlock navigation. An older completion must not make a newer in-flight query's stale rows navigable.
@@ -51,10 +61,11 @@ export class MruController {
         if (!this.canNavigate) return;
         this.offset = Math.max(0, offset); this.selectedKey = null;
         const generation = this.generation + 1;
+        const currentKey = this.currentKey;
         const applied = await this.refresh();
-        // Refresh rejects stale rows, but paging has a second selection effect after awaiting it. Guard that continuation too, including a newer search/retarget/dispose.
-        if (!applied || generation !== this.generation) return;
-        if (selectLast) this.selectedKey = this.items.at(-1)?.key || null;
+        // Refresh rejects stale rows, but paging has a second selection effect after awaiting it. Guard that continuation too, including a newer search/retarget/dispose or a current change already answered on page one without another query.
+        if (!applied || generation !== this.generation || currentKey !== this.currentKey) return;
+        this.selectedKey = (selectLast ? this.items.at(-1) : this.items[0])?.key || null;
         this.onChange();
     }
 
@@ -162,12 +173,14 @@ export class MruView {
         for (const [index, item] of controller.items.entries()) {
             const row = this.element('button', 'mru-result'); row.type = 'button'; row.dataset.key = item.key;
             row.id = `${this.list.id}-${index}`; row.setAttribute('role', 'option'); row.setAttribute('aria-selected', String(item.key === controller.selectedKey)); row.disabled = controller.busy;
+            const isCurrent = item.key === controller.currentKey;
+            if (isCurrent) row.setAttribute('aria-current', 'page');
             const icon = this.element('img', 'mru-favicon'); icon.alt = ''; icon.src = this.client.faviconUrl(item.url || '');
             const text = this.element('span', 'mru-result-text');
             // Never interpolate bookmark titles or URLs into HTML: bookmarks can contain arbitrary markup-like strings.
             text.append(this.element('span', 'mru-result-title', item.title || item.url));
             let domain; try { domain = new URL(item.url).hostname || item.url; } catch { domain = item.url; }
-            const state = item.deleted ? 'Deleted · Restore' : item.liveTabIds?.length ? 'Mounted' : 'Unmounted';
+            const state = isCurrent ? 'Current' : item.deleted ? 'Deleted · Restore' : item.liveTabIds?.length ? 'Mounted' : 'Unmounted';
             const context = controller.allSessions ? ` · ${item.sessionName || 'Previous session'}` : '';
             text.append(this.element('span', 'mru-result-meta', `${state} · ${domain}${context}`));
             row.title = item.url; row.append(icon, text);

@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MruController } from '../../src/mru/view.js';
 
-function fixture() {
+function fixture(currentBookmarkId = null) {
     assert.equal(typeof MruController, 'function', 'shared MRU controller must be implemented');
     const requests = [];
     const rows = ['a', 'b', 'c'].map(key => ({ key: `tab:${key}`, title: key }));
     const client = { request: async message => {
         requests.push(message);
-        if (message.type === 'MRU_QUERY') return { items: rows, total: rows.length, context: { sourceWindowId: 1, sourceSessionId: 's', liveOnly: false } };
+        if (message.type === 'MRU_QUERY') return { items: rows, total: rows.length, context: { sourceWindowId: 1, sourceSessionId: 's', liveOnly: false, currentBookmarkId } };
         return { success: true };
     } };
     const controller = new MruController({ client, context: { sourceWindowId: 1, sourceSessionId: 's' }, onChange: () => {} });
@@ -42,6 +42,104 @@ test('keyboard highlight never activates until Enter and survives MRU refresh by
     assert.equal(requests.at(-1).key, 'tab:b');
     assert.equal(requests.at(-1).sourceSessionId, 's');
 });
+
+test('current identity stays independent of a cursor initially targeting the older tab', async () => {
+    const { controller, requests } = fixture('a');
+    await controller.refresh();
+    assert.equal(controller.currentKey, 'tab:a');
+    assert.equal(controller.selectedKey, 'tab:b');
+    await controller.keyDown('ArrowDown');
+    assert.equal(controller.selectedKey, 'tab:c');
+    assert.equal(controller.currentKey, 'tab:a');
+    await controller.refresh();
+    assert.equal(controller.selectedKey, 'tab:c');
+    assert.equal(requests.some(request => request.type === 'MRU_ACTIVATE'), false);
+});
+
+test('a current-tab change resets the cursor but ordinary refresh keeps its identity', async () => {
+    const { controller, client, rows } = fixture('a');
+    await controller.refresh();
+    await controller.keyDown('End');
+    assert.equal(controller.selectedKey, 'tab:c');
+    rows.splice(0, rows.length, ...['b', 'a', 'c'].map(key => ({ key: `tab:${key}` })));
+    client.request = async () => ({ items: rows, total: rows.length, context: { sourceWindowId: 1, currentBookmarkId: 'b' } });
+    await controller.refresh();
+    assert.equal(controller.currentKey, 'tab:b');
+    assert.equal(controller.selectedKey, 'tab:a');
+});
+
+test('only-current and filtered-current results keep navigable keyboard defaults', async () => {
+    const { controller, rows } = fixture('a');
+    rows.splice(1);
+    await controller.refresh();
+    assert.equal(controller.currentKey, 'tab:a');
+    assert.equal(controller.selectedKey, 'tab:a');
+    rows.splice(0, 1, { key: 'tab:b' });
+    await controller.search('Beta');
+    assert.equal(controller.currentKey, 'tab:a');
+    assert.equal(controller.selectedKey, 'tab:b');
+});
+
+test('returning Home from older pages selects the first row rather than skipping current', async () => {
+    const { controller, client, rows } = fixture('a');
+    controller.pageSize = 2;
+    client.request = async message => ({ items: rows.slice(message.offset, message.offset + message.limit), total: rows.length, context: { currentBookmarkId: 'a' } });
+    await controller.refresh();
+    await controller.keyDown('End');
+    assert.equal(controller.offset, 2);
+    await controller.keyDown('Home');
+    assert.equal(controller.offset, 0);
+    assert.equal(controller.selectedKey, 'tab:a');
+});
+
+test('current change on an older page returns to page one without stale page-selection effects', async () => {
+    const client = new DelayedMruClient(5);
+    const request = client.request.bind(client);
+    let currentBookmarkId = '0';
+    client.request = async message => ({ ...await request(message), context: { currentBookmarkId } });
+    const controller = new MruController({ client, context: { currentBookmarkId: '0' } });
+    controller.pageSize = 2;
+    await controller.page(2);
+    client.delay = true;
+    const page = controller.page(4, true);
+    currentBookmarkId = '1';
+    client.pending[0].resolve();
+    // Wait for the refresh continuation to request the new first page, without timing sleeps.
+    for (let i = 0; i < 8 && client.pending.length < 2; i++) await Promise.resolve();
+    assert.equal(client.pending.length, 2);
+    assert.equal(client.pending[1].message.offset, 0);
+    client.pending[1].resolve();
+    await page;
+    assert.equal(controller.currentKey, 'tab:1');
+    assert.equal(controller.offset, 0);
+    assert.equal(controller.selectedKey, 'tab:0');
+});
+
+// Both actions request offset zero, so a current change needs its own guard even when refresh does not issue a second query/generation.
+for (const key of ['Home', 'ArrowUp']) {
+    test(`current change during pending ${key} cannot override the reset cursor on page one`, async () => {
+        const client = new DelayedMruClient(6);
+        const request = client.request.bind(client);
+        let currentBookmarkId = '0';
+        client.request = async message => ({ ...await request(message), context: { currentBookmarkId } });
+        const controller = new MruController({ client, context: { currentBookmarkId: '0' } });
+        controller.pageSize = 3;
+        await controller.page(3);
+        assert.equal(controller.selectedKey, 'tab:3');
+        client.rows = ['1', '0', '2', '3', '4', '5'].map(id => ({ key: `tab:${id}` }));
+        client.delay = true;
+        const navigation = controller.keyDown(key);
+        assert.equal(client.pending[0].message.offset, 0);
+        currentBookmarkId = '1';
+        client.pending[0].resolve();
+        await navigation;
+        assert.equal(controller.currentKey, 'tab:1');
+        assert.equal(controller.offset, 0);
+        assert.equal(controller.selectedKey, 'tab:0', 'a real current change must retain the newly selected most-recent older target');
+        await controller.keyDown('Enter');
+        assert.equal(client.requests.at(-1).key, 'tab:0');
+    });
+}
 
 test('Home/End/Tab/Shift+Tab and paging select deterministic result positions', async () => {
     const { controller } = fixture(); await controller.refresh();

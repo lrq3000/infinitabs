@@ -63,3 +63,47 @@ test('deleted snapshots are separate, source-scoped, marked, and excluded by Liv
     assert.equal((await service.query({ sourceSessionId: 's', liveOnly: true })).items.some(x => x.deleted), false);
     assert.equal((await service.query({ sourceSessionId: 'other' })).items.some(x => x.deleted), false);
 });
+
+// Promotion belongs before pagination, not in the DOM: otherwise current consumes an extra row or reappears on every page.
+test('current tab is first exactly once and counts toward normal result pages', async () => {
+    const { service } = await fixture();
+    const options = { sourceSessionId: 's', currentBookmarkId: 'a', limit: 1 };
+    const first = await service.query(options);
+    const second = await service.query({ ...options, offset: 1 });
+    assert.deepEqual(first.items.map(item => item.key), ['tab:a']);
+    assert.deepEqual(second.items.map(item => item.key), ['tab:b']);
+    assert.equal(first.total, 2); assert.equal(second.total, 2);
+    assert.deepEqual((await service.query({ ...options, allSessions: true, limit: 50 })).items.map(item => item.key), ['tab:a', 'tab:c', 'tab:b']);
+});
+
+test('current tab without recency metadata is visible without manufacturing a visit', async () => {
+    const { service, recencyStore } = await fixture();
+    await recencyStore.forget(['a']);
+    const before = recencyStore.entries();
+    const result = await service.query({ sourceSessionId: 's', currentBookmarkId: 'a' });
+    assert.deepEqual(result.items.map(item => item.key), ['tab:a', 'tab:b']);
+    assert.deepEqual(recencyStore.entries(), before);
+});
+
+test('current promotion respects search, scope, live-only, privacy, and explicit exclusion', async () => {
+    const { service } = await fixture();
+    const ids = async options => (await service.query({ sourceSessionId: 's', currentBookmarkId: 'a', ...options })).items.map(item => item.bookmarkId);
+    assert.deepEqual(await ids({ query: 'Beta' }), ['b']);
+    assert.deepEqual(await ids({ query: 'same.test' }), ['a', 'b']);
+    assert.deepEqual(await ids({ currentBookmarkId: 'c' }), ['b', 'a']);
+    assert.deepEqual(await ids({ currentBookmarkId: 'b', liveOnly: true }), ['a']);
+    assert.deepEqual(await ids({ excludeBookmarkId: 'a' }), ['b']);
+    assert.deepEqual(await ids({ currentBookmarkId: 'gone' }), ['b', 'a']);
+    service.catalog.get('a').private = true;
+    assert.deepEqual(await ids({}), ['b']);
+});
+
+test('eligible current stays ahead of recovery and relevance-ranked older matches', async () => {
+    const { service, recoveryStore } = await fixture();
+    await recoveryStore.configure(true);
+    await recoveryStore.capture({ title: 'same.test', url: 'https://deleted.test', sourceSessionId: 's', lastViewedAt: 25 });
+    const result = await service.query({ sourceSessionId: 's', currentBookmarkId: 'a', query: 'same.test' });
+    assert.equal(result.items[0].key, 'tab:a');
+    assert.equal(result.items[1].deleted, true);
+    assert.equal(result.items[2].key, 'tab:b');
+});

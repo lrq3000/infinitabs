@@ -24,6 +24,25 @@ test('only genuinely focused native selections enter recency, including late att
     assert.equal(adapter.recencyStore.entries()[0].bookmarkId, 'a');
 });
 
+test('queries expose source current identity even without a recorded visit or focused window', async () => {
+    const { adapter } = await fixture();
+    const result = await adapter.handleMessage({ type: 'MRU_QUERY', sourceWindowId: 2 });
+    assert.equal(result.context.currentBookmarkId, 'c');
+    assert.deepEqual(result.items.map(item => item.key), ['tab:c']);
+    assert.deepEqual(adapter.recencyStore.entries(), [], 'showing current must not record a background view');
+});
+
+test('Previous tab skips the current result and still switches to the most recent older tab', async () => {
+    const { browser, adapter } = await fixture();
+    await adapter.observeCurrent(1);
+    await adapter.activate({ sourceWindowId: 1, sourceSessionId: 's', key: 'tab:b' });
+    await adapter.command('previous-mru-tab', { windowId: 1 });
+    assert.equal(browser.tabs.get(11).active, true);
+    const result = await adapter.handleMessage({ type: 'MRU_QUERY', sourceWindowId: 1 });
+    assert.equal(result.context.currentBookmarkId, 'a');
+    assert.deepEqual(result.items.map(item => item.key), ['tab:a', 'tab:b']);
+});
+
 test('existing mounted tabs focus without duplication and unmounted tabs mount only once', async () => {
     const { browser, adapter } = await fixture();
     await adapter.activate({ sourceWindowId: 1, sourceSessionId: 's', key: 'tab:c' });

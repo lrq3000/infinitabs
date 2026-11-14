@@ -190,7 +190,7 @@ export class MruChromeAdapter {
         const stored = await this.chrome.storage.session?.get(key);
         const liveOnly = stored?.[key]?.liveOnly ?? this.windowUi.get(window.id)?.liveOnly ?? false;
         const [active] = await this.chrome.tabs.query({ windowId: window.id, active: true });
-        return { sourceWindowId: window.id, sourceSessionId, liveOnly, excludeBookmarkId: active ? this.logicalForNative(active)?.bookmarkId : null };
+        return { sourceWindowId: window.id, sourceSessionId, liveOnly, currentBookmarkId: active ? this.logicalForNative(active)?.bookmarkId : null };
     }
 
     assertNormalWindow(window) {
@@ -369,7 +369,8 @@ export class MruChromeAdapter {
         if (command === 'open-mru-switcher') return this.openSwitcher({ sourceWindowId });
         const context = await this.context(sourceWindowId);
         this.syncLiveCatalog();
-        const result = await this.service.query({ ...context, limit: 1 });
+        // The navigation pane includes current, but the one-step shortcut must still select a DIFFERENT tab.
+        const result = await this.service.query({ ...context, excludeBookmarkId: context.currentBookmarkId, limit: 1 });
         if (result.items.length) await this.activate({ ...context, key: result.items[0].key });
     }
 

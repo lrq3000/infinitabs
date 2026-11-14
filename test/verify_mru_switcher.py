@@ -28,7 +28,7 @@ class MruCheck(MovementCheck):
 
     def select_native(self, name):
         self.sidebar.evaluate("async id => { const tab = await chrome.tabs.get(id); await chrome.windows.update(tab.windowId, {focused:true}); await chrome.tabs.update(id, {active:true}); }", self.live_ids[name])
-        self.wait_until(lambda: self.query().get("context", {}).get("excludeBookmarkId") == self.bookmark_ids[name], "native focus")
+        self.wait_until(lambda: self.query().get("context", {}).get("currentBookmarkId") == self.bookmark_ids[name], "native focus")
 
     def appearance(self, selector):
         return self.sidebar.locator(selector).evaluate("""element => {
@@ -108,7 +108,7 @@ class MruCheck(MovementCheck):
         # Both clicks run before the first mount's asynchronous query can finish. Its completion must not re-show or focus the now-hidden Recent search.
         normal_input.focus()
         recent_button.evaluate("button => { button.click(); button.click(); }")
-        expect(rows).to_have_count(2)
+        expect(rows).to_have_count(3)
         expect(self.sidebar.locator("#recent-tabs-container")).to_be_hidden()
         expect(normal_input).to_be_visible()
         focus = self.sidebar.evaluate("document.activeElement.id || document.activeElement.tagName")
@@ -149,14 +149,17 @@ class MruCheck(MovementCheck):
                 self.sidebar.locator("#show-live-only-btn").click()
                 self.wait_until(lambda: not self.query()["context"]["liveOnly"], "restore shared filter")
                 recent_input.fill("PR40")
-                expect(rows).to_have_count(2)
+                expect(rows).to_have_count(3)
                 expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
+                current = self.sidebar.locator('#recent-tabs-container [aria-current="page"]')
+                expect(current).to_have_attribute("data-key", "tab:" + self.bookmark_ids["C"])
+                expect(current.locator(".mru-result-meta")).to_contain_text("Current")
                 self.sidebar.locator("#search-next").click()
                 expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["A"])
                 self.sidebar.locator("#search-prev").click()
                 expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
                 self.sidebar.locator("#search-prev").click()
-                expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["A"])
+                expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["C"])
                 self.sidebar.locator("#search-next").click()
                 expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
                 self.sidebar.keyboard.press("Control+Shift+f")
@@ -165,6 +168,12 @@ class MruCheck(MovementCheck):
                 expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["A"])
                 recent_input.press("ArrowUp")
                 expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
+                expect(current).to_have_attribute("data-key", "tab:" + self.bookmark_ids["C"])
+                self.sidebar.mouse.move(0, 0)
+                current_style = current.evaluate("row => ({background:getComputedStyle(row).backgroundColor, cursor:getComputedStyle(row).boxShadow})")
+                cursor_style = selected.evaluate("row => ({background:getComputedStyle(row).backgroundColor, cursor:getComputedStyle(row).boxShadow})")
+                assert current_style["background"] != cursor_style["background"], "Keyboard cursor is indistinguishable from the current-tab highlight"
+                assert cursor_style["cursor"] != "none", "Keyboard cursor has no independent visible indicator"
                 assert self.active_tab()["id"] == active_before, "Result navigation activated a tab"
                 assert self.sidebar.evaluate("document.documentElement.scrollWidth <= innerWidth"), "Toolbar overflows horizontally"
                 self.sidebar.screenshot(path=str(self.artifacts / f"toolbar-recent-{'dark' if dark else 'light'}-{width}.png"))
@@ -203,7 +212,7 @@ class MruCheck(MovementCheck):
         assert self.active_tab()["id"] == active_before
         self.sidebar.locator("#search-clear").click()
         expect(recent_input).to_have_value("")
-        expect(rows).to_have_count(2)
+        expect(rows).to_have_count(3)
         expect(self.sidebar.locator("#search-clear")).to_be_hidden()
         recent_button.click()
         expect(normal_input).to_have_value("PR40 active")
@@ -216,20 +225,51 @@ class MruCheck(MovementCheck):
         self.sidebar.set_viewport_size({"width": 1100, "height": 800})
         self.evidence["flows"].append({"name": "shared-sidebar-toolbar-layout-navigation-and-mode-state", "status": "pass", "widths": [320, 420], "themes": ["light", "dark"]})
 
+    def current_navigation(self):
+        rows = self.sidebar.locator("#recent-tabs-container [role=option]")
+        current = self.sidebar.locator('#recent-tabs-container [aria-current="page"]')
+        cursor = self.sidebar.locator('#recent-tabs-container [aria-selected="true"]')
+        search = self.sidebar.get_by_role("combobox", name="Search recent tabs")
+        expect(rows.first).to_have_attribute("data-key", "tab:" + self.bookmark_ids["C"])
+        expect(current).to_have_attribute("data-key", "tab:" + self.bookmark_ids["C"])
+        expect(cursor).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
+        search.fill("?A")
+        expect(rows).to_have_count(1)
+        expect(current).to_have_count(0)
+        expect(cursor).to_have_attribute("data-key", "tab:" + self.bookmark_ids["A"])
+        search.fill("")
+        expect(current).to_have_attribute("data-key", "tab:" + self.bookmark_ids["C"])
+        self.select_native("B")
+        expect(rows.first).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
+        expect(current).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
+        expect(cursor).to_have_attribute("data-key", "tab:" + self.bookmark_ids["C"])
+        self.sidebar.locator("#recent-tabs-container [data-key='tab:" + self.bookmark_ids["A"] + "']").click()
+        self.wait_until(lambda: self.active_tab()["id"] == self.live_ids["A"], "sidebar recent click activates A")
+        expect(rows.first).to_have_attribute("data-key", "tab:" + self.bookmark_ids["A"])
+        expect(current).to_have_attribute("data-key", "tab:" + self.bookmark_ids["A"])
+        expect(cursor).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
+        self.select_native("B")
+        self.select_native("C")
+        expect(current).to_have_attribute("data-key", "tab:" + self.bookmark_ids["C"])
+        self.evidence["flows"].append({"name": "current-first-independent-highlight-search-and-tab-changes", "status": "pass"})
+
     def run(self):
         self.select_native("A")
         self.select_native("B")
         self.select_native("C")
         self.sidebar_toolbar()
+        self.current_navigation()
         expect(self.sidebar.locator("#recent-tabs-btn")).to_be_visible()
         expect(self.sidebar.locator("#recent-tabs-container")).to_be_visible()
-        expect(self.sidebar.locator("#recent-tabs-container [role=option]").first).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
+        expect(self.sidebar.locator("#recent-tabs-container [role=option]").first).to_have_attribute("data-key", "tab:" + self.bookmark_ids["C"])
         self.sidebar.screenshot(path=str(self.artifacts / "recent-sidebar.png"))
         self.evidence["flows"].append({"name": "sidebar-mru", "status": "pass"})
         sessions_before = self.send_message({"type": "GET_SESSION_LIST"})["sessions"]
         bookmarks_before = self.snapshot()["bookmarks"]
         popup = self.open_popup()
-        expect(popup.locator("[role=option]").first).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
+        expect(popup.locator("[role=option]").first).to_have_attribute("data-key", "tab:" + self.bookmark_ids["C"])
+        expect(popup.locator('[aria-current="page"]')).to_have_attribute("data-key", "tab:" + self.bookmark_ids["C"])
+        expect(popup.locator('[aria-selected="true"]')).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
         assert popup.get_by_role("combobox", name="Search recent tabs").evaluate("input => input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,cancelable:true,bubbles:true}))"), "IME confirmation was intercepted instead of being left to composition"
         popup.screenshot(path=str(self.artifacts / "switcher-popup.png"))
         assert len(self.send_message({"type": "GET_SESSION_LIST"})["sessions"]) == len(sessions_before), "Switcher created a phantom session"
@@ -441,11 +481,11 @@ def main():
                 restarted.open_sidebar()
                 result = restarted.send_message({"type": "MRU_QUERY", "sourceWindowId": restarted.window_id, "allSessions": True, "limit": 100})
                 assert "error" not in result, result
-                retained = {item.get("bookmarkId") for item in result["items"]} | {result["context"].get("excludeBookmarkId")}
+                retained = {item.get("bookmarkId") for item in result["items"]}
                 assert set(check.restart_bookmarks) <= retained, (check.restart_bookmarks, retained)
                 restarted.sidebar.locator("#recent-tabs-btn").click()
                 restarted.sidebar.get_by_label("Recent tab scope").select_option("all")
-                visible_id = next(bookmark for bookmark in check.restart_bookmarks if bookmark != result["context"].get("excludeBookmarkId"))
+                visible_id = next(bookmark for bookmark in check.restart_bookmarks if bookmark != result["context"].get("currentBookmarkId"))
                 expect(restarted.sidebar.locator("[data-key='tab:" + visible_id + "']")).to_be_visible()
                 check.evidence["flows"].append({"name": "browser-process-restart-retains-bookmark-identities", "status": "pass"})
                 check.evidence["page_errors"].extend(restarted.evidence["page_errors"])
