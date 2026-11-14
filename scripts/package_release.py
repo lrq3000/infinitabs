@@ -1,10 +1,14 @@
 """Package committed extension files for Chrome's Load unpacked installation, without signing keys."""
 
+import argparse
+import hashlib
 import io
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
+from urllib import error as urlerror, parse, request
 import zipfile
 
 
@@ -142,3 +146,85 @@ class ReleasePackager:
                 zipped.writestr(entry, files[name], compresslevel=9)
         self.verify(archive, files)
         return archive
+
+
+class ReleaseAssetUploader:
+    """Replace only the named ZIP on the event's release ID; never resolve a recreated release by tag."""
+
+    def __init__(self, repository: str, token: str):
+        if not re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9_.-]*/[A-Za-z0-9_-][A-Za-z0-9_.-]*', repository):
+            raise ValueError('GITHUB_REPOSITORY must be an owner/repository name')
+        if not token:
+            raise ValueError('GITHUB_TOKEN is required to upload a release asset')
+        self.repository = repository
+        self.token = token
+
+    def _request(self, method, endpoint, data=None, upload=False):
+        host = 'https://uploads.github.com' if upload else 'https://api.github.com'
+        headers = {'Authorization': f'Bearer {self.token}', 'Accept': 'application/vnd.github+json',
+                   'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'InfiniTabs-release-packager'}
+        if upload:
+            headers['Content-Type'] = 'application/zip'
+        operation = request.Request(host + '/repos/' + self.repository + '/' + endpoint,
+                                    data=data, headers=headers, method=method)
+        with request.urlopen(operation, timeout=60) as response:
+            body = response.read()
+            return json.loads(body) if body else None
+
+    def upload(self, archive: Path, tag: str, release_id: int) -> dict:
+        if type(release_id) is not int or release_id <= 0:
+            raise ValueError('Release ID must be a positive integer')
+        archive = Path(archive)
+        data = archive.read_bytes()
+        # Validate the exact bytes about to be uploaded before deleting any existing public asset.
+        ReleasePackager.verify(io.BytesIO(data))
+        digest = 'sha256:' + hashlib.sha256(data).hexdigest()
+        endpoint = f'releases/{release_id}'
+        release = self._request('GET', endpoint)
+        if release.get('id') != release_id or release.get('tag_name') != tag:
+            raise ValueError('Release ID/tag does not match the triggering event')
+        if release.get('draft') is not False or release.get('immutable') is not False:
+            raise ValueError('Post-publication upload requires a published, mutable release')
+        matches = []
+        page = 1
+        while True:
+            assets = self._request('GET', f'{endpoint}/assets?per_page=100&page={page}')
+            matches.extend(asset for asset in assets if asset['name'] == archive.name)
+            if len(assets) < 100:
+                break
+            page += 1
+        for asset in matches:
+            if type(asset['id']) is not int or asset['id'] <= 0:
+                raise ValueError('Invalid existing release asset ID')
+        # The maintainer explicitly requires unconditional replacement, even if GitHub reports the same digest.
+        # Deletion and upload are not transactional: a failed upload leaves this ZIP absent until a rerun.
+        for asset in matches:
+            self._request('DELETE', f'releases/assets/{asset["id"]}')
+        uploaded = self._request('POST', endpoint + '/assets?' + parse.urlencode({'name': archive.name}),
+                                 data=data, upload=True)
+        if uploaded.get('name') != archive.name or uploaded.get('size') != len(data) or uploaded.get('state') != 'uploaded':
+            raise ValueError('GitHub did not confirm the expected uploaded ZIP')
+        if uploaded.get('digest') != digest:
+            raise ValueError('Uploaded ZIP SHA-256 digest does not match the local archive')
+        return uploaded
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--tag', required=True, help='Release tag matching the committed project version')
+    parser.add_argument('--output-dir', type=Path, default=Path('dist'))
+    parser.add_argument('--release-id', type=int, help='Upload to this published event release ID, replacing the same-name asset')
+    args = parser.parse_args()
+    try:
+        archive = ReleasePackager(Path.cwd(), args.tag).build(args.output_dir)
+        print(archive)
+        if args.release_id is not None:
+            uploader = ReleaseAssetUploader(os.environ.get('GITHUB_REPOSITORY', ''), os.environ.get('GITHUB_TOKEN', ''))
+            uploaded = uploader.upload(archive, args.tag, args.release_id)
+            print('Uploaded and verified: ' + uploaded['browser_download_url'])
+    except (ValueError, OSError, urlerror.URLError) as error:
+        parser.exit(1, f'Release packaging failed: {error}\n')
+
+
+if __name__ == '__main__':
+    main()
