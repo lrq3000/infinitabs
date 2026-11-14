@@ -12,6 +12,55 @@ from verify_active_tab_reload import FixtureHandler, ActiveTabReloadCheck
 
 
 class MruCheck(MovementCheck):
+    def tab_rows(self):
+        # Use the shipped options UI and real extension pages: this catches divergent DOM/CSS and preference propagation, not merely matching helper outputs.
+        target = next(tab for tab in self.session()["logicalTabs"] if tab["liveTabIds"] and tab["url"].startswith("http"))
+        self.sidebar.evaluate("id => chrome.tabs.update(id, {active:true})", target["liveTabIds"][0])
+        self.wait_until(lambda: any(item.get("bookmarkId") == target["bookmarkId"] for item in self.query()["items"]), "row fixture recorded")
+        recent_button = self.sidebar.locator("#recent-tabs-btn")
+        if self.sidebar.locator("#recent-tabs-container").is_hidden():
+            recent_button.click()
+        recent = self.sidebar.locator("#recent-tabs-container [data-key='tab:" + target["bookmarkId"] + "']")
+        expect(recent).to_have_class("tab-item live active-live mru-result")
+        expect(self.sidebar.locator("#recent-tabs-container .group-header, #recent-tabs-container .group-color-line, #recent-tabs-container .indented")).to_have_count(0)
+        # Opening options can regenerate ephemeral logical IDs during canonical reload. Match this deterministic fixture URL rather than retaining the old ID.
+        normal = self.sidebar.locator("#tabs-container .tab-item[title=" + json.dumps(target["url"]) + "]")
+        popup = self.open_popup()
+        popup_row = popup.locator("[data-key='tab:" + target["bookmarkId"] + "']")
+        options = self.context.new_page()
+        options.goto(self.sidebar_url.replace("sidebar.html", "options.html"))
+        display = options.get_by_label("Tab display", exact=True)
+        expect(display).to_have_value("compact")
+        self.evidence["tab_row_layouts"] = []
+        for mode in ("compact", "domain", "url"):
+            display.select_option(mode)
+            for page in (self.sidebar, popup):
+                expect(page.locator("body")).to_have_attribute("data-tab-display", mode)
+            expected_description = "" if mode == "compact" else urlparse(target["url"]).hostname if mode == "domain" else target["url"]
+            for row in (normal, recent, popup_row):
+                expect(row.locator(".tab-description")).to_have_text(expected_description)
+                assert "Mounted" not in row.inner_text() and "Unmounted" not in row.inner_text()
+                expect(row.locator(".live-indicator-wrapper")).to_be_enabled()
+            for width in (420, 320):
+                self.sidebar.set_viewport_size({"width": width, "height": 780})
+                for dark in (False, True):
+                    self.sidebar.locator("body").evaluate("(body, dark) => body.classList.toggle('dark-mode', dark)", dark)
+                    recent_style = recent.evaluate("row => {const s=getComputedStyle(row); return [s.height,s.padding,s.borderRadius,s.fontSize]}")
+                    recent_button.click()
+                    normal_style = normal.evaluate("row => {const s=getComputedStyle(row); return [s.height,s.padding,s.borderRadius,s.fontSize]}")
+                    assert recent_style == normal_style, f"Row geometry differs for {mode}: {recent_style} != {normal_style}"
+                    recent_button.click()
+                    assert self.sidebar.evaluate("document.documentElement.scrollWidth <= innerWidth"), f"Row overflow at {width}px, {mode}"
+                    self.sidebar.screenshot(path=str(self.artifacts / f"rows-{mode}-{'dark' if dark else 'light'}-{width}.png"))
+            self.evidence["tab_row_layouts"].append({"mode": mode, "description": expected_description, "geometry": recent_style})
+        options.reload()
+        expect(display).to_have_value("url")
+        display.select_option("compact")
+        expect(self.sidebar.locator("body")).to_have_attribute("data-tab-display", "compact")
+        options.close()
+        popup.close()
+        self.evidence["flows"].append({"name": "shared-tab-rows-global-display-and-responsive-layout", "status": "pass"})
+
     def open_popup(self):
         with self.context.expect_page() as opened:
             self.sidebar.locator("#open-switcher-btn").click()
@@ -153,7 +202,6 @@ class MruCheck(MovementCheck):
                 expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["B"])
                 current = self.sidebar.locator('#recent-tabs-container [aria-current="page"]')
                 expect(current).to_have_attribute("data-key", "tab:" + self.bookmark_ids["C"])
-                expect(current.locator(".mru-result-meta")).to_contain_text("Current")
                 self.sidebar.locator("#search-next").click()
                 expect(selected).to_have_attribute("data-key", "tab:" + self.bookmark_ids["A"])
                 self.sidebar.locator("#search-prev").click()
@@ -416,7 +464,7 @@ class MruCheck(MovementCheck):
     def inert_title_and_restart(self):
         title = '<img src=x onerror="globalThis.mruInjected=true">'
         self.sidebar.evaluate("value => chrome.bookmarks.update(value.id, {title:value.title})", {"id": self.bookmark_ids["A"], "title": title})
-        row = self.sidebar.locator("#recent-tabs-container [data-key='tab:" + self.bookmark_ids["A"] + "'] .mru-result-title")
+        row = self.sidebar.locator("#recent-tabs-container [data-key='tab:" + self.bookmark_ids["A"] + "'] .tab-title")
         expect(row).to_have_text(title)
         assert row.locator("img").count() == 0, "Bookmark markup was parsed as HTML"
         assert self.sidebar.evaluate("globalThis.mruInjected === undefined")
@@ -446,6 +494,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts-dir", type=Path, required=True)
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--scenario", choices=("full", "tab-rows"), default="full")
     parser.add_argument("--executable", type=Path, help="Reuse an installed full Chromium instead of downloading the revision expected by Python Playwright")
     args = parser.parse_args()
     artifacts = Path(tempfile.mkdtemp(prefix="mru-qa-", dir=args.artifacts_dir))
@@ -466,7 +515,13 @@ def main():
                 check = MruCheck(context, artifacts)
                 check.evidence.update(extension_path=str(extension), isolated_profile=str(profile), chromium=context.browser.version, headless=args.headless, executable=str(args.executable) if args.executable else "Playwright bundled Chromium")
                 check.prepare(f"http://127.0.0.1:{server.server_port}/fixture", names="ABC")
+                if args.scenario == "tab-rows":
+                    check.tab_rows()
+                    assert not check.evidence["page_errors"], check.evidence["page_errors"]
+                    print("Shared tab row browser checks passed", flush=True)
+                    return
                 check.run()
+                check.tab_rows()
                 assert not check.evidence["page_errors"], check.evidence["page_errors"]
                 # Reopen only the fresh profile created by THIS run: this is a real process restart, not another worker evaluation or the user's browser.
                 context.close()

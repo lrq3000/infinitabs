@@ -1,6 +1,8 @@
 // sidebar.js
 import { parseGroupTitle } from './utils.js';
 import { MruClient, MruView } from './mru/view.js';
+import { TabRow } from './ui/tab-row.js';
+import { TabDisplaySettings } from './ui/tab-display-settings.js';
 
 const sessionSelector = document.getElementById('session-selector');
 const renameSessionBtn = document.getElementById('rename-session-btn');
@@ -46,6 +48,12 @@ let recentActive = false;
 let mruAvailable = true;
 let recentView = null;
 const mruClient = new MruClient(chrome);
+const tabDisplay = new TabDisplaySettings({ chrome, onChange: mode => {
+    document.body.dataset.tabDisplay = mode;
+    if (currentSession) renderSession(currentSession);
+} });
+document.body.dataset.tabDisplay = tabDisplay.mode;
+window.addEventListener('pagehide', () => tabDisplay.dispose());
 
 // Selection & Drag State
 let selectedLogicalIds = new Set();
@@ -63,6 +71,7 @@ let collapsedGroups = new Set();
 // --- Initialization ---
 
 async function init() {
+    await tabDisplay.ready();
     // Get current window
     const window = await chrome.windows.getCurrent();
     currentWindowId = window.id;
@@ -540,7 +549,7 @@ function performSearch() {
     currentMatches = [];
     currentMatchIndex = -1;
 
-    const tabItems = document.querySelectorAll('.tab-item');
+    const tabItems = tabsContainer.querySelectorAll('.tab-item');
     tabItems.forEach(el => {
         el.classList.remove('search-match', 'active-match');
     });
@@ -606,7 +615,7 @@ function navigateSearch(direction) {
 }
 
 function scrollToActiveTab() {
-    const activeEl = document.querySelector('.tab-item.active-live');
+    const activeEl = tabsContainer.querySelector('.tab-item.active-live');
     if (activeEl) {
         activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
     } else if (currentSession?.lastActiveLogicalTabId) {
@@ -619,7 +628,7 @@ function scrollToActiveTab() {
             renderSession(currentSession);
             // Scroll after re-render
             requestAnimationFrame(() => {
-                const el = document.querySelector('.tab-item.active-live');
+                const el = tabsContainer.querySelector('.tab-item.active-live');
                 if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
             });
         }
@@ -926,157 +935,29 @@ function updateGroupElement(el, group, displayName, color) {
 }
 
 function createTabElement(tab, session, shouldScroll, groupColor) {
-    const el = document.createElement('div');
+    const row = new TabRow({ document, chrome,
+        onActivate: event => handleTabClick(event, tab.logicalId),
+        onUnmount: () => {
+            // Skip tabs that have left this session; the background also resolves the current logical ID before acting.
+            if (currentSession?.logicalTabs.some(current => current.logicalId === tab.logicalId && current.liveTabIds.length)) {
+                return chrome.runtime.sendMessage({ type: 'UNMOUNT_LOGICAL_TAB', windowId: currentWindowId, logicalId: tab.logicalId });
+            }
+        },
+        onDelete: () => chrome.runtime.sendMessage({ type: 'DELETE_LOGICAL_TAB', windowId: currentWindowId, logicalId: tab.logicalId })
+    });
+    const el = row.element;
     el.dataset.id = tab.logicalId;
     el.dataset.type = 'tab';
     el.draggable = true;
     setupDragHandlers(el);
-
-    // Structure
-    // [GroupLine] (if grouped)
-    // <span class="live-indicator"></span>
-    // <img class="tab-icon" src="...">
-    // <span class="tab-title">...</span>
-    // <button class="tab-delete-btn">x</button>
-
-    if (groupColor) {
-        const line = document.createElement('div');
-        line.className = 'group-color-line';
-        el.appendChild(line);
-    }
-
-    const indicatorWrapper = document.createElement('div');
-    indicatorWrapper.className = 'live-indicator-wrapper';
-    indicatorWrapper.title = 'Close live tab (keep bookmark)';
-    indicatorWrapper.addEventListener('click', (e) => {
-        e.stopPropagation();
-
-        // Look up latest tab status from currentSession
-        let currentTab;
-        if (currentSession && currentSession.logicalTabs) {
-            const found = currentSession.logicalTabs.find(t => t.logicalId === tab.logicalId);
-            currentTab = found;
-        }
-
-        // skip the unmount if the tab is no longer in the current session, rather than relying on potentially stale data
-        if (currentTab && currentTab.liveTabIds.length > 0) {
-            chrome.runtime.sendMessage({
-                type: "UNMOUNT_LOGICAL_TAB",
-                windowId: currentWindowId,
-                logicalId: tab.logicalId
-            }).catch((err) => {
-                console.error("Failed to unmount logical tab", err);
-                alert("Failed to unmount logical tab. Please try again.");
-            });
-        }
-    });
-
-    const indicator = document.createElement('span');
-    indicator.className = 'live-indicator';
-    indicatorWrapper.appendChild(indicator);
-    el.appendChild(indicatorWrapper);
-
-    const icon = document.createElement('img');
-    icon.className = 'tab-icon';
-    el.appendChild(icon);
-
-    const title = document.createElement('span');
-    title.className = 'tab-title';
-    el.appendChild(title);
-
-    const deleteBtn = document.createElement('button');
-    deleteBtn.className = 'tab-delete-btn';
-    deleteBtn.textContent = '×';
-    deleteBtn.title = 'Delete logical tab and bookmark';
-    deleteBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        chrome.storage.local.get({ confirmDeleteLogicalTab: true }, (items) => {
-            const shouldConfirm = items.confirmDeleteLogicalTab;
-            if (!shouldConfirm || confirm("Delete this logical tab (bookmark)?")) {
-                chrome.runtime.sendMessage({
-                    type: "DELETE_LOGICAL_TAB",
-                    windowId: currentWindowId,
-                    logicalId: tab.logicalId
-                }).catch((err) => {
-                    console.error("Failed to delete logical tab", err);
-                    alert("Failed to delete logical tab. Please try again.");
-                });
-            }
-        });
-    });
-    el.appendChild(deleteBtn);
-
-    el.addEventListener('click', (e) => {
-        handleTabClick(e, tab.logicalId);
-    });
 
     updateTabElement(el, tab, session, shouldScroll, groupColor);
     return el;
 }
 
 function updateTabElement(el, tab, session, shouldScroll, groupColor) {
-    const isLive = tab.liveTabIds.length > 0;
     const isActive = session.lastActiveLogicalTabId === tab.logicalId;
-    const isSelected = selectedLogicalIds.has(tab.logicalId);
-
-    // Classes
-    let className = 'tab-item';
-    if (tab.groupId) className += ' indented';
-    if (isLive) className += ' live';
-    if (isActive) className += ' active-live';
-    else className += ' logical';
-
-    if (isSelected) className += ' selected';
-
-    if (el.className !== className) {
-        el.className = className;
-    }
-
-    // Group line color
-    const line = el.querySelector('.group-color-line');
-    if (groupColor) {
-        if (!line) {
-            const newLine = document.createElement('div');
-            newLine.className = 'group-color-line';
-            el.insertBefore(newLine, el.firstChild);
-        } else {
-            // Update color class
-            line.className = `group-color-line group-line-${groupColor}`;
-        }
-    } else if (line) {
-        line.remove();
-    }
-
-    // Tooltip
-    if (el.title !== tab.url) el.title = tab.url;
-
-    // Content
-    const icon = el.querySelector('.tab-icon');
-    const title = el.querySelector('.tab-title');
-
-    let defaultFaviconUrl = chrome.runtime.getURL("/_favicon/") + "?pageUrl=" + encodeURIComponent(tab.url) + "&size=16";
-    let faviconUrl = defaultFaviconUrl;
-
-    if (tab.favIconUrl) {
-        // Validation: If it points to an extension resource, it might be stale.
-        // We can't synchronously check existence, but we can rely on error handling.
-        faviconUrl = tab.favIconUrl;
-    }
-
-    // Attach error handler to fallback
-    // We re-attach every time to ensure the closure captures the correct defaultFaviconUrl
-    icon.onerror = (e) => {
-         // Fallback to default if custom/stale icon fails
-         if (icon.src !== defaultFaviconUrl) {
-             console.warn(`Failed to load favicon: ${icon.src}. Falling back to default.`, e);
-             icon.onerror = null; // prevent repeat loop if fallback also fails
-             icon.src = defaultFaviconUrl;
-         }
-    };
-
-    if (icon.src !== faviconUrl) icon.src = faviconUrl;
-
-    if (title.textContent !== tab.title) title.textContent = tab.title;
+    el.tabRow.update(tab, { current: isActive, selected: selectedLogicalIds.has(tab.logicalId), groupColor, indented: Boolean(tab.groupId), displayMode: tabDisplay.mode });
 
     // Scroll
     if (isActive && shouldScroll) {
@@ -1135,7 +1016,7 @@ function handleTabClick(e, logicalId) {
     } else if (e.shiftKey && lastSelectedLogicalId) {
         // Range selection
         // Find range in current rendering order
-        const allItems = Array.from(document.querySelectorAll('.tab-item'));
+        const allItems = Array.from(tabsContainer.querySelectorAll('.tab-item'));
         const ids = allItems.map(el => el.dataset.id);
 
         const idx1 = ids.indexOf(lastSelectedLogicalId);

@@ -1,22 +1,16 @@
 .mru-root { display: flex; flex: 1; flex-direction: column; min-height: 0; gap: 8px; padding: 10px; box-sizing: border-box; color: var(--text-color); }
 .mru-root[hidden], .search-container[hidden] { display: none; }
-.mru-root input, .mru-root select, .mru-root button { font: inherit; color: var(--text-color); background: var(--header-bg); border: 1px solid var(--border-color); border-radius: 5px; }
+.mru-root input, .mru-root select, .mru-controls button, .mru-paging button { font: inherit; color: var(--text-color); background: var(--header-bg); border: 1px solid var(--border-color); border-radius: 5px; }
 .mru-search { box-sizing: border-box; padding: 9px 10px; width: 100%; outline-color: var(--active-border); }
 .mru-controls, .mru-paging { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .mru-controls select { flex: 1; padding: 5px; min-width: 0; }
 .mru-controls button, .mru-paging button { padding: 5px 8px; cursor: pointer; }
 .mru-live-toggle[aria-pressed="true"] { background: var(--active-bg); border-color: var(--active-border); }
 .mru-results { flex: 1; min-height: 0; overflow-y: auto; }
-.mru-root .mru-result { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 8px; margin-bottom: 3px; text-align: left; border-color: transparent; cursor: pointer; }
-.mru-root .mru-result:hover { background: var(--hover-bg); }
+#recent-tabs-container { padding-left: 0; padding-right: 0; }
+#recent-tabs-container > :not(.mru-results) { margin-left: 10px; margin-right: 10px; }
 /* Current is the browsing location; selected is only the keyboard's pending activation target. Keep both visible without implying that moving the cursor switched tabs. */
-.mru-root .mru-result[aria-current="page"] { background: var(--active-bg); border-color: var(--active-border); }
 .mru-root .mru-result[aria-selected="true"] { box-shadow: inset 0 0 0 2px var(--active-border); }
-.mru-result-text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
-.mru-result-title, .mru-result-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mru-result-title { font-size: .95em; }
-.mru-result-meta { font-size: .78em; color: var(--group-text); }
-.mru-favicon { width: 16px; height: 16px; flex-shrink: 0; }
 .mru-status { color: var(--group-text); font-size: .8em; line-height: 1.4; }
 .mru-status[data-error="true"] { color: var(--btn-text); }
 .mru-paging { justify-content: space-between; }

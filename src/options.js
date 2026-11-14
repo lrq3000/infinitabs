@@ -1,4 +1,5 @@
 // options.js
+import { TabDisplaySettings } from './ui/tab-display-settings.js';
 
 const confirmDeleteCheckbox = document.getElementById('confirm-delete-checkbox');
 const selectLastActiveCheckbox = document.getElementById('select-last-active-checkbox');
@@ -9,6 +10,7 @@ const activeTabColorInput = document.getElementById('active-tab-color-input');
 const selectedTabColorInput = document.getElementById('selected-tab-color-input');
 const nameSessionsWithWordsCheckbox = document.getElementById('name-sessions-with-words-checkbox');
 const statusDiv = document.getElementById('status');
+const tabDisplaySelect = document.getElementById('tab-display-mode');
 
 // Defaults
 const DEFAULT_CONFIRM_DELETE = true;
@@ -28,7 +30,8 @@ function restoreOptions() {
     reloadOnRestart: DEFAULT_RELOAD_ON_RESTART,
     activeTabBg: '',
     selectedTabBg: '',
-    nameSessionsWithWords: DEFAULT_NAME_SESSIONS_WITH_WORDS
+    nameSessionsWithWords: DEFAULT_NAME_SESSIONS_WITH_WORDS,
+    tabDisplayMode: 'compact'
   }, (items) => {
     confirmDeleteCheckbox.checked = items.confirmDeleteLogicalTab;
     selectLastActiveCheckbox.checked = items.selectLastActiveTab;
@@ -38,6 +41,7 @@ function restoreOptions() {
     activeTabColorInput.value = items.activeTabBg;
     selectedTabColorInput.value = items.selectedTabBg;
     nameSessionsWithWordsCheckbox.checked = items.nameSessionsWithWords;
+    tabDisplaySelect.value = TabDisplaySettings.normalize(items.tabDisplayMode);
   });
 }
 
@@ -68,7 +72,8 @@ function saveOptions() {
     reloadOnRestart: reloadOnRestart,
     activeTabBg: activeTabBg,
     selectedTabBg: selectedTabBg,
-    nameSessionsWithWords: nameSessionsWithWords
+    nameSessionsWithWords: nameSessionsWithWords,
+    tabDisplayMode: TabDisplaySettings.normalize(tabDisplaySelect.value)
   }, () => {
     // Update status to let user know options were saved.
     statusDiv.style.opacity = '1';
@@ -91,6 +96,7 @@ function debounce(func, wait) {
 const debouncedSaveOptions = debounce(saveOptions, 250);
 
 document.addEventListener('DOMContentLoaded', restoreOptions);
+tabDisplaySelect.addEventListener('change', saveOptions);
 confirmDeleteCheckbox.addEventListener('change', saveOptions);
 selectLastActiveCheckbox.addEventListener('change', saveOptions);
 maxTabHistoryInput.addEventListener('change', saveOptions);

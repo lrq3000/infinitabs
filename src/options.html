@@ -46,6 +46,15 @@
     <h2 style="font-size: 16px; margin: 0 0 10px 0;">Appearance</h2>
     <div style="display: flex; flex-direction: column; gap: 8px;">
       <label>
+        Tab display:
+        <select id="tab-display-mode" aria-label="Tab display">
+          <option value="compact">Compact</option>
+          <option value="domain">Title + domain</option>
+          <option value="url">Title + full URL</option>
+        </select>
+      </label>
+      <div style="font-size: 12px; color: #666;">Applies to normal tabs, Recent tabs, and the separate switcher.</div>
+      <label>
         Active Tab Background:
         <input type="text" id="active-tab-color-input" placeholder="e.g. `#e6f7ff`"
                pattern="^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$"
@@ -116,7 +125,7 @@
     <p style="font-size: 12px;">MRU follows the sidebar’s Live Only toggle. Configure the switcher and Previous tab shortcuts at chrome://extensions/shortcuts. Private-window MRU is not supported in this release.</p>
   </div>
 
-  <script src="options.js"></script>
+  <script type="module" src="options.js"></script>
 </body>
 
 </html>
