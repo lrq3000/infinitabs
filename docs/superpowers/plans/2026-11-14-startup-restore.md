@@ -43,10 +43,10 @@
 
 **Interfaces:** Load this worktree's unmodified manifest/source in a disposable persistent Chromium profile configured to restore tabs. Reuse existing Playwright runtime and fixture conventions.
 
-- [ ] Add a real browser-process restart regression and demonstrate failure against the baseline before relying on it as verification.
-- [ ] Require identical saved bookmark identities/parents/order/URLs after repeated restarts, no mounted saved tabs after automatic restoration, and worker-wake safety.
-- [ ] Run `python -B test/verify_startup_restore.py --artifacts-dir C:/Users/33632/AppData/Local/Temp/opencode --executable C:/Users/33632/AppData/Local/ms-playwright/chromium-1243/chrome-win64/chrome.exe` and wire the check into existing CI.
-- [ ] Run all maintained Node regressions, Python helper tests, focused browser compatibility checks and `git diff --check`; commit after success.
+- [x] Add a real browser-process restart regression and demonstrate failure against the baseline before relying on it as verification.
+- [x] Require identical saved bookmark identities/parents/order/URLs after repeated restarts, no mounted saved tabs after automatic restoration, and worker-wake safety.
+- [x] Run `python -B test/verify_startup_restore.py --artifacts-dir C:/Users/33632/AppData/Local/Temp/opencode --executable C:/Users/33632/AppData/Local/ms-playwright/chromium-1243/chrome-win64/chrome.exe` and wire the check into existing CI.
+- [x] Run all maintained Node regressions, Python helper tests, focused browser compatibility checks and `git diff --check`; commit after success.
 - [ ] Obtain an independent read-only review, fix verified important findings with RED→GREEN evidence, and verify all completed work is committed.
 
 ## Execution ledger
@@ -60,3 +60,9 @@
 - Verification: all 78 maintained Node checks passed with concurrency 2 (53 MRU cases, 11 existing script suites, 14 new startup cases). Existing mixed-module package warnings are unchanged.
 - Browser harness finding: both command-line loading and CDP installation produce ephemeral COMMAND_LINE installations. Native startup was verified after seeding only the closed disposable profile's installation metadata as UNPACKED; extension source, bookmarks and extension storage are untouched. This fixture does not claim to test Chromium's installation persistence/security machinery.
 - Task 1: complete; the first real browser restart also preserved all saved bookmark IDs/content and left every saved tab unmounted. Python helper suite: 20 passing tests.
+- Task 1 commit: `ca1f458`.
+- Expanded Node coverage: 80 passing checks, including 16 startup cases, multiple windows/groups, an empty session, and three browser-lifetime simulations.
+- Browser RED: revision `7599718`, archived read-only with `--baseline-ref`, failed the corrected headless browser check because the original shutdown clears the recovery workspace and automatic unmounted restoration never completes. This is separate from the exact duplicate-URL RED demonstrated by the Node event-order regression.
+- Browser GREEN: two headed process restarts (`startup-restore-swdasq_c`) and two headless process restarts (`startup-restore-66d3p2ot`) passed with identical bookmark IDs/parents/order/content, all saved tabs unmounted, and no captured worker errors. Evidence/profiles remain under the approved temporary directory.
+- Final independent read-only review is in progress. No model override was used because the user did not request one.
+- Browser compatibility: all 11 existing MRU/sidebar/mount/restart workflows passed (`mru-qa-nnq0f67d`), with no page or worker errors. `git diff --check` is clean.

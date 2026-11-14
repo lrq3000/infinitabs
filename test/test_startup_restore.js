@@ -142,6 +142,38 @@ class StartupFixture {
 }
 
 const cases = {
+    async 'multiple windows preserve groups and an empty saved session'() {
+        const f = await new StartupFixture().prepare();
+        const group = await chrome.bookmarks.create({ parentId: f.folder.id, title: 'Saved research [blue]' });
+        await chrome.bookmarks.create({ parentId: group.id, title: 'Same URL in a group', url: 'https://example.test/a' });
+        f.original = await f.saved();
+        const originalEmpty = f.addWindow();
+        f.addTab(originalEmpty.id, 'about:blank');
+        const empty = await chrome.bookmarks.create({ parentId: f.root.id, title: `Empty [windowId:${originalEmpty.id}]` });
+        f.snapshot.sessions.push({ sessionId: empty.id, windowId: originalEmpty.id });
+        await chrome.storage.local.set({ lastKnownWorkspace: f.snapshot, workspaceHistory: [f.snapshot],
+            windowToSession: { 1: f.folder.id, [originalEmpty.id]: empty.id } });
+        await f.listeners.onStartup();
+        await f.restored();
+        assert.equal(f.windows.size, 2);
+        assert.equal(f.windows.has(originalEmpty.id), false);
+        const sessions = await Promise.all([...f.windows.keys()].map(id => f.session(id)));
+        assert.deepEqual(sessions.find(session => session.sessionId === empty.id).logicalTabs, []);
+        assert.equal(sessions.find(session => session.sessionId === f.folder.id).groups[group.id].title, 'Saved research [blue]');
+    },
+    async 'repeated browser lifetimes never grow saved sessions'() {
+        const f = await new StartupFixture().prepare();
+        for (let restart = 0; restart < 3; restart++) {
+            if (restart) {
+                chrome.storage.session.values = {}; // A browser lifetime boundary, not a worker suspension.
+                await f.loadWorker();
+            }
+            await f.listeners.onStartup();
+            await f.restored();
+            assert.equal(f.windows.size, 1);
+        }
+        assert.equal(f.nextWindow, 4);
+    },
     async 'startup excludes its own placeholder'() {
         const f = await new StartupFixture().prepare();
         await f.listeners.onStartup();
