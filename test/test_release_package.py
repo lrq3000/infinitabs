@@ -38,7 +38,7 @@ class ReleaseFixture(unittest.TestCase):
         self.write('src/background.js', b'// committed worker\n')
         self.write('src/sidebar.html', b'<!doctype html><title>Fixture</title>\n')
         self.write('src/nested/icon.bin', bytes(range(256)))
-        self.write('LICENSE', b'MIT License\nCopyright fixture\nPermission is hereby granted, free of charge.\n')
+        self.write('LICENSE', (SCRIPT.parents[1] / 'LICENSE').read_bytes())
         self.commit()
 
     def git(self, *args, input=None):
@@ -164,6 +164,50 @@ class ReleasePackageTest(ReleaseFixture):
                  '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'symlink fixture')
         with self.assertRaises(ValueError):
             self.build()
+
+    def test_non_mit_or_truncated_notice_is_rejected(self):
+        for license_bytes in [b'All rights reserved.\n', b'MIT License\nPermission is hereby granted.\n']:
+            with self.subTest(license_bytes=license_bytes):
+                self.write('LICENSE', license_bytes)
+                self.commit()
+                with self.assertRaisesRegex(ValueError, 'MIT|notice|copyright'):
+                    self.build()
+
+    def test_invalid_required_mv3_manifest_fields_are_rejected(self):
+        for change in [{'name': None}, {'name': ''}, {'name': ' '}, {'name': 3},
+                       {'manifest_version': None}, {'manifest_version': '3'}, {'manifest_version': 3.0},
+                       {'manifest_version': 999}]:
+            with self.subTest(change=change):
+                self.write_json('src/manifest.json', {**self.manifest, **change})
+                self.commit()
+                with self.assertRaisesRegex(ValueError, 'manifest'):
+                    self.build()
+
+    def test_nonportable_and_conflicting_archive_names_are_rejected_before_writing(self):
+        for name in ['LICENSE/child.txt', 'License', 'CON.js', 'AUX', 'file?.js',
+                     'nested/trailing.', 'nested/trailing ', 'nested/file\x01.js',
+                     'Background.js', 'nested/ICON.bin']:
+            with self.subTest(name=name):
+                packager = self.packager()
+                files = packager._committed_files()
+                files['src/' + name] = b'conflicting fixture'
+                with self.assertRaises(ValueError):
+                    packager._extension_files(files)
+
+    def test_independent_zip_verification_rejects_unsafe_names_and_truncated_notices(self):
+        for name, license_bytes in [('LICENSE/child.txt', self.git('show', 'HEAD:LICENSE')),
+                                    ('License', self.git('show', 'HEAD:LICENSE')),
+                                    ('CON.js', self.git('show', 'HEAD:LICENSE')),
+                                    ('extra.js', b'MIT License\nPermission is hereby granted.\n')]:
+            with self.subTest(name=name):
+                data = io.BytesIO()
+                with zipfile.ZipFile(data, 'w') as zipped:
+                    zipped.writestr('manifest.json', json.dumps(self.manifest))
+                    zipped.writestr('LICENSE', license_bytes)
+                    zipped.writestr(name, b'fixture')
+                data.seek(0)
+                with self.assertRaises(ValueError):
+                    self.module().ReleasePackager.verify(data)
 
 
 class ReleaseUploadTest(ReleaseFixture):

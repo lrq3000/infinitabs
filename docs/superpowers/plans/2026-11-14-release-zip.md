@@ -33,11 +33,11 @@
 
 **Interfaces:** Produce `ReleasePackager(repository: Path, tag: str).build(output_dir: Path) -> Path`, consumed by the CLI and upload task. Fail invalid input with `ValueError` before emitting a usable artifact.
 
-- [ ] Write packaging tests using isolated Git fixtures, including literal fixture versions unrelated to the real project release.
-- [ ] Run `python -m unittest discover -s test -p test_release_package.py`; expect failure because the packager is absent.
-- [ ] Implement committed-source packaging, metadata validation, deterministic ZIP generation, and root MIT inclusion.
-- [ ] Rerun packaging tests; expect all packaging tests to pass. Run the existing Python suite and inspect `git diff --check`.
-- [ ] Commit this coherent, passing packager milestone with its tests.
+- [x] Write packaging tests using isolated Git fixtures, including literal fixture versions unrelated to the real project release.
+- [x] Run `python -m unittest discover -s test -p test_release_package.py`; expect failure because the packager is absent.
+- [x] Implement committed-source packaging, metadata validation, deterministic ZIP generation, and root MIT inclusion.
+- [x] Rerun packaging tests; expect all packaging tests to pass. Run the existing Python suite and inspect `git diff --check`.
+- [x] Commit this coherent, passing packager milestone with its tests.
 
 ### Task 2: Replacement upload, workflow, and documentation
 
@@ -45,13 +45,15 @@
 
 **Interfaces:** Consume `ReleasePackager.build`; produce `ReleaseAssetUploader(repository: str, token: str).upload(archive: Path, tag: str, release_id: int) -> dict` and CLI `--tag TAG [--output-dir PATH] [--release-id ID]`. The upload CLI uses `GITHUB_REPOSITORY` and `GITHUB_TOKEN` only when `--release-id` is provided.
 
-- [ ] Write HTTP-boundary tests for release identity, immutability, pagination, unconditional same-name replacement, preservation of other assets, and corrupt/failed uploads.
-- [ ] Run new upload tests; expect failure because the uploader is absent.
-- [ ] Implement release-ID-scoped upload/delete requests and post-upload digest checks. Add the published-release workflow and document local use, prerequisites, overwrite behavior, and retry limitations.
-- [ ] Run `python -m unittest discover -s test -p 'test_*.py'`, focused shared-row/MRU Node tests, and `python scripts/package_release.py --tag v0.6.0`. Inspect the generated ZIP against Git, validate workflow structure with available tooling, and run `git diff --check`.
-- [ ] Commit this coherent workflow/upload milestone with tests and documentation.
-- [ ] Obtain an independent read-only branch review; fix verified important findings with RED→GREEN tests, commit corrections, and report exact checks and remaining hosted-run limitations.
+- [x] Write HTTP-boundary tests for release identity, immutability, pagination, unconditional same-name replacement, preservation of other assets, and corrupt/failed uploads.
+- [x] Run new upload tests; expect failure because the uploader is absent.
+- [x] Implement release-ID-scoped upload/delete requests and post-upload digest checks. Add the published-release workflow and document local use, prerequisites, overwrite behavior, and retry limitations.
+- [x] Run `python -m unittest discover -s test -p 'test_*.py'`, focused shared-row/MRU Node tests, and `python scripts/package_release.py --tag v0.6.0`. Inspect the generated ZIP against Git, validate workflow structure with available tooling, and run `git diff --check`.
+- [x] Commit this coherent workflow/upload milestone with tests and documentation.
+- [x] Obtain an independent read-only branch review; fix verified important findings with RED→GREEN tests, commit corrections, and report exact checks and remaining hosted-run limitations.
 
 ## Execution record
 
 Approved local implementation; user correction supersedes the initial no-clobber proposal: always overwrite the matching ZIP. Existing baseline: 20 Python tests and shared-row/MRU Node tests pass. Use the plan-scoped ignored ledger for task progress; retain generated artifacts rather than deleting them.
+
+Final verification: 46 Python tests pass, including 26 packaging/upload/CLI tests. All 12 existing Node CI regression scripts and the shared-row/MRU Node suite pass. The smoke ZIP contains the exact 19 committed extension files plus MIT `LICENSE`. YAML parsing and explicit trigger/permissions/checkout/environment checks passed; actionlint is not installed. Independent review identified three validation gaps (truncated notices, invalid required MV3 fields, and nonportable/conflicting archive names); all were reproduced with failing tests and corrected in one fix pass. No hosted Actions run, real upload/delete request, push, or merge was performed. Keep the branch/worktree and generated artifacts for the operator.
