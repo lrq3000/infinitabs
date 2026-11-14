@@ -28,7 +28,7 @@ test('Recent deletes unmounted tabs using their current canonical session rather
     browser.node('s').children = browser.node('s').children.filter(node => node.id !== 'b');
     bookmark.parentId = 'other'; browser.node('other').children.push(bookmark);
     await adapter.handleMessage({ type: 'MRU_DELETE', sourceWindowId: 1, sourceSessionId: 's', key: 'tab:b' });
-    assert.deepEqual(calls, [[2, 'logical-b']]);
+    assert.deepEqual(calls, [[2, 'logical-b-reload-1']]);
     assert.equal(browser.tabs.size, 2, 'deleting must never mount an unmounted logical tab');
 });
 
@@ -40,6 +40,17 @@ test('a mounted bookmark moved externally still closes its real projection throu
     bookmark.parentId = 'other'; browser.node('other').children.push(bookmark);
     await adapter.handleMessage({ type: 'MRU_DELETE', sourceWindowId: 1, sourceSessionId: 's', key: 'tab:a' });
     assert.deepEqual(calls, [[1, 'logical-a']]);
+});
+
+test('an already-unmounted bound target is inert and leaves normal row identities usable', async () => {
+    let called = false;
+    const { browser, adapter } = await fixture({ unmountLogicalTab: async () => { called = true; } });
+    const identities = browser.state.sessionsById.s.logicalTabs.map(tab => tab.logicalId);
+    await adapter.handleMessage({ type: 'MRU_UNMOUNT', sourceWindowId: 1, sourceSessionId: 's', key: 'tab:b' });
+    assert.deepEqual(browser.state.sessionsById.s.logicalTabs.map(tab => tab.logicalId), identities);
+    assert.equal(called, false);
+    await browser.mount(1, 'logical-b');
+    assert.ok([...browser.tabs.values()].some(tab => tab.url === 'https://b.test'));
 });
 
 test('saved-session deletion removes only its bookmark, without binding or opening a window', async () => {

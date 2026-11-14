@@ -90,6 +90,10 @@ class MruCheck(MovementCheck):
         assert self.sidebar.evaluate("id => chrome.bookmarks.get(id)", self.bookmark_ids["B"])
         assert self.active_tab()["id"] == active_id
         assert self.sidebar.evaluate("rowActivations") == [], "Unmounting an inactive row activated a tab"
+        original_a_id = self.logical("A")["logicalId"]
+        stale_unmount = self.send_message({**self.query()["context"], "type": "MRU_UNMOUNT", "key": "tab:" + self.bookmark_ids["B"]})
+        assert stale_unmount.get("success"), stale_unmount
+        assert self.logical("A")["logicalId"] == original_a_id, "A no-op unmount invalidated normal row identities"
 
         # Normal uses the same widgets, but retains its existing activation/selection path.
         self.sidebar.locator("#recent-tabs-btn").click()

@@ -344,6 +344,8 @@ export class MruChromeAdapter {
             }
         }
         if (targetWindowId === undefined) {
+            // A stale green-dot click can arrive after another view unmounted the tab. There is no native effect left; do not regenerate every normal-row ID for this no-op.
+            if (request.type === 'MRU_UNMOUNT') return { success: true };
             targetSessionId = candidate.sessionId;
             const binding = Object.keys(state.windowToSession).find(id => state.windowToSession[id] === targetSessionId && windowsById.has(Number(id)));
             if (binding !== undefined) {

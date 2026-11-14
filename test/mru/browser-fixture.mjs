@@ -63,10 +63,11 @@ export class BrowserFixture {
         return null;
     }
 
-    bind(windowId, sessionId) {
+    bind(windowId, sessionId, regenerate = false) {
         const folder = this.node(sessionId);
+        const suffix = regenerate ? `-reload-${this.reloadGeneration = (this.reloadGeneration || 0) + 1}` : '';
         this.state.windowToSession[windowId] = sessionId;
-        this.state.sessionsById[sessionId] = { sessionId, windowId, logicalTabs: folder.children.filter(node => node.url).map(node => ({ bookmarkId: node.id, logicalId: `logical-${node.id}`, sessionId, url: node.url, title: node.title, liveTabIds: [] })) };
+        this.state.sessionsById[sessionId] = { sessionId, windowId, logicalTabs: folder.children.filter(node => node.url).map(node => ({ bookmarkId: node.id, logicalId: `logical-${node.id}${suffix}`, sessionId, url: node.url, title: node.title, liveTabIds: [] })) };
     }
 
     async mount(windowId, logicalId) {
@@ -85,8 +86,12 @@ export class BrowserFixture {
     options() {
         return { chrome: this.chrome, initialize: async () => {}, getState: () => this.state, getRoot: async () => 'root', focusOrMount: this.mount.bind(this), bindSession: this.bind.bind(this), refreshSession: async (sessionId, windowId) => {
             const previous = new Map(this.state.sessionsById[sessionId].logicalTabs.map(tab => [tab.bookmarkId, tab.liveTabIds]));
-            this.bind(windowId, sessionId);
-            for (const logical of this.state.sessionsById[sessionId].logicalTabs) logical.liveTabIds = previous.get(logical.bookmarkId) || [];
+            // The real canonical reload regenerates logical IDs and rewires native relationships. Stable fixture IDs would conceal stale-sidebar regressions.
+            this.bind(windowId, sessionId, true);
+            for (const logical of this.state.sessionsById[sessionId].logicalTabs) {
+                logical.liveTabIds = previous.get(logical.bookmarkId) || [];
+                for (const id of logical.liveTabIds) this.state.tabToLogical[id] = logical.logicalId;
+            }
         } };
     }
 }
