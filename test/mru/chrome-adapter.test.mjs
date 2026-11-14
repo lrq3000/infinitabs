@@ -3,13 +3,74 @@ import assert from 'node:assert/strict';
 import { BrowserFixture } from './browser-fixture.mjs';
 import { MruChromeAdapter } from '../../src/mru/chrome-adapter.js';
 
-async function fixture() {
+async function fixture(overrides = {}) {
     assert.equal(typeof MruChromeAdapter, 'function', 'Chrome adapter must be implemented');
     const browser = new BrowserFixture();
-    const adapter = new MruChromeAdapter(browser.options());
+    const adapter = new MruChromeAdapter({ ...browser.options(), ...overrides });
     adapter.start(); await adapter.ready();
     return { browser, adapter };
 }
+
+test('Recent unmount/delete resolve the actual mounted destination and delegate its lifecycle', async () => {
+    const calls = [];
+    const { adapter } = await fixture({
+        unmountLogicalTab: async (...args) => calls.push(['unmount', ...args]),
+        deleteLogicalTab: async (...args) => calls.push(['delete', ...args])
+    });
+    for (const type of ['MRU_UNMOUNT', 'MRU_DELETE']) await adapter.handleMessage({ type, sourceWindowId: 1, sourceSessionId: 's', key: 'tab:c' });
+    assert.deepEqual(calls, [['unmount', 2, 'logical-c'], ['delete', 2, 'logical-c']]);
+});
+
+test('Recent deletes unmounted tabs using their current canonical session rather than stale ownership', async () => {
+    const calls = [];
+    const { browser, adapter } = await fixture({ deleteLogicalTab: async (...args) => calls.push(args) });
+    const bookmark = browser.node('b');
+    browser.node('s').children = browser.node('s').children.filter(node => node.id !== 'b');
+    bookmark.parentId = 'other'; browser.node('other').children.push(bookmark);
+    await adapter.handleMessage({ type: 'MRU_DELETE', sourceWindowId: 1, sourceSessionId: 's', key: 'tab:b' });
+    assert.deepEqual(calls, [[2, 'logical-b']]);
+    assert.equal(browser.tabs.size, 2, 'deleting must never mount an unmounted logical tab');
+});
+
+test('a mounted bookmark moved externally still closes its real projection through the original lifecycle', async () => {
+    const calls = [];
+    const { browser, adapter } = await fixture({ deleteLogicalTab: async (...args) => calls.push(args) });
+    const bookmark = browser.node('a');
+    browser.node('s').children = browser.node('s').children.filter(node => node.id !== 'a');
+    bookmark.parentId = 'other'; browser.node('other').children.push(bookmark);
+    await adapter.handleMessage({ type: 'MRU_DELETE', sourceWindowId: 1, sourceSessionId: 's', key: 'tab:a' });
+    assert.deepEqual(calls, [[1, 'logical-a']]);
+});
+
+test('saved-session deletion removes only its bookmark, without binding or opening a window', async () => {
+    const { browser, adapter } = await fixture();
+    browser.chrome.bookmarks.remove = async id => {
+        assert.equal(id, 'd');
+        browser.node('closed').children = [];
+    };
+    await adapter.handleMessage({ type: 'MRU_UNMOUNT', sourceWindowId: 1, sourceSessionId: 's', key: 'tab:d' });
+    assert.ok(browser.node('d'), 'unmounting a saved-only target is inert');
+    await adapter.handleMessage({ type: 'MRU_DELETE', sourceWindowId: 1, sourceSessionId: 's', key: 'tab:d' });
+    assert.equal(browser.node('d'), null);
+    assert.equal(browser.windows.size, 2);
+    assert.deepEqual(browser.state.windowToSession, { 1: 's', 2: 'other' });
+    assert.equal(browser.node('s').children.length, 2);
+});
+
+test('mutations reject stale sources, missing/recovery keys, private targets, and propagate lifecycle errors', async () => {
+    const calls = [];
+    const { browser, adapter } = await fixture({ deleteLogicalTab: async () => { calls.push('delete'); throw new Error('Delete failed'); } });
+    const request = { type: 'MRU_DELETE', sourceWindowId: 1, sourceSessionId: 's', key: 'tab:c' };
+    await assert.rejects(adapter.handleMessage({ ...request, sourceSessionId: 'obsolete' }), /session/i);
+    await assert.rejects(adapter.handleMessage({ ...request, key: 'tab:missing' }), /exist/i);
+    await assert.rejects(adapter.handleMessage({ ...request, key: 'deleted:old' }), /logical tab/i);
+    browser.windows.get(2).incognito = true;
+    await assert.rejects(adapter.handleMessage(request), /private/i);
+    assert.deepEqual(calls, []);
+    browser.windows.get(2).incognito = false;
+    await assert.rejects(adapter.handleMessage(request), /Delete failed/);
+    assert.deepEqual(calls, ['delete']);
+});
 
 test('only genuinely focused native selections enter recency, including late attachment', async () => {
     const { browser, adapter } = await fixture();

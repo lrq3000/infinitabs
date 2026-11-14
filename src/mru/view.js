@@ -22,7 +22,7 @@ export class MruController {
     }
 
     // Search/page parameters change before the worker answers, while the visible rows still belong to the previous response. Never combine those snapshots for navigation; a failed query also leaves only stale rows until a successful retry.
-    get canNavigate() { return !this.loading && !this.error; }
+    get canNavigate() { return !this.loading && !this.error && !this.busy; }
 
     // Current is derived from the authoritative source snapshot, not copied into a second selection model.
     get currentKey() { return this.context.currentBookmarkId ? `tab:${this.context.currentBookmarkId}` : null; }
@@ -42,6 +42,11 @@ export class MruController {
             }
             this.items = result.items;
             this.total = result.total;
+            // Deleting/unmounting with Live Only can empty the last page. Requery a real page rather than leaving surviving earlier results stranded behind an empty pane.
+            if (this.offset && this.offset >= this.total) {
+                this.offset = Math.floor(Math.max(0, this.total - 1) / this.pageSize) * this.pageSize;
+                return this.refresh();
+            }
             // Preserve the switcher's quick Enter-to-previous behavior while current remains visibly highlighted above that target.
             if (!this.items.some(item => item.key === this.selectedKey)) this.selectedKey = (this.items.find(item => item.key !== this.currentKey) || this.items[0])?.key || null;
             this.error = '';
@@ -106,6 +111,16 @@ export class MruController {
         try {
             await this.client.request({ ...this.context, type: 'MRU_ACTIVATE', key });
             this.onActivated();
+        } catch (error) { this.error = error.message; }
+        finally { this.busy = false; this.onChange(); }
+    }
+
+    async mutate(type, key) {
+        if (!key || this.busy || this.loading) return;
+        this.busy = true; this.onChange();
+        try {
+            await this.client.request({ ...this.context, type, key });
+            await this.refresh();
         } catch (error) { this.error = error.message; }
         finally { this.busy = false; this.onChange(); }
     }
@@ -182,7 +197,9 @@ export class MruView {
         let selected;
         for (const [index, item] of controller.items.entries()) {
             const tabRow = new TabRow({ document: this.root.ownerDocument, chrome: this.chrome,
-                onActivate: () => { controller.selectedKey = item.key; controller.activate(item.key); }
+                onActivate: () => { controller.selectedKey = item.key; controller.activate(item.key); },
+                onUnmount: item.deleted ? undefined : () => controller.mutate('MRU_UNMOUNT', item.key),
+                onDelete: item.deleted ? undefined : () => controller.mutate('MRU_DELETE', item.key)
             });
             const row = tabRow.element; row.dataset.key = item.key;
             row.id = `${this.list.id}-${index}`; row.setAttribute('role', 'option'); row.setAttribute('aria-selected', String(item.key === controller.selectedKey));

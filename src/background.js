@@ -60,7 +60,8 @@ let workspaceGeneration = 0;
 const mru = new MruChromeAdapter({
     chrome, initialize: init, getState: () => state, getRoot: ensureRootFolder,
     focusOrMount: focusOrMountLogicalTab, bindSession: bindWindowToSession,
-    refreshSession: reloadSessionAndPreserveState
+    refreshSession: reloadSessionAndPreserveState,
+    unmountLogicalTab: handleUnmountLogicalTab, deleteLogicalTab: handleDeleteLogicalTab
 });
 mru.start();
 

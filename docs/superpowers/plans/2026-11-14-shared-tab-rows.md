@@ -44,10 +44,10 @@
 
 **Interfaces:** `MruController.mutate(type, key)` sends `MRU_UNMOUNT` or `MRU_DELETE` with source context and stable key, refreshes without dismissing, serializes user actions and surfaces errors. `MruChromeAdapter.mutate(request)` validates/reacquires identity, delegates `unmountLogicalTab(windowId, logicalId)` or `deleteLogicalTab(windowId, logicalId)`, and removes only canonical saved bookmarks when no native session window exists.
 
-- [ ] Add failing tests for mounted/unmounted deletion, mounted-only unmount, source retargeting rejection, cross-session and moved-key targeting, saved-session deletion without opening, error propagation, and controller busy/refresh/nonactivation behavior.
-- [ ] Observe focused failures, implement the smallest routing and callback wiring, then verify focused tests pass.
-- [ ] Extend real browser checks for control clicks, confirmation cancellation and opt-out preference, Live Only removal, popup staying open after actions, correct saved-session targeting, and normal-view compatibility. Run the full existing MRU verification harness and the repository's Node tests.
-- [ ] Inspect the complete diff and commit `feat(mru): add shared unmount and delete tab controls`.
+- [x] Add failing tests for mounted/unmounted deletion, mounted-only unmount, source retargeting rejection, cross-session and moved-key targeting, saved-session deletion without opening, error propagation, and controller busy/refresh/nonactivation behavior.
+- [x] Observe focused failures, implement the smallest routing and callback wiring, then verify focused tests pass.
+- [x] Extend real browser checks for control clicks, confirmation cancellation and opt-out preference, Live Only removal, popup staying open after actions, correct saved-session targeting, and normal-view compatibility. Run the full existing MRU verification harness and the repository's Node tests.
+- [x] Inspect the complete diff and commit `feat(mru): add shared unmount and delete tab controls`.
 
 ### Task 3: Independent review and final verification
 

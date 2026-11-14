@@ -15,6 +15,60 @@ function fixture(currentBookmarkId = null) {
     return { controller, requests, client, rows };
 }
 
+test('row mutations preserve query/cursor, refresh their snapshot, and never activate or dismiss', async () => {
+    const { controller, requests } = fixture();
+    let activated = 0;
+    controller.onActivated = () => activated++;
+    await controller.search('fixture');
+    controller.selectedKey = 'tab:b';
+    await controller.mutate('MRU_UNMOUNT', 'tab:a');
+    assert.deepEqual(requests.at(-2), { sourceWindowId: 1, sourceSessionId: 's', liveOnly: false, currentBookmarkId: null, type: 'MRU_UNMOUNT', key: 'tab:a' });
+    assert.equal(requests.at(-1).type, 'MRU_QUERY');
+    assert.equal(requests.at(-1).query, 'fixture');
+    assert.equal(controller.selectedKey, 'tab:b');
+    assert.equal(activated, 0);
+});
+
+test('a pending row mutation blocks duplicate effects and activation until it completes', async () => {
+    const { controller, client, requests } = fixture();
+    await controller.refresh();
+    let finish;
+    const request = client.request;
+    client.request = message => message.type === 'MRU_DELETE' ? new Promise(resolve => { requests.push(message); finish = resolve; }) : request(message);
+    const mutation = controller.mutate('MRU_DELETE', 'tab:b');
+    await controller.mutate('MRU_DELETE', 'tab:b');
+    await controller.activate('tab:b');
+    assert.equal(requests.filter(message => message.type === 'MRU_DELETE').length, 1);
+    assert.equal(requests.filter(message => message.type === 'MRU_ACTIVATE').length, 0);
+    finish({ success: true });
+    await mutation;
+    assert.equal(controller.busy, false);
+});
+
+test('row action failures surface without deleting local rows or leaving the view busy', async () => {
+    const { controller, client } = fixture();
+    await controller.refresh();
+    client.request = async () => { throw new Error('Tab moved; refresh'); };
+    await controller.mutate('MRU_DELETE', 'tab:b');
+    assert.equal(controller.error, 'Tab moved; refresh');
+    assert.equal(controller.busy, false);
+    assert.equal(controller.items.length, 3);
+});
+
+test('deleting the only result on a final page returns to the last remaining page', async () => {
+    const { controller, client, rows } = fixture();
+    controller.pageSize = 2;
+    client.request = async message => {
+        if (message.type === 'MRU_DELETE') { rows.pop(); return { success: true }; }
+        return { items: rows.slice(message.offset, message.offset + message.limit), total: rows.length };
+    };
+    await controller.page(2);
+    await controller.mutate('MRU_DELETE', 'tab:c');
+    assert.equal(controller.offset, 0);
+    assert.equal(controller.total, 2);
+    assert.deepEqual(controller.items.map(item => item.key), ['tab:a', 'tab:b']);
+});
+
 // Delay only the worker transport, keeping the actual controller/paging logic under test. Responses capture the requested query and offset before a newer request can change them.
 class DelayedMruClient {
     constructor(count) {
