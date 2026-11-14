@@ -176,10 +176,15 @@ export class MruChromeAdapter {
 
     async context(sourceWindowId) {
         await this.ready();
-        const window = await this.chrome.windows.get(Number(sourceWindowId));
+        const window = await this.chrome.windows.get(Number(sourceWindowId), { populate: true });
         this.assertNormalWindow(window);
-        if (await this.isInternalWindow(window)) throw new Error('Choose a browsing window first');
         const sourceSessionId = this.getState().windowToSession[window.id];
+        window.tabs ||= await this.chrome.tabs.query({ windowId: window.id });
+        const workspaceUrl = this.chrome.runtime.getURL?.('mru/popup.html?bridge=workspace');
+        // A bound normal workspace bridge is a valid MRU SOURCE before any saved tab mounts. Keep it classified as internal for creation/import listeners; popup switchers and unbound bridges must remain excluded.
+        const workspaceSource = this.getState().sessionsById[sourceSessionId]?.windowId === window.id &&
+            window.tabs.every(tab => tab.url === workspaceUrl || tab.pendingUrl === workspaceUrl);
+        if (await this.isInternalWindow(window) && !workspaceSource) throw new Error('Choose a browsing window first');
         if (!sourceSessionId) throw new Error('Source session is no longer available');
         const key = `mru.window.${window.id}`;
         const stored = await this.chrome.storage.session?.get(key);
