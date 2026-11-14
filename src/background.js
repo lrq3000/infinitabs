@@ -1034,6 +1034,8 @@ async function restoreWorkspace(snapshot) {
     clearTimeout(workspaceUpdateTimer);
     workspaceUpdateTimer = null;
     let restored = false;
+    // Rollback keeps references only to the sessions we touch, not copies of their tab mappings. Created bridges are disposable until every replacement binds and originals close successfully.
+    const replacements = [];
 
     try {
         const currentWindows = await chrome.windows.getAll();
@@ -1042,9 +1044,10 @@ async function restoreWorkspace(snapshot) {
         for (const { sessionId } of snapshot.sessions) {
             const [folder] = await chrome.bookmarks.get(sessionId);
             if (!folder || folder.url) throw new Error(`Session folder ${sessionId} not found`);
+            replacements.push({ sessionId, previousSession: state.sessionsById[sessionId], previousTitle: folder.title, windowId: null });
         }
 
-        for (const sessionInfo of snapshot.sessions) {
+        for (const [index, sessionInfo] of snapshot.sessions.entries()) {
             const createData = {
                 // Reuse the existing internal bridge: recognized from its FIRST native event and across worker restarts, never a saved blank.
                 url: chrome.runtime.getURL('mru/popup.html?bridge=workspace'),
@@ -1060,6 +1063,7 @@ async function restoreWorkspace(snapshot) {
 
             console.log('restoreWorkspace: Creating window with geometry:', createData);
             const win = await chrome.windows.create(createData);
+            replacements[index].windowId = win.id;
             console.log('restoreWorkspace: Window created:', win.id);
 
             // Force maximization if needed (sometimes create doesn't apply it reliably?)
@@ -1081,10 +1085,26 @@ async function restoreWorkspace(snapshot) {
                     await chrome.windows.remove(win.id);
                 } catch (e) {
                     console.warn("Failed to close window", win.id, e);
+                    // An already-closed original is harmless. A surviving original is NOT a successful replacement: delayed startup events must not see its conflicting new binding.
+                    if ((await chrome.windows.getAll()).some(current => current.id === win.id)) throw e;
                 }
             }
         }
         restored = true;
+    } catch (error) {
+        const survivingIds = new Set((await chrome.windows.getAll()).map(win => win.id));
+        for (const { sessionId, previousSession, previousTitle, windowId } of replacements) {
+            if (windowId === null) continue;
+            // If an original was already closed before a later close failed, keep its successfully bound replacement rather than strand that session. Otherwise restore the exact original primary object/ownership.
+            if (previousSession && !survivingIds.has(previousSession.windowId)) continue;
+            if (previousSession) state.sessionsById[sessionId] = previousSession;
+            else delete state.sessionsById[sessionId];
+            delete state.windowToSession[windowId];
+            await chrome.bookmarks.update(sessionId, { title: previousTitle }).catch(rollbackError => console.warn('Failed to restore session title', rollbackError));
+            await chrome.windows.remove(windowId).catch(rollbackError => console.warn('Failed to close replacement bridge', windowId, rollbackError));
+        }
+        await persistState();
+        throw error;
     } finally {
         console.log("restoreWorkspace: Finished. Setting isRestoring = false");
         restoringWindowIds = null;
@@ -1130,7 +1150,6 @@ function init(options = {}) {
                 ? !browserSession?.['infinitabs.workspaceReady'] : options.isStartup);
             const shouldSkipBinding = isStartup && state.reloadOnRestart && state.lastKnownWorkspace?.sessions?.length;
             console.log('InfiniTabs: Lifecycle initialization', { isInstallation, isStartup, browserSessionReady: Boolean(browserSession?.['infinitabs.workspaceReady']) });
-            await chrome.storage.session?.set({ 'infinitabs.workspaceReady': true });
 
             if (!shouldSkipBinding) {
                 // Classify internal switchers from this existing window snapshot, rather than adding a tabs.query round trip for every browser window during startup.
@@ -1189,6 +1208,8 @@ function init(options = {}) {
                 await restoreWorkspace(state.lastKnownWorkspace);
             }
 
+            // A failed startup remains retryable. Publish the browser-lifetime marker only after all initialization/restoration work has succeeded.
+            await chrome.storage.session?.set({ 'infinitabs.workspaceReady': true });
             state.initialized = true;
             console.log("InfiniTabs: Background initialized.");
         } catch (e) {
@@ -1607,6 +1628,13 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (mru.isInternalTab(tab)) return;
     if (!state.initialized) await init();
 
+    // A user can type a real URL into the unmapped workspace bridge instead of creating a tab. Adopt it through the same import owner; an existing creation/reconciliation owner already catches up from the latest native metadata and must not be awaited recursively here.
+    if (changeInfo.url && !state.tabToLogical[tabId] && !tabImportQueue.pending.has(tabId)) {
+        const imported = await tabImportQueue.run(tabId, () => importCreatedTab(tab));
+        if (imported) await removeWorkspaceBridge(tab.windowId);
+        return; // Import consumed current native metadata; do not replay an older update after its awaited work.
+    }
+
     // Consume independent metadata before ANY group-related await. Replaying
     // this event's payload after resolution would overwrite a newer navigation.
     updateLogicalTabMetadata(tabId, changeInfo, tab);
@@ -1953,6 +1981,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                         if (windowId) {
                             // Fix: Prevent late bind if we are restoring, to avoid race condition
                             if (isRestoring) {
+                                sendResponse({ session: null });
+                                return;
+                            }
+                            // A request may itself have retried startup and closed its original source window. Never manufacture a session for that obsolete ID.
+                            if (chrome.windows.get && !await chrome.windows.get(windowId).catch(() => null)) {
                                 sendResponse({ session: null });
                                 return;
                             }

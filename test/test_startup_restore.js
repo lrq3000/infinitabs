@@ -142,6 +142,108 @@ class StartupFixture {
 }
 
 const cases = {
+    async 'failed original closure rolls back before delayed startup imports resume'() {
+        const f = await new StartupFixture().prepare();
+        f.hooks.remove = async id => { if (id === 1) throw new Error('Original window refuses closure'); };
+        const first = f.emit('tabs.onCreated', { ...f.tabs.values().next().value });
+        const failure = await first.then(() => null, error => error);
+        await Promise.allSettled([...f.events]);
+        assert.deepEqual(await f.saved(), f.original, 'A failed close must not import the same restored native tab again');
+        assert.ok(failure, 'An incomplete replacement must be reported, not marked successful');
+        assert.deepEqual([...f.windows.keys()], [1], 'Discard only our empty replacement; retain the original native window');
+        f.hooks.remove = null;
+        await f.listeners.onStartup();
+        await f.restored();
+    },
+    async 'second replacement failure restores original primary bindings'() {
+        const f = await new StartupFixture().prepare({ reload: false });
+        await f.listeners.onInstalled({ reason: 'update' });
+        const before = structuredClone(await f.session(1));
+        const second = await chrome.bookmarks.create({ parentId: f.root.id, title: 'Second saved session' });
+        await chrome.bookmarks.create({ parentId: second.id, title: 'C', url: 'https://example.test/c' });
+        const snapshot = { id: 'two', sessions: [...f.snapshot.sessions, { sessionId: second.id, windowId: 999 }] };
+        const create = chrome.windows.create;
+        let creates = 0;
+        chrome.windows.create = async data => {
+            if (++creates === 2) throw new Error('Second replacement creation failed');
+            return create(data);
+        };
+        const response = await f.send({ type: 'RESTORE_WORKSPACE', snapshot });
+        await f.drain();
+        assert.ok(response.error);
+        assert.deepEqual(await f.session(1), before, 'Rollback must restore the original owner and mounted logical identities');
+        assert.deepEqual([...f.windows.keys()], [1]);
+        assert.deepEqual((await chrome.storage.local.get('windowToSession')).windowToSession, { 1: f.folder.id });
+        await f.loadWorker();
+        await f.session(1);
+        await new Promise(resolve => setTimeout(resolve, 2100));
+        const last = (await chrome.storage.local.get('lastKnownWorkspace')).lastKnownWorkspace;
+        assert.deepEqual(last.sessions.map(session => [session.sessionId, session.windowId]), [[f.folder.id, 1]],
+            'Worker reconstruction/history must not resurrect a failed replacement mapping');
+    },
+    async 'restored workspace supports MRU context and mounting'() {
+        const f = await new StartupFixture().prepare();
+        await f.listeners.onStartup();
+        const { liveWindow } = await f.restored();
+        const context = await f.send({ type: 'MRU_CONTEXT', sourceWindowId: liveWindow });
+        assert.equal(context.error, undefined, 'A bound normal workspace bridge is a valid browsing source');
+        assert.equal(context.sourceSessionId, f.folder.id);
+        const response = await f.send({ type: 'MRU_ACTIVATE', ...context, key: `tab:${f.original[0].id}` });
+        await f.drain();
+        assert.equal(response.success, true, JSON.stringify(response));
+        const session = await f.session(liveWindow);
+        assert.equal(session.logicalTabs.filter(tab => tab.liveTabIds.length).length, 1);
+        assert.deepEqual(await f.saved(), f.original);
+        assert.ok([...f.tabs.values()].every(tab => !tab.url.includes('bridge=workspace')));
+    },
+    async 'transient startup failure retries unmounted restoration'() {
+        const f = await new StartupFixture().prepare();
+        const create = chrome.windows.create;
+        chrome.windows.create = async () => { throw new Error('Transient startup failure'); };
+        await assert.rejects(f.listeners.onStartup(), /Transient startup failure/);
+        chrome.windows.create = create;
+        await f.send({ type: 'GET_CURRENT_SESSION_STATE', windowId: 1 });
+        await f.restored();
+        assert.equal((await chrome.bookmarks.getChildren(f.root.id)).length, 1,
+            'The retry request for a now-closed old window must not create an orphan session');
+    },
+    async 'typing a URL into the workspace bridge creates one logical tab'() {
+        const f = await new StartupFixture().prepare();
+        await f.listeners.onStartup();
+        const { liveWindow } = await f.restored();
+        const bridge = [...f.tabs.values()].find(tab => tab.windowId === liveWindow);
+        await chrome.tabs.update(bridge.id, { url: 'https://example.test/typed', title: 'Typed navigation' });
+        await f.drain();
+        const session = await f.session(liveWindow);
+        const adopted = session.logicalTabs.filter(tab => tab.liveTabIds.includes(bridge.id));
+        assert.equal(adopted.length, 1, 'Navigating the internal placeholder must not leave a real user page untracked');
+        assert.equal(adopted[0].url, 'https://example.test/typed');
+        assert.equal((await f.saved()).length, 3);
+    },
+    async 'partial original closure keeps replacements for already closed owners'() {
+        const f = await new StartupFixture().prepare({ reload: false });
+        const secondWindow = f.addWindow();
+        const second = await chrome.bookmarks.create({ parentId: f.root.id, title: `Second [windowId:${secondWindow.id}]` });
+        await chrome.bookmarks.create({ parentId: second.id, title: 'C', url: 'https://example.test/c' });
+        const native = f.addTab(secondWindow.id, 'https://example.test/c');
+        await chrome.storage.local.set({ windowToSession: { 1: f.folder.id, [secondWindow.id]: second.id } });
+        await f.listeners.onInstalled({ reason: 'update' });
+        const beforeSecond = structuredClone(await f.session(secondWindow.id));
+        const snapshot = { id: 'two', sessions: [...f.snapshot.sessions, { sessionId: second.id, windowId: secondWindow.id }] };
+        f.hooks.remove = async id => { if (id === secondWindow.id) throw new Error('Second original refuses closure'); };
+        const result = await f.send({ type: 'RESTORE_WORKSPACE', snapshot });
+        await f.drain();
+        assert.ok(result.error);
+        assert.equal(f.windows.has(1), false);
+        assert.deepEqual(await f.session(secondWindow.id), beforeSecond);
+        assert.equal(f.tabs.has(native.id), true);
+        const mapping = (await chrome.storage.local.get('windowToSession')).windowToSession;
+        assert.equal(f.windows.size, 2, 'Retain the first replacement and the second original, with no redundant bridge');
+        assert.deepEqual(Object.values(mapping).sort(), [f.folder.id, second.id].sort());
+        for (const [windowId, sessionId] of Object.entries(mapping)) {
+            assert.equal((await f.session(Number(windowId))).sessionId, sessionId);
+        }
+    },
     async 'multiple windows preserve groups and an empty saved session'() {
         const f = await new StartupFixture().prepare();
         const group = await chrome.bookmarks.create({ parentId: f.folder.id, title: 'Saved research [blue]' });

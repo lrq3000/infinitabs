@@ -13,7 +13,7 @@ from threading import Thread
 from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
-from verify_active_tab_reload import FixtureHandler
+from verify_active_tab_reload import ActiveTabReloadCheck, FixtureHandler
 
 
 class StartupRestoreCheck:
@@ -124,7 +124,39 @@ class StartupRestoreCheck:
         session = bridge.evaluate("""async windowId => (await chrome.runtime.sendMessage({type:'GET_CURRENT_SESSION_STATE', windowId})).session""", window_id)
         assert session and session["sessionId"] == self.session_id
         assert all(not tab["liveTabIds"] for tab in session["logicalTabs"]), "Startup must not mount any saved tab, even a saved blank"
-        self.evidence["flows"].append({"name": f"browser-restart-{number}", "status": "pass", "window_id": window_id, "saved": self.saved()})
+        windows = self.worker.evaluate("() => chrome.windows.getAll()")
+        assert [win['id'] for win in windows if win['type'] == 'normal'] == [window_id], 'Obsolete originals must all disappear, not merely coexist with a matching replacement'
+
+        # Reuse the existing real stop/wake oracle, with the production bridge as its observer/message source. No injected tab mappings or simulated worker restart.
+        cold = ActiveTabReloadCheck(self.context, self.artifacts)
+        cold.fixture = cold.sidebar = bridge
+        cold.window_id, cold.worker = window_id, self.worker
+        awake, lifecycle = cold.cold_worker()
+        assert awake['sessionId'] == self.session_id
+        assert all(not tab['liveTabIds'] for tab in awake['logicalTabs'])
+        assert {tab['logicalId'] for tab in awake['logicalTabs']}.isdisjoint(tab['logicalId'] for tab in session['logicalTabs'])
+        self.attach(self.context)
+        self.evidence['worker_console'].extend(cold.evidence['worker_console'])
+
+        # Exercise shipped MRU context/open/activate messages before opening an ordinary tab. Activation comes from the real switcher popup so closing the workspace bridge cannot destroy its pending response.
+        source = bridge.evaluate("async sourceWindowId => chrome.runtime.sendMessage({type:'MRU_CONTEXT', sourceWindowId})", window_id)
+        assert 'error' not in source, source
+        with self.context.expect_page() as opened:
+            response = bridge.evaluate("async sourceWindowId => chrome.runtime.sendMessage({type:'MRU_OPEN', sourceWindowId})", window_id)
+        assert response.get('success'), response
+        popup = opened.value
+        popup.wait_for_url('**/mru/popup.html?sourceWindowId=*')
+        target = next(row for row in self.before if row['url'] and row['url'].startswith('http://127.0.0.1:'))
+        response = popup.evaluate("async request => chrome.runtime.sendMessage(request)",
+            {'type': 'MRU_ACTIVATE', **source, 'key': 'tab:' + target['id']})
+        assert response.get('success'), response
+        mounted = popup.evaluate("async windowId => (await chrome.runtime.sendMessage({type:'GET_CURRENT_SESSION_STATE', windowId})).session", window_id)
+        assert [tab['bookmarkId'] for tab in mounted['logicalTabs'] if tab['liveTabIds']] == [target['id']]
+        assert self.saved() == self.before
+        popup.close()
+        # Leave a mounted saved URL for the NEXT process restart, rather than testing only bridge-only restart input on the second pass.
+        self.evidence["flows"].append({"name": f"browser-restart-{number}", "status": "pass", "window_id": window_id,
+            "saved": self.saved(), 'worker_wake': lifecycle, 'mru_mounted_bookmark': target['id']})
 
 
 def main():
