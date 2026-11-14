@@ -53,6 +53,16 @@
 
 **Files:** Update this checklist and the progress ledger; change production/tests only for verified important findings.
 
-- [ ] Request one fresh-context whole-branch review against the design and Review Focus. Independently verify reported issues before editing; for important findings use a failing regression test first.
-- [ ] Run final Node and real-browser checks, inspect saved screenshots and console evidence, verify committed scope and clean task worktree. Commit any coherent tested corrections and completed checklist.
-- [ ] Report local commit hashes, checks, retained artifacts and any remaining limitations. Leave the branch/worktree intact; do not push or merge.
+- [x] Request one fresh-context whole-branch review against the design and Review Focus. Independently verify reported issues before editing; for important findings use a failing regression test first.
+- [x] Run final Node and real-browser checks, inspect saved screenshots and console evidence, verify committed scope and clean task worktree. Commit any coherent tested corrections and completed checklist.
+- [x] Report local commit hashes, checks, retained artifacts and any remaining limitations. Leave the branch/worktree intact; do not push or merge.
+
+## Final verification record
+
+- Full Node discovery: 124 tests passed, zero failures or skips. Command: `node --test --test-reporter=tap test/*.js test/*.mjs test/mru/*.test.mjs`.
+- Real-extension Chromium 153.0.8010.12: complete MRU/navigation, recovery, saved-session, 10,000-candidate benchmark, shared grouped/ungrouped layouts, narrow light/dark screenshots, and worker/browser restart scenarios passed. Evidence/profile: `C:/Users/33632/AppData/Local/Temp/opencode/mru-qa-g8xpe8e0`.
+- Real row-controls scenario: confirmation cancellation/opt-out, repeated no-op unmount, normal activation afterward, mounted/unmounted deletion, Live Only, cross-session routing, saved-session deletion without opening, opt-in recovery, popup persistence, and duplicate-title/URL session provenance passed. Evidence/profile: `C:/Users/33632/AppData/Local/Temp/opencode/mru-qa-5q2bogig`.
+- Browser command: `python -B test/verify_mru_switcher.py --headless --artifacts-dir C:/Users/33632/AppData/Local/Temp/opencode --executable C:/Users/33632/AppData/Local/ms-playwright/chromium-1243/chrome-win64/chrome.exe`; add `--scenario tab-controls` for row actions.
+- Independent review identified two important issues, both reproduced before correction: silent identity invalidation after no-op/aborted reconciliation, and missing All-sessions session provenance. No unresolved important findings or deferred minor findings remain.
+- Main-agent browser QA covers rendered layouts and native dialogs; the reviewer did not launch Chromium. Accessible labels were asserted in the browser accessibility tree, but no manual screen-reader or OS-shortcut testing was performed. Signing/packaging was not run; the actual unpacked `src/` extension was tested.
+- Retain the local branch/worktree and generated profiles/screenshots. The ignored `.superpowers/sdd/2026-11-14-shared-tab-rows/` directory holds task logs and the scratch ledger for optional manual cleanup. No installation, push, merge, publication, or ordinary-profile interaction occurred.

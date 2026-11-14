@@ -205,7 +205,8 @@ export class MruView {
             row.id = `${this.list.id}-${index}`; row.setAttribute('role', 'option'); row.setAttribute('aria-selected', String(item.key === controller.selectedKey));
             const isCurrent = item.key === controller.currentKey;
             tabRow.update(item, { current: isCurrent, disabled: controller.busy, displayMode: this.display.mode,
-                description: item.deleted ? 'Deleted · Restore' : undefined });
+                description: item.deleted ? 'Deleted · Restore' : undefined,
+                contextLabel: controller.allSessions ? `Session: ${item.sessionName || 'Previous session'}` : '' });
             row.classList.add('mru-result');
             if (isCurrent) row.setAttribute('aria-current', 'page');
             row.addEventListener('mousedown', event => event.preventDefault());

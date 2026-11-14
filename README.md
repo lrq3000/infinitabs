@@ -158,6 +158,8 @@ Recent shows the current tab first with a persistent highlight, followed by dist
 
 Normal and Recent use the same tab-row widgets: click the green mounted dot to unmount a tab while keeping its bookmark, or hover a row and click **×** to delete the logical tab/bookmark and its live projections. The existing deletion-confirmation setting applies to both views. Recent omits group headers, indentation and group-color lines; normal grouping is unchanged. Row actions do not activate the clicked tab or dismiss the separate switcher, and deleting a tab in an unopened saved session does not open that session.
 
+In **All sessions**, row/control tooltips and accessible labels identify the session, so same-title/same-URL logical tabs can be distinguished without adding another visible line.
+
 Under **Settings → Appearance → Tab display**, choose **Compact** (default, title only), **Title + domain**, or **Title + full URL**. The latter two use taller two-line rows; long addresses are visually truncated and the complete URL remains in the row tooltip. This global preference updates normal tabs, Recent, and the separate switcher together. Mounted state is indicated by the green dot, not repeated as Mounted/Unmounted description text.
 
 The existing **Live Only** toggle is shared by the ordinary tab tree and both Recent interfaces: on shows mounted/native tabs only, while off also includes unmounted logical tabs. Selecting a mounted tab focuses it; selecting an unmounted tab mounts only that tab in its canonical position/group. A result in an unopened saved session opens that session in another window without replacing the caller's session.

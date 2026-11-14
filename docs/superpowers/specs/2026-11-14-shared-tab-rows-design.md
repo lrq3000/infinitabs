@@ -11,6 +11,7 @@ Approved by the user on 2026-11-14: Recent must use the normal view's tab-row wi
 - Preserve normal selection, drag/drop, search, favicon fallback, tooltips, confirmation preferences, and lifecycle effects. Preserve Recent ordering, paging, filtering, independent current highlight and keyboard cursor, and popup activation/dismissal semantics.
 - A mounted dot only unmounts; deleting removes the logical bookmark and any live projection. Neither action activates the clicked row. Deleting from a closed saved session must not open a window or mount a tab.
 - Resolve Recent actions using stable bookmark identity and current authoritative state; do not persist another identity or placement mapping. Preserve opt-in-only deleted-tab recovery.
+- Keep All-sessions results distinguishable even for identical titles/URLs by including session provenance in row/control tooltips and accessible labels, without adding visible grouping or another compact-row line.
 - No dependencies, installs, main changes, publication, merging, or ordinary-browser-profile interaction. Use the approved isolated worktree and retain generated QA artifacts in the approved temporary directory.
 
 ## Approaches

@@ -1,6 +1,7 @@
 """Exercise the unpacked MRU extension in a retained, isolated Chromium profile; never touch the ordinary browser profile."""
 import argparse
 import json
+import re
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
@@ -135,13 +136,22 @@ class MruCheck(MovementCheck):
         assert self.active_tab()["id"] == active_id
         assert self.send_message({"type": "MRU_RECOVERY_STATUS"}) == {"enabled": False, "count": 0}
 
-        other = self.sidebar.evaluate("url => chrome.windows.create({url, focused:true})", base_url + "?other-row-session")
+        # Same title and URL in two sessions must still identify the destructive target without adding group headers or taller compact rows.
+        other = self.sidebar.evaluate("url => chrome.windows.create({url, focused:true})", base_url + "?C")
         other_tab_id = other["tabs"][0]["id"]
         other_target = self.wait_until(lambda: next((item for item in self.query(allSessions=True)["items"] if item.get("liveTabIds") == [other_tab_id]), None), "cross-session viewed row")
         self.select_native("C")
         popup = self.open_popup()
         popup.get_by_label("Recent tab scope").select_option("all")
         other_row = popup.locator("[data-key='" + other_target["key"] + "']")
+        source_target = next(item for item in self.query(allSessions=True)["items"] if item["key"] == "tab:" + self.bookmark_ids["C"])
+        source_row = popup.locator("[data-key='" + source_target["key"] + "']")
+        for target, candidate_row in ((other_target, other_row), (source_target, source_row)):
+            expect(candidate_row).to_have_attribute("title", target["url"] + "\nSession: " + target["sessionName"])
+            expect(candidate_row).to_have_accessible_name(re.compile(re.escape(target["sessionName"])))
+            candidate_row.hover()
+            expect(candidate_row.locator(".tab-delete-btn")).to_have_accessible_name(re.compile(re.escape(target["sessionName"])))
+        assert source_target["sessionName"] != other_target["sessionName"]
         other_row.locator(".live-indicator-wrapper").click()
         self.wait_until(lambda: not self.sidebar.evaluate("id => chrome.tabs.get(id).catch(() => null)", other_tab_id), "cross-session native projection closed")
         expect(other_row.locator(".live-indicator-wrapper")).to_be_disabled()

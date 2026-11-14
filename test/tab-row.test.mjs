@@ -78,3 +78,26 @@ test('shared deletion confirmation honors opt-out and cancellation', async () =>
     assert.equal(await TabRow.confirmDeletion(chrome, confirm), true);
     assert.equal(prompts, 1);
 });
+
+test('shared row action guard rejects repeated clicks while confirmation preferences are pending', async () => {
+    let finishRead, reads = 0, prompts = 0, deletions = 0, unmounts = 0;
+    // Exercise the production action method without inventing a DOM implementation. Chrome storage and native confirmation are the only external boundaries here.
+    const row = Object.assign(Object.create(TabRow.prototype), {
+        mounted: true,
+        chrome: { storage: { local: { get: () => { reads++; return new Promise(resolve => { finishRead = resolve; }); } } } },
+        document: { defaultView: { confirm: () => { prompts++; return true; }, alert: message => assert.fail(message) } },
+        onDelete: async () => { deletions++; },
+        onUnmount: async () => { unmounts++; }
+    });
+    const first = row.perform('delete');
+    await row.perform('delete');
+    await row.perform('unmount');
+    assert.equal(reads, 1);
+    assert.equal(deletions, 0);
+    finishRead({ confirmDeleteLogicalTab: true });
+    await first;
+    assert.equal(prompts, 1);
+    assert.equal(deletions, 1);
+    assert.equal(unmounts, 0);
+    assert.equal(row.pending, false);
+});

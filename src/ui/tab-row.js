@@ -6,8 +6,6 @@ export class TabRow {
         this.element.tabRow = this;
         this.indicatorWrapper = this.create('button', 'live-indicator-wrapper');
         this.indicatorWrapper.type = 'button';
-        this.indicatorWrapper.title = 'Close live tab (keep bookmark)';
-        this.indicatorWrapper.setAttribute('aria-label', this.indicatorWrapper.title);
         this.indicatorWrapper.append(this.create('span', 'live-indicator'));
         this.icon = this.create('img', 'tab-icon'); this.icon.alt = '';
         this.text = this.create('span', 'tab-text');
@@ -16,8 +14,6 @@ export class TabRow {
         this.text.append(this.title, this.descriptionElement);
         this.deleteButton = this.create('button', 'tab-delete-btn', '×');
         this.deleteButton.type = 'button';
-        this.deleteButton.title = 'Delete logical tab and bookmark';
-        this.deleteButton.setAttribute('aria-label', this.deleteButton.title);
         this.deleteButton.hidden = !onDelete;
         this.element.append(this.indicatorWrapper, this.icon, this.text, this.deleteButton);
         this.element.addEventListener('click', event => { if (!this.disabled) this.onActivate?.(event); });
@@ -48,6 +44,12 @@ export class TabRow {
         return !items.confirmDeleteLogicalTab || confirm('Delete this logical tab (bookmark)?');
     }
 
+    labelControl(control, label, contextLabel) {
+        const text = contextLabel ? `${label}\n${contextLabel}` : label;
+        control.title = text;
+        control.setAttribute('aria-label', text);
+    }
+
     async perform(action) {
         if (this.disabled || this.pending || (action === 'unmount' && !this.mounted)) return;
         this.pending = true;
@@ -62,7 +64,7 @@ export class TabRow {
         } finally { this.pending = false; }
     }
 
-    update(tab, { current = false, selected = false, groupColor, indented = false, disabled = false, displayMode = 'compact', description } = {}) {
+    update(tab, { current = false, selected = false, groupColor, indented = false, disabled = false, displayMode = 'compact', description, contextLabel = '' } = {}) {
         this.mounted = Boolean(tab.liveTabIds?.length);
         this.disabled = disabled;
         this.element.classList.toggle('live', this.mounted);
@@ -73,9 +75,13 @@ export class TabRow {
         this.element.setAttribute('aria-disabled', String(disabled));
         this.indicatorWrapper.disabled = disabled || !this.mounted;
         this.deleteButton.disabled = disabled;
-        this.element.title = tab.url || '';
+        // Preserve provenance for otherwise identical All-sessions results without changing compact row geometry or introducing grouping.
+        this.element.title = (tab.url || '') + (contextLabel ? `\n${contextLabel}` : '');
+        this.labelControl(this.indicatorWrapper, 'Close live tab (keep bookmark)', contextLabel);
+        this.labelControl(this.deleteButton, 'Delete logical tab and bookmark', contextLabel);
         // Bookmark titles and URLs may contain arbitrary markup-like strings. Never interpolate them into HTML.
         const title = tab.title || tab.url || '';
+        this.element.setAttribute('aria-label', title + (contextLabel ? ` · ${contextLabel}` : ''));
         if (this.title.textContent !== title) this.title.textContent = title;
         this.descriptionElement.textContent = description ?? TabRow.description(tab.url, displayMode);
         this.descriptionElement.hidden = !this.descriptionElement.textContent;
