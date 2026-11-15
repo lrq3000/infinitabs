@@ -497,8 +497,8 @@ function onMessage(message, sender, sendResponse) {
                 }
             }
             renderSession(currentSession);
-            // Re-apply search if exists
-            if (searchInput.value) performSearch();
+            // Background updates refresh highlights only; restarting search navigation here can scroll away from a fully visible selected tab.
+            if (searchInput.value) performSearch({ navigate: false });
         }
     } else if (message.type === "HISTORY_UPDATED") {
         loadPastWorkspaces();
@@ -540,7 +540,7 @@ function clearSearch() {
     input.focus();
 }
 
-function performSearch() {
+function performSearch({ navigate = true } = {}) {
     const query = searchInput.value;
 
     // Background tree refreshes may reapply its query while Recent is visible. Only the visible input should control the shared clear button.
@@ -589,7 +589,7 @@ function performSearch() {
     });
 
     // A hidden tree refresh may rebuild normal matches, but must never route its automatic first-match selection into Recent's shared navigation buttons.
-    if (currentMatches.length > 0 && !recentActive) {
+    if (currentMatches.length > 0 && !recentActive && navigate) {
         navigateSearch(1); // Go to first match
     }
 }
@@ -617,7 +617,7 @@ function navigateSearch(direction) {
 function scrollToActiveTab() {
     const activeEl = tabsContainer.querySelector('.tab-item.active-live');
     if (activeEl) {
-        activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        scrollElementIntoViewWithContext(activeEl, { contextRows: 0, block: 'center' });
     } else if (currentSession?.lastActiveLogicalTabId) {
         // Active tab might be in a collapsed group - find and expand it
         const activeTab = currentSession.logicalTabs.find(
@@ -629,7 +629,7 @@ function scrollToActiveTab() {
             // Scroll after re-render
             requestAnimationFrame(() => {
                 const el = tabsContainer.querySelector('.tab-item.active-live');
-                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                if (el) scrollElementIntoViewWithContext(el, { contextRows: 0, block: 'center' });
             });
         }
     }
@@ -966,25 +966,30 @@ function updateTabElement(el, tab, session, shouldScroll, groupColor) {
 }
 
 /**
- * Scrolls a logical tab element (or group header) into view with appropriate context.
- * It attempts to show preceding siblings to provide context.
+ * Reveals a clipped logical tab (or group header), optionally including preceding rows for context.
  *
  * @param {HTMLElement} element The element to scroll into view.
+ * @param {{contextRows?: number, block?: ScrollLogicalPosition}} options Context/alignment for automatic reveal or the explicit locator.
  */
-function scrollElementIntoViewWithContext(element) {
+function scrollElementIntoViewWithContext(element, { contextRows = 2, block = 'start' } = {}) {
     window.requestAnimationFrame(() => {
-        // Check if element is still connected before scrolling
-        if (!element || !element.isConnected) return;
+        // Measure after DOM patching; mounting/closing can replace rows, and Recent hides the normal tree entirely.
+        if (!element || !element.isConnected || !element.getClientRects().length || !tabsContainer.clientHeight) return;
+
+        const viewportTop = tabsContainer.getBoundingClientRect().top + tabsContainer.clientTop;
+        const viewportBottom = viewportTop + tabsContainer.clientHeight;
+        const bounds = element.getBoundingClientRect();
+        // Check the selected row itself, not its preceding context: an already-visible selection must never reposition the user's view.
+        if (bounds.top >= viewportTop && bounds.bottom <= viewportBottom) return;
 
         let target = element;
-        // Try to include previous siblings to provide context (e.g. 2 rows above)
-        if (target.previousElementSibling) {
-            target = target.previousElementSibling;
-            if (target.previousElementSibling) {
-                target = target.previousElementSibling;
-            }
+        // Keep the usual two preceding rows only when they fit together with the selected row, including detailed display modes or short panels.
+        for (let i = 0; i < contextRows && target.previousElementSibling; i++) {
+            const previous = target.previousElementSibling;
+            if (bounds.bottom - previous.getBoundingClientRect().top > tabsContainer.clientHeight) break;
+            target = previous;
         }
-        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        target.scrollIntoView({ behavior: 'smooth', block });
     });
 }
 
