@@ -1,0 +1,35 @@
+name: Release distribution ZIP
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+# Do not cancel a run between deleting an old ZIP and uploading its replacement.
+# A recreated release has a new ID, so an obsolete run cannot target its assets.
+concurrency:
+  group: release-zip-${{ github.event.release.id }}
+  cancel-in-progress: false
+
+jobs:
+  package-and-attach:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Release events identify the tagged commit; never package a later main or a moved tag.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Test distribution packaging and replacement
+        run: python -m unittest discover -s test -p test_release_package.py
+      - name: Build, verify, and attach ZIP (replace existing)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_ID: ${{ github.event.release.id }}
+        run: python scripts/package_release.py --tag "$RELEASE_TAG" --release-id "$RELEASE_ID"
