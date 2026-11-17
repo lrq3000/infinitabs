@@ -31,6 +31,17 @@ test('composition, modifier-only and AltGr text never become shortcut bindings',
     }
 });
 
+test('localized Chrome accelerator labels still match arrows and derive hold independently of the key label', async () => {
+    assert.equal(HotkeyChord.primaryModifier('Ctrl+Bas'), 'Ctrl');
+    assert.equal(HotkeyChord.primaryModifier('Ctrl+UnrecognizedLocalizedKey'), 'Ctrl');
+    assert.equal(HotkeyChord.normalize('Ctrl+Bas'), 'Ctrl+Down');
+    const { registry } = fixture({}, [{ name: 'open-mru-switcher', shortcut: 'Ctrl+Bas' }]); await registry.ready();
+    assert.equal(registry.binding('open-mru-switcher'), 'Ctrl+Bas');
+    assert.equal(registry.match(key('ArrowDown', { ctrlKey: true })), 'open-mru-switcher');
+    await assert.rejects(registry.setBinding('mru-newer', 'Ctrl+Down'), /already assigned/);
+    registry.dispose();
+});
+
 test('actual native assignment overrides the suggested default and unbound is displayed honestly', async () => {
     const { registry, commands } = fixture({}, [{ name: 'open-mru-switcher', shortcut: 'Alt+Shift+Q' }]);
     await registry.ready();

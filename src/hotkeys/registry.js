@@ -8,13 +8,14 @@ export const HOTKEY_ACTIONS = Object.freeze([
 ]);
 
 const MODIFIERS = ['Ctrl', 'Alt', 'Shift', 'Command'];
+const MODIFIER_ALIASES = { Control: 'Ctrl', MacCtrl: 'Ctrl', Strg: 'Ctrl', Maj: 'Shift', Umschalt: 'Shift', Cmd: 'Command', '⌘': 'Command', '⌃': 'Ctrl', '⌥': 'Alt', '⇧': 'Shift' };
 const MODIFIER_KEYS = new Set(['Control', 'Alt', 'AltGraph', 'Shift', 'Meta', ...MODIFIERS]);
-const KEYS = { ArrowDown: 'Down', ArrowUp: 'Up', ArrowLeft: 'Left', ArrowRight: 'Right', ' ': 'Space', '+': 'Plus', ',': 'Comma', '.': 'Period', Esc: 'Escape' };
+const KEYS = { ArrowDown: 'Down', ArrowUp: 'Up', ArrowLeft: 'Left', ArrowRight: 'Right', ' ': 'Space', '+': 'Plus', ',': 'Comma', '.': 'Period', Esc: 'Escape', Bas: 'Down', Haut: 'Up', Gauche: 'Left', Droite: 'Right', Espace: 'Space', Entrée: 'Enter', Échap: 'Escape', '↓': 'Down', '↑': 'Up', '←': 'Left', '→': 'Right' };
 
 export class HotkeyChord {
     static normalize(value) {
         if (typeof value !== 'string' || !value) return null;
-        const parts = value.split('+');
+        const parts = value.split('+').map(part => MODIFIER_ALIASES[part] || part);
         const key = parts.pop();
         if (!key || MODIFIER_KEYS.has(key) || parts.some(part => !MODIFIERS.includes(part)) || new Set(parts).size !== parts.length) return null;
         if (parts.includes('Ctrl') && parts.includes('Alt')) return null; // AltGr is text input on BÉPO and many other layouts, not an extension shortcut.
@@ -30,7 +31,8 @@ export class HotkeyChord {
     }
 
     static primaryModifier(binding) {
-        const parts = this.normalize(binding)?.split('+').slice(0, -1) || [];
+        // Chrome returns localized accelerator text, not canonical manifest syntax. Hold detection must not depend on recognizing a localized non-modifier key (for example French "Bas").
+        const parts = typeof binding === 'string' ? binding.split('+').slice(0, -1).map(part => MODIFIER_ALIASES[part] || part) : [];
         return ['Ctrl', 'Alt', 'Command', 'Shift'].find(modifier => parts.includes(modifier)) || null;
     }
 

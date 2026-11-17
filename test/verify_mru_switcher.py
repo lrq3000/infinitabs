@@ -3,6 +3,9 @@ import argparse
 import json
 import re
 import tempfile
+import sys
+import ctypes
+from ctypes import wintypes
 from pathlib import Path
 from urllib.parse import urlparse
 from http.server import ThreadingHTTPServer
@@ -12,7 +15,227 @@ from verify_move_logical_tabs import MovementCheck
 from verify_active_tab_reload import FixtureHandler, ActiveTabReloadCheck
 
 
+class NativeShortcutDriver:
+    """Send bounded Windows accelerators only while the isolated QA browser owns foreground focus."""
+
+    def __init__(self, expected_title):
+        self.user32 = ctypes.WinDLL('user32', use_last_error=True)
+        self.user32.GetForegroundWindow.restype = wintypes.HWND
+        self.user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+        self.user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+        self.user32.keybd_event.argtypes = (wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_size_t)
+        # CDP bringToFront selects a Chrome tab but does not necessarily acquire Windows foreground focus. Target only this run's unique fixture title, never the current unrelated application.
+        targets = []
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def find_window(window, _):
+            text = ctypes.create_unicode_buffer(512)
+            self.user32.GetWindowTextW(window, text, len(text))
+            if expected_title in text.value:
+                targets.append(window)
+            return True
+        self.user32.EnumWindows.argtypes = (callback_type, wintypes.LPARAM)
+        self.user32.EnumWindows(callback_type(find_window), 0)
+        assert len(targets) == 1, f'Native input stopped: expected exactly one isolated QA window, found {len(targets)}'
+        self.user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+        self.user32.SetForegroundWindow(targets[0])
+        window = self.user32.GetForegroundWindow()
+        title = ctypes.create_unicode_buffer(512)
+        self.user32.GetWindowTextW(window, title, len(title))
+        assert expected_title in title.value, f'Native input stopped: expected isolated QA title, found {title.value!r}'
+        pid = wintypes.DWORD()
+        self.user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
+        self.pid = pid.value
+
+    def send(self, key, release=False):
+        pid = wintypes.DWORD()
+        self.user32.GetWindowThreadProcessId(self.user32.GetForegroundWindow(), ctypes.byref(pid))
+        assert pid.value == self.pid, 'Native input stopped: focus left the isolated QA browser process'
+        self.user32.keybd_event(key, 0, 2 if release else 0, 0)
+
+    def press(self, key):
+        self.send(key)
+        self.send(key, release=True)
+
+
 class MruCheck(MovementCheck):
+    def close_with_key(self, popup, key):
+        try:
+            popup.keyboard.press(key)
+        except PlaywrightError:
+            # Closing on keydown can destroy the CDP target before Playwright sends trailing synthetic keyups. Accept only that observed closure.
+            if not popup.is_closed():
+                raise
+        self.wait_until(lambda: popup.is_closed(), f'{key} closes switcher')
+
+    def native_hotkeys(self):
+        if sys.platform != 'win32':
+            self.evidence['native_shortcuts'] = {'status': 'not tested', 'reason': 'Native accelerator driver is Windows-only; DOM and command-handler checks remain separate.'}
+            return
+        for name in 'ABC':
+            self.select_native(name)
+        source = next(page for page in self.context.pages if page.url.endswith('/fixture?C'))
+        marker = 'InfiniTabs hotkeys QA ' + self.artifacts.name
+        source.evaluate('title => document.title = title', marker)
+        source.bring_to_front()
+        driver = NativeShortcutDriver(marker)
+        active_before = self.active_tab()['id']
+        try:
+            driver.send(0x11)  # Keep Ctrl down across browser creation, repeated accelerators and DOM reverse navigation.
+            with self.context.expect_page() as opened:
+                driver.press(0x28)
+            popup = opened.value
+            popup.on('pageerror', lambda error: self.evidence['page_errors'].append(str(error)))
+            selected = popup.locator('[aria-selected="true"]')
+            expect(selected).to_have_attribute('data-key', 'tab:' + self.bookmark_ids['B'])
+            driver.press(0x28)
+            expect(selected).to_have_attribute('data-key', 'tab:' + self.bookmark_ids['A'])
+            driver.press(0x26)
+            expect(selected).to_have_attribute('data-key', 'tab:' + self.bookmark_ids['B'])
+            assert self.active_tab()['id'] == active_before, 'Held navigation activated before release'
+            popup.screenshot(path=str(self.artifacts / 'native-held-recent-switcher.png'))
+            driver.send(0x11, release=True)
+            self.wait_until(lambda: popup.is_closed() and self.active_tab()['id'] == self.live_ids['B'], 'native Ctrl release switches to B')
+
+            # The native opener arms the gesture; DOM Ctrl+Escape verifies the handler without invoking Windows' reserved Ctrl+Escape Start-menu shortcut.
+            self.select_native('C')
+            driver.send(0x11)
+            with self.context.expect_page() as opened:
+                driver.press(0x28)
+            popup = opened.value
+            expect(popup.locator('[aria-selected="true"]')).to_have_attribute('data-key', 'tab:' + self.bookmark_ids['B'])
+            self.close_with_key(popup, 'Control+Escape')
+            driver.send(0x11, release=True)
+            assert self.active_tab()['id'] == self.live_ids['C'], 'Cancellation activated a selected tab'
+
+            driver.send(0x11)
+            with self.context.expect_page() as opened:
+                driver.press(0x28)
+            popup = opened.value
+            row_b = popup.locator('[data-key="tab:' + self.bookmark_ids['B'] + '"]')
+            row_b.locator('.live-indicator-wrapper').click()
+            self.wait_until(lambda: not self.logical('B')['liveTabIds'], 'held-gesture row control unmounts B')
+            driver.send(0x11, release=True)
+            assert not popup.is_closed(), 'A row action left release-to-confirm armed'
+            assert self.active_tab()['id'] == self.live_ids['C']
+            popup.locator('[data-key="tab:' + self.bookmark_ids['A'] + '"]').click()
+            self.wait_until(lambda: popup.is_closed() and self.active_tab()['id'] == self.live_ids['A'], 'mouse click still switches during keyboard mode')
+            self.evidence['native_shortcuts'] = {'status': 'pass', 'opening': 'native Windows Ctrl+Down', 'repeat': 'native Ctrl+Down', 'reverse': 'native Ctrl+Up', 'commit': 'native Ctrl release', 'cancel': 'DOM Ctrl+Escape while native Ctrl held; OS-reserved Ctrl+Escape not sent', 'row_controls': 'unmount disarms release; clicking selects'}
+        finally:
+            # Do not send cleanup input into an unrelated application if the operator changed foreground focus; fail visibly rather than continuing an unchecked batch.
+            driver.send(0x11, release=True)
+
+    def open_keyboard_popup(self):
+        context = self.query()['context']
+        shortcut = self.sidebar.evaluate("async () => (await chrome.commands.getAll()).find(command => command.name === 'open-mru-switcher').shortcut")
+        popup = self.open_popup()
+        self.gesture_number = getattr(self, 'gesture_number', 0) + 1
+        gesture = {'id': f'qa-runtime-{self.artifacts.name}-{self.gesture_number}', 'shortcut': shortcut, 'sequence': 0}
+        self.sidebar.evaluate("async data => chrome.runtime.sendMessage({type:'MRU_CONTEXT',sourceWindowId:data.context.sourceWindowId,context:{...data.context,gesture:data.gesture}})", {'context': context, 'gesture': gesture})
+        return popup, gesture
+
+    def gesture_transport(self):
+        # Native accelerator ownership is unit-tested separately. Exercise the real popup/runtime transport and DOM key releases without injecting OS keys into an unrelated foreground application.
+        for name in 'ABC':
+            self.select_native(name)
+        popup, gesture = self.open_keyboard_popup()
+        selected = popup.locator('[aria-selected="true"]')
+        expect(selected).to_have_attribute('data-key', 'tab:' + self.bookmark_ids['B'])
+        popup.keyboard.down('Control')
+        gesture['sequence'] = 1
+        self.sidebar.evaluate("async gesture => chrome.runtime.sendMessage({type:'MRU_ADVANCE',gesture})", gesture)
+        expect(selected).to_have_attribute('data-key', 'tab:' + self.bookmark_ids['A'])
+        popup.keyboard.press('ArrowUp')
+        expect(selected).to_have_attribute('data-key', 'tab:' + self.bookmark_ids['B'])
+        assert self.active_tab()['id'] == self.live_ids['C'], 'Held navigation activated before release'
+        popup.screenshot(path=str(self.artifacts / 'held-recent-switcher.png'))
+        try:
+            popup.keyboard.up('Control')
+        except PlaywrightError:
+            if not popup.is_closed():
+                raise
+        self.wait_until(lambda: popup.is_closed() and self.active_tab()['id'] == self.live_ids['B'], 'runtime gesture and DOM Ctrl release switch to B')
+        self.evidence['flows'].append({'name': 'real-runtime-gesture-held-reverse-and-release', 'status': 'pass', 'route': 'real extension runtime messages and popup DOM input; native accelerator route is separate'})
+        self.select_native('C')
+        popup, _ = self.open_keyboard_popup()
+        popup.keyboard.down('Control')
+        self.close_with_key(popup, 'Control+Escape')
+        assert self.active_tab()['id'] == self.live_ids['C'], 'Ctrl+Escape committed instead of cancelling'
+        popup, _ = self.open_keyboard_popup()
+        popup.keyboard.down('Control')
+        popup.locator('[data-key="tab:' + self.bookmark_ids['B'] + '"] .live-indicator-wrapper').click()
+        self.wait_until(lambda: not self.logical('B')['liveTabIds'], 'row action unmounts B during held gesture')
+        popup.keyboard.up('Control')
+        assert not popup.is_closed(), 'Row action did not disarm the held gesture'
+        assert self.active_tab()['id'] == self.live_ids['C']
+        popup.locator('[data-key="tab:' + self.bookmark_ids['A'] + '"]').click()
+        self.wait_until(lambda: popup.is_closed() and self.active_tab()['id'] == self.live_ids['A'], 'clicking still switches after a held-mode row action')
+        result = self.send_message({**self.query()['context'], 'type': 'MRU_ACTIVATE', 'key': 'tab:' + self.bookmark_ids['B']})
+        assert result.get('success'), result
+        self.live_ids['B'] = self.logical('B')['liveTabIds'][0]
+        self.evidence['flows'].append({'name': 'held-cancel-pointer-disarm-and-click-activation', 'status': 'pass'})
+
+    def hotkeys(self):
+        # Exercise the shipped editor rather than copying its DOM or mutating preferences to make assertions pass.
+        options = self.context.new_page()
+        options.goto(self.sidebar_url.replace('sidebar.html', 'options.html'))
+        options.on('pageerror', lambda error: self.evidence['page_errors'].append(str(error)))
+        newer = options.locator('[data-hotkey-id="mru-newer"] button:not([data-reset])')
+        opener = options.locator('[data-hotkey-id="open-mru-switcher"] button')
+        expect(newer).to_have_text('Ctrl+Up')
+        actual = options.evaluate("async () => (await chrome.commands.getAll()).find(command => command.name === 'open-mru-switcher').shortcut")
+        expect(opener).to_have_text(actual or 'Not assigned')
+        normalized = options.evaluate("async binding => (await import('./hotkeys/registry.js')).HotkeyChord.normalize(binding)", actual)
+        assert normalized == 'Ctrl+Down', f'New profile did not register Ctrl+Down: {actual}'
+        newer.click()
+        options.keyboard.press('Control+Space')
+        expect(newer).to_have_text('Ctrl+Space')
+        expect(options.locator('#hotkeys-status')).to_have_text('Shortcut saved.')
+        options.reload()
+        expect(newer).to_have_text('Ctrl+Space')
+        newer.click()
+        options.keyboard.press('Enter')
+        expect(options.locator('#hotkeys-status')).to_contain_text('already assigned')
+        options.keyboard.press('Escape')
+        expect(newer).to_have_text('Ctrl+Space')
+        for width in (800, 360):
+            options.set_viewport_size({'width': width, 'height': 820})
+            assert options.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'Hotkey settings overflow at {width}px'
+            options.screenshot(path=str(self.artifacts / f'hotkey-settings-{width}.png'), full_page=True)
+        options.close()
+
+        for name in 'ABC':
+            self.select_native(name)
+        if self.sidebar.locator('#recent-tabs-container').is_hidden():
+            self.sidebar.locator('#recent-tabs-btn').click()
+        popup = self.open_popup()
+        search = popup.get_by_role('combobox', name='Search recent tabs')
+        selected = popup.locator('[aria-selected="true"]')
+        expect(selected).to_have_attribute('data-key', 'tab:' + self.bookmark_ids['B'])
+        search.press('Control+ArrowUp')
+        expect(selected).to_have_attribute('data-key', 'tab:' + self.bookmark_ids['B'])
+        search.press('Control+Space')
+        expect(selected).to_have_attribute('data-key', 'tab:' + self.bookmark_ids['C'])
+        # Ctrl+Space was reverse navigation, not a native opening gesture: its release must not dismiss a mouse-opened popup.
+        assert not popup.is_closed()
+        popup.screenshot(path=str(self.artifacts / 'hotkey-remapped-switcher.png'))
+        self.close_with_key(popup, 'Control+Escape')
+
+        options = self.context.new_page()
+        options.goto(self.sidebar_url.replace('sidebar.html', 'options.html'))
+        options.get_by_role('button', name='Reset shortcut: Select newer recent tab', exact=True).click()
+        expect(options.locator('[data-hotkey-id="mru-newer"] button:not([data-reset])')).to_have_text('Ctrl+Up')
+        with self.context.expect_page() as native_editor:
+            options.locator('[data-hotkey-id="open-mru-switcher"] button').click()
+        expect(native_editor.value).to_have_url('chrome://extensions/shortcuts')
+        native_editor.value.close()
+        options.close()
+        self.evidence['flows'].append({'name': 'hotkey-settings-capture-reset-persistence-native-editor-and-popup-remapping', 'status': 'pass'})
+        self.gesture_transport()
+        if self.test_native_hotkeys:
+            self.native_hotkeys()
+        else:
+            self.evidence['native_shortcuts'] = {'status': 'not tested', 'reason': 'Guarded native runs stopped before any keystroke: Windows foreground did not expose the isolated Chromium window. Use --native-hotkeys only with that QA window accessible. Ctrl+Escape is reserved for Windows Start and cannot be overridden by the extension.'}
+
     def tab_rows(self):
         # Use the shipped options UI and real extension pages: this catches divergent DOM/CSS and preference propagation, not merely matching helper outputs.
         target = next(tab for tab in self.session()["logicalTabs"] if tab["liveTabIds"] and tab["url"].startswith("http"))
@@ -613,7 +836,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts-dir", type=Path, required=True)
     parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--scenario", choices=("full", "tab-rows", "tab-controls"), default="full")
+    parser.add_argument("--native-hotkeys", action="store_true", help="Opt in to guarded Windows accelerator input; requires the isolated QA window to be available for foreground focus")
+    parser.add_argument("--scenario", choices=("full", "tab-rows", "tab-controls", "hotkeys"), default="full")
     parser.add_argument("--executable", type=Path, help="Reuse an installed full Chromium instead of downloading the revision expected by Python Playwright")
     args = parser.parse_args()
     artifacts = Path(tempfile.mkdtemp(prefix="mru-qa-", dir=args.artifacts_dir))
@@ -632,12 +856,13 @@ def main():
             try:
                 context.set_default_timeout(10000)
                 check = MruCheck(context, artifacts)
+                check.test_native_hotkeys = args.native_hotkeys
                 check.evidence.update(extension_path=str(extension), isolated_profile=str(profile), chromium=context.browser.version, headless=args.headless, executable=str(args.executable) if args.executable else "Playwright bundled Chromium")
                 check.prepare(f"http://127.0.0.1:{server.server_port}/fixture", names="ABC")
                 if args.scenario != "full":
-                    (check.tab_rows if args.scenario == "tab-rows" else check.row_controls)()
+                    {"tab-rows": check.tab_rows, "tab-controls": check.row_controls, "hotkeys": check.hotkeys}[args.scenario]()
                     assert not check.evidence["page_errors"], check.evidence["page_errors"]
-                    print("Shared tab row browser checks passed", flush=True)
+                    print(f"MRU browser scenario passed: {args.scenario}", flush=True)
                     return
                 check.run()
                 check.tab_rows()

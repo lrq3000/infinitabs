@@ -43,13 +43,13 @@ if (parameters.has('bridge')) {
     try {
         const context = await client.request({ type: 'MRU_POPUP_CONTEXT', sourceWindowId: Number(parameters.get('sourceWindowId')) });
         keyboard.begin(context.gesture);
-        view = new MruView({ root, client, context, showLiveToggle: true, onActivated: close, onDismiss: close });
+        view = new MruView({ root, client, context, showLiveToggle: true, keyboardManaged: true, onActivated: close, onDismiss: close });
         await Promise.all([registry.ready(), view.mount()]); view.focus(); keyboard.attach(view);
         const hint = document.querySelector('.mru-popup-hint');
         registry.onChange = () => {
             const opener = registry.binding('open-mru-switcher');
             const modifier = HotkeyChord.primaryModifier(opener);
-            hint.textContent = `${opener || 'Opening shortcut unassigned'} older · ${registry.binding('mru-newer')} newer · release ${modifier || 'opening modifier'} to switch in keyboard mode · Enter/click switch · Esc cancel`;
+            hint.textContent = `${opener || 'Opening shortcut unassigned'} older · ${registry.binding('mru-newer')} newer · release ${modifier || 'opening modifier'} to switch in keyboard mode · ${registry.binding('mru-confirm')}/click switch · Esc cancel`;
         };
         registry.onChange();
         const colors = await chrome.storage.local.get({ activeTabBg: '' });

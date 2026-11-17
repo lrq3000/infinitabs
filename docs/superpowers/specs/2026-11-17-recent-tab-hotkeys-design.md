@@ -15,3 +15,7 @@ Keep the toolbar's sidebar-opening action unchanged. A mouse-opened switcher rem
 ## Scope and verification
 
 No new permissions, dependencies, content scripts, native helper, public push, PR, merge, release or live-extension reload. Use the approved isolated worktree, local milestone commits, focused Node tests and the existing isolated Chromium fixture with a new hotkeys scenario. Retain browser artifacts in the approved OpenCode temporary directory. Inspect fast opening/release, cancellation, repeat/paging, remapping/persistence, browser-managed editing and row-action behavior. Implementation is inline with one independent whole-branch review.
+
+## Verified platform constraints during implementation
+
+French Chromium returns `Ctrl+Bas` from commands.getAll. Preserve that display value, canonicalize recognized aliases for matching, and derive the hold modifier independently of the localized non-modifier label. Windows reserves native Ctrl+Escape for Start: the DOM handler cancels when delivered; otherwise focus loss cancels the gesture, but the extension cannot suppress the OS action. Guarded native accelerator tests stopped before any keystroke because Windows did not expose the isolated QA window for foreground targeting; real extension-runtime/DOM gesture tests and command-adapter unit tests cover their respective boundaries, not an unverified native OS end-to-end path.

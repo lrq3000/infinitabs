@@ -138,8 +138,8 @@ export class MruController {
 }
 
 export class MruView {
-    constructor({ root, client, context, showLiveToggle = false, searchHost = null, onActivated, onDismiss }) {
-        Object.assign(this, { root, client, showLiveToggle, searchHost });
+    constructor({ root, client, context, showLiveToggle = false, searchHost = null, keyboardManaged = false, onActivated, onDismiss }) {
+        Object.assign(this, { root, client, showLiveToggle, searchHost, keyboardManaged });
         this.controller = new MruController({ client, context, onChange: () => this.render(), onActivated, onDismiss });
         this.abort = new AbortController();
         this.chrome = client.chrome || root.ownerDocument.defaultView.chrome;
@@ -172,6 +172,8 @@ export class MruView {
         this.listen(this.input, 'keydown', event => {
             // Enter/arrows belong to the input method while composing. Do not even prevent their default action, or committing East Asian text can switch tabs instead.
             if (event.isComposing || event.keyCode === 229) return;
+            // The popup's registry owns modified keys and confirm/cancel. Falling back to ArrowUp/Enter here would silently keep a remapped shortcut active. Sidebar behavior remains unchanged.
+            if (this.keyboardManaged && (event.ctrlKey || event.altKey || event.metaKey || event.key === 'Enter' || event.key === 'Escape')) return;
             if (['Escape', 'Enter', 'ArrowDown', 'ArrowUp', 'Tab', 'Home', 'End', 'PageDown', 'PageUp'].includes(event.key)) {
                 event.preventDefault(); event.stopPropagation(); this.controller.keyDown(event.key, event.shiftKey);
             }
