@@ -28,11 +28,13 @@ export class BrowserFixture {
                 onCreated: event('created'), onChanged: event('changed'), onMoved: event('moved'), onRemoved: event('removed')
             },
             windows: {
+                getLastFocused: async () => [...this.windows.values()].find(window => window.focused),
                 get: async id => { const value = this.windows.get(id); if (!value) throw new Error('Window closed'); return structuredClone(value); },
                 getAll: async () => [...this.windows.values()].map(win => ({ ...win, tabs: [...this.tabs.values()].filter(tab => tab.windowId === win.id) })),
                 update: async (id, values) => { if (values.focused) for (const win of this.windows.values()) win.focused = false; Object.assign(this.windows.get(id), values); },
                 create: async values => {
                     const id = Math.max(...this.windows.keys()) + 1;
+                    if (values.focused) for (const win of this.windows.values()) win.focused = false;
                     this.windows.set(id, { id, type: values.type || 'normal', focused: Boolean(values.focused), incognito: false });
                     const tab = { id: id * 100, windowId: id, url: values.url, active: true, groupId: -1 }; this.tabs.set(tab.id, tab);
                     return { ...this.windows.get(id), tabs: [tab] };
@@ -50,7 +52,7 @@ export class BrowserFixture {
                 query: async query => [...this.tabs.values()].filter(tab => (query.windowId === undefined || query.windowId === tab.windowId) && (query.active === undefined || query.active === tab.active)),
                 remove: async id => { for (const value of [id].flat()) this.tabs.delete(value); }
             },
-            commands: { onCommand: event('command') }
+            commands: { onCommand: event('command'), getAll: async () => [{ name: 'open-mru-switcher', shortcut: 'Ctrl+Down' }] }
         };
         this.bind(1, 's'); this.bind(2, 'other');
         this.state.sessionsById.s.logicalTabs[0].liveTabIds = [11];

@@ -15,6 +15,7 @@ export class MruChromeAdapter {
         this.sessionActivations = new Map();
         this.windowUi = new Map();
         this.openQueue = Promise.resolve();
+        this.commandQueue = Promise.resolve();
         this.popupWindowId = null;
         this.popupContext = null;
         this.loading = null;
@@ -25,6 +26,7 @@ export class MruChromeAdapter {
     start() {
         // Register before waiting for initialization: MV3 can wake for any one of these events.
         this.chrome.windows.onFocusChanged?.addListener(windowId => {
+            if (this.popupWindowId && windowId !== this.popupWindowId) this.run(this.dismissOnFocusLoss());
             if (windowId >= 0) this.run(this.observeCurrent(windowId));
         });
         this.chrome.bookmarks.onRemoved?.addListener((id, info) => this.run(this.onBookmarksRemoved(id, info)));
@@ -206,8 +208,14 @@ export class MruChromeAdapter {
         return operation;
     }
 
-    async openSwitcherNow({ sourceWindowId }) {
+    async openingGesture() {
+        const commands = await this.chrome.commands.getAll();
+        return { id: crypto.randomUUID(), shortcut: commands.find(command => command.name === 'open-mru-switcher')?.shortcut || '', sequence: 0 };
+    }
+
+    async openSwitcherNow({ sourceWindowId, keyboard = false }) {
         const context = await this.context(sourceWindowId);
+        context.gesture = keyboard ? await this.openingGesture() : null;
         this.popupContext = context;
         await this.chrome.storage.session?.set({ 'mru.switcher': context });
         if (this.popupWindowId) {
@@ -217,7 +225,11 @@ export class MruChromeAdapter {
                 return;
             } catch { this.internalWindows.delete(this.popupWindowId); this.popupWindowId = null; }
         }
-        const window = await this.chrome.windows.create({ url: this.chrome.runtime.getURL(`mru/popup.html?sourceWindowId=${context.sourceWindowId}`), type: 'popup', width: 540, height: 530, focused: true });
+        // Put initial gesture metadata in the URL so the popup can listen for release before its first worker/storage round trip. Sequence snapshots recover repeats delivered before its script starts.
+        const parameters = new URLSearchParams({ sourceWindowId: String(context.sourceWindowId) });
+        if (context.gesture) { parameters.set('gestureId', context.gesture.id); parameters.set('shortcut', context.gesture.shortcut); }
+        this.popupStarting = true;
+        const window = await this.chrome.windows.create({ url: this.chrome.runtime.getURL(`mru/popup.html?${parameters}`), type: 'popup', width: 540, height: 530, focused: true });
         this.popupWindowId = window.id;
         this.internalWindows.add(window.id);
     }
@@ -225,8 +237,17 @@ export class MruChromeAdapter {
     async closeSwitcher() {
         const id = this.popupWindowId;
         this.popupWindowId = null; this.popupContext = null;
-        await this.chrome.storage.session?.remove('mru.switcher');
-        if (id) await this.chrome.windows.remove(id).catch(() => {});
+        // Start native removal immediately; slow persistence must not keep the UI visible. Both operations are initiated in this turn before a newer popup can persist its context.
+        await Promise.all([id ? this.chrome.windows.remove(id).catch(() => {}) : undefined, this.chrome.storage.session?.remove('mru.switcher')]);
+    }
+
+    async dismissOnFocusLoss() {
+        const id = this.popupWindowId;
+        const context = this.popupContext;
+        const focused = await this.chrome.windows.getLastFocused();
+        // Native focus is a second signal when a document's focus is emulated. Recheck current ownership/focus so transient NONE events and a newer popup/retarget cannot close the wrong UI.
+        if (this.popupWindowId !== id || this.popupContext !== context || (focused.id === id && focused.focused)) return;
+        await this.closeSwitcher();
     }
 
     windowRemoved(id) {
@@ -410,10 +431,25 @@ export class MruChromeAdapter {
 
     async command(command, tab) {
         if (!['open-mru-switcher', 'previous-mru-tab'].includes(command)) return;
+        // Capture invocation identity before queueing. An earlier command can focus a popup while this command waits; execution-time focus must not replace an explicit source window.
+        const source = tab?.windowId !== undefined ? Promise.resolve(tab.windowId) : this.chrome.windows.getLastFocused().then(window => window.id);
+        source.catch(() => {}); // Retain the error for the queued consumer without an early unhandled rejection while another command is pending.
+        const operation = this.commandQueue.then(async () => this.commandNow(command, await source));
+        this.commandQueue = operation.catch(() => {});
+        return operation;
+    }
+
+    async commandNow(command, sourceWindowId) {
+        if (!['open-mru-switcher', 'previous-mru-tab'].includes(command)) return;
         await this.ready();
-        const sourceWindowId = tab?.windowId ?? (await this.chrome.windows.getLastFocused()).id;
-        if (sourceWindowId === this.popupWindowId) { this.broadcast({ type: 'MRU_ADVANCE' }); return; }
-        if (command === 'open-mru-switcher') return this.openSwitcher({ sourceWindowId });
+        if (sourceWindowId === this.popupWindowId || (this.popupStarting && sourceWindowId === this.popupContext?.sourceWindowId)) {
+            if (!this.popupContext.gesture) this.popupContext.gesture = await this.openingGesture();
+            this.popupContext.gesture.sequence++;
+            await this.chrome.storage.session?.set({ 'mru.switcher': this.popupContext });
+            this.broadcast({ type: 'MRU_ADVANCE', gesture: { ...this.popupContext.gesture } });
+            return;
+        }
+        if (command === 'open-mru-switcher') return this.openSwitcher({ sourceWindowId, keyboard: true });
         const context = await this.context(sourceWindowId);
         this.syncLiveCatalog();
         // The navigation pane includes current, but the one-step shortcut must still select a DIFFERENT tab.
@@ -422,6 +458,16 @@ export class MruChromeAdapter {
     }
 
     async handleMessage(message) {
+        // A source session can outlive several popup instances. Capture dismissal ownership before the first await so a late request cannot close a newer UI for that same session.
+        const dismissOwner = message.type === 'MRU_ACTIVATE' && message.dismissSwitcher === true ? { id: this.popupWindowId, context: this.popupContext } : null;
+        if (message.type === 'MRU_GESTURE_BARRIER') {
+            // Release can overtake a repeat's storage/broadcast continuation. Acknowledge all command callbacks already queued before allowing the popup to commit its selection.
+            await this.commandQueue;
+            await this.ready();
+            await this.validateSource(message);
+            if (!this.popupWindowId || this.popupContext?.gesture?.id !== message.gestureId) throw new Error('Switcher gesture changed; select a tab again.');
+            return { gesture: { ...this.popupContext.gesture } };
+        }
         if (message.type === 'MRU_RECOVERY_STATUS' || message.type === 'MRU_RECOVERY_CONFIGURE') {
             await this.ready();
             if (message.type === 'MRU_RECOVERY_CONFIGURE') {
@@ -433,6 +479,7 @@ export class MruChromeAdapter {
         }
         if (message.type === 'MRU_POPUP_CONTEXT') {
             await this.ready();
+            this.popupStarting = false;
             return this.popupContext || await this.context(message.sourceWindowId);
         }
         const context = await this.context(message.sourceWindowId);
@@ -448,8 +495,17 @@ export class MruChromeAdapter {
                 this.broadcast();
                 return { ...context, ...value };
             }
-            case 'MRU_OPEN': await this.openSwitcher(context); return { success: true };
-            case 'MRU_ACTIVATE': return this.activate(message);
+            case 'MRU_OPEN': await this.openSwitcher({ ...context, keyboard: message.keyboard === true }); return { success: true };
+            case 'MRU_ACTIVATE':
+                if (message.dismissSwitcher === true) {
+                    // The worker, not the closing popup document, owns completion and error reporting. Acknowledgment means accepted, not that native focus/mount has finished.
+                    this.run(this.activate(message));
+                    const ownsPopup = dismissOwner.id && this.popupWindowId === dismissOwner.id && this.popupContext === dismissOwner.context;
+                    const ownsSource = this.popupContext?.sourceWindowId === context.sourceWindowId && this.popupContext?.sourceSessionId === context.sourceSessionId;
+                    if (ownsPopup && ownsSource) await this.closeSwitcher();
+                    return { success: true, pending: true };
+                }
+                return this.activate(message);
             case 'MRU_UNMOUNT':
             case 'MRU_DELETE': return this.mutate(message);
             default: throw new Error('Unknown MRU request');

@@ -3,9 +3,10 @@ import { TabDisplaySettings } from '../ui/tab-display-settings.js';
 
 // Worker transport is shared too: popup and sidebar cannot silently develop different error/filter semantics.
 export class MruClient {
-    constructor(chrome) { this.chrome = chrome; }
+    constructor(chrome, { dismissSwitcherOnActivate = false } = {}) { Object.assign(this, { chrome, dismissSwitcherOnActivate }); }
     async request(message) {
-        const result = await this.chrome.runtime.sendMessage(message);
+        const request = this.dismissSwitcherOnActivate && message.type === 'MRU_ACTIVATE' ? { ...message, dismissSwitcher: true } : message;
+        const result = await this.chrome.runtime.sendMessage(request);
         if (!result || result.error) throw new Error(result?.error || 'MRU background is unavailable');
         return result;
     }
@@ -19,15 +20,27 @@ export class MruController {
         this.items = []; this.total = 0; this.query = ''; this.allSessions = false;
         this.offset = 0; this.pageSize = 50; this.selectedKey = null;
         this.generation = 0; this.error = ''; this.busy = false; this.loading = false;
+        this.queryFailed = false;
     }
 
     // Search/page parameters change before the worker answers, while the visible rows still belong to the previous response. Never combine those snapshots for navigation; a failed query also leaves only stale rows until a successful retry.
-    get canNavigate() { return !this.loading && !this.error && !this.busy; }
+    get canNavigate() { return !this.loading && !this.queryFailed && !this.busy; }
 
     // Current is derived from the authoritative source snapshot, not copied into a second selection model.
     get currentKey() { return this.context.currentBookmarkId ? `tab:${this.context.currentBookmarkId}` : null; }
 
-    async refresh() {
+    refresh() {
+        this.pendingRefresh = this.refreshNow();
+        return this.pendingRefresh;
+    }
+
+    // Gesture navigation waits for authoritative rows rather than asking advanceSelection to navigate a still-loading snapshot.
+    async whenReady() {
+        while (this.loading) await this.pendingRefresh;
+        return this.canNavigate;
+    }
+
+    async refreshNow() {
         const generation = ++this.generation;
         this.loading = true;
         try {
@@ -50,7 +63,8 @@ export class MruController {
             // Preserve the switcher's quick Enter-to-previous behavior while current remains visibly highlighted above that target.
             if (!this.items.some(item => item.key === this.selectedKey)) this.selectedKey = (this.items.find(item => item.key !== this.currentKey) || this.items[0])?.key || null;
             this.error = '';
-        } catch (error) { if (generation === this.generation) this.error = error.message; }
+            this.queryFailed = false;
+        } catch (error) { if (generation === this.generation) { this.error = error.message; this.queryFailed = true; } }
         // Only the latest request can unlock navigation. An older completion must not make a newer in-flight query's stale rows navigable.
         if (generation === this.generation) { this.loading = false; this.onChange(); }
         return generation === this.generation && !this.error;
@@ -106,12 +120,14 @@ export class MruController {
     }
 
     async activate(key = this.selectedKey) {
-        if (!key || this.busy) return;
+        if (!key || this.busy || this.loading || this.queryFailed) return false;
         this.busy = true; this.onChange();
         try {
             await this.client.request({ ...this.context, type: 'MRU_ACTIVATE', key });
+            this.error = '';
             this.onActivated();
-        } catch (error) { this.error = error.message; }
+            return true;
+        } catch (error) { this.error = error.message; return false; }
         finally { this.busy = false; this.onChange(); }
     }
 
@@ -127,8 +143,8 @@ export class MruController {
 }
 
 export class MruView {
-    constructor({ root, client, context, showLiveToggle = false, searchHost = null, onActivated, onDismiss }) {
-        Object.assign(this, { root, client, showLiveToggle, searchHost });
+    constructor({ root, client, context, showLiveToggle = false, searchHost = null, keyboardManaged = false, onActivated, onDismiss }) {
+        Object.assign(this, { root, client, showLiveToggle, searchHost, keyboardManaged });
         this.controller = new MruController({ client, context, onChange: () => this.render(), onActivated, onDismiss });
         this.abort = new AbortController();
         this.chrome = client.chrome || root.ownerDocument.defaultView.chrome;
@@ -161,6 +177,8 @@ export class MruView {
         this.listen(this.input, 'keydown', event => {
             // Enter/arrows belong to the input method while composing. Do not even prevent their default action, or committing East Asian text can switch tabs instead.
             if (event.isComposing || event.keyCode === 229) return;
+            // The popup's registry owns modified keys and confirm/cancel. Falling back to ArrowUp/Enter here would silently keep a remapped shortcut active. Sidebar behavior remains unchanged.
+            if (this.keyboardManaged && (event.ctrlKey || event.altKey || event.metaKey || event.key === 'Enter' || event.key === 'Escape')) return;
             if (['Escape', 'Enter', 'ArrowDown', 'ArrowUp', 'Tab', 'Home', 'End', 'PageDown', 'PageUp'].includes(event.key)) {
                 event.preventDefault(); event.stopPropagation(); this.controller.keyDown(event.key, event.shiftKey);
             }
