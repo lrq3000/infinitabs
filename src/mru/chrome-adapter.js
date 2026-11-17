@@ -420,16 +420,18 @@ export class MruChromeAdapter {
     }
 
     async command(command, tab) {
-        const operation = this.commandQueue.then(() => this.commandNow(command, tab));
+        if (!['open-mru-switcher', 'previous-mru-tab'].includes(command)) return;
+        // Capture invocation identity before queueing. An earlier command can focus a popup while this command waits; execution-time focus must not replace an explicit source window.
+        const source = tab?.windowId !== undefined ? Promise.resolve(tab.windowId) : this.chrome.windows.getLastFocused().then(window => window.id);
+        source.catch(() => {}); // Retain the error for the queued consumer without an early unhandled rejection while another command is pending.
+        const operation = this.commandQueue.then(async () => this.commandNow(command, await source));
         this.commandQueue = operation.catch(() => {});
         return operation;
     }
 
-    async commandNow(command, tab) {
+    async commandNow(command, sourceWindowId) {
         if (!['open-mru-switcher', 'previous-mru-tab'].includes(command)) return;
         await this.ready();
-        const focused = await this.chrome.windows.getLastFocused();
-        const sourceWindowId = focused.id === this.popupWindowId ? focused.id : tab?.windowId ?? focused.id;
         if (sourceWindowId === this.popupWindowId || (this.popupStarting && sourceWindowId === this.popupContext?.sourceWindowId)) {
             if (!this.popupContext.gesture) this.popupContext.gesture = await this.openingGesture();
             this.popupContext.gesture.sequence++;
@@ -446,6 +448,14 @@ export class MruChromeAdapter {
     }
 
     async handleMessage(message) {
+        if (message.type === 'MRU_GESTURE_BARRIER') {
+            // Release can overtake a repeat's storage/broadcast continuation. Acknowledge all command callbacks already queued before allowing the popup to commit its selection.
+            await this.commandQueue;
+            await this.ready();
+            await this.validateSource(message);
+            if (!this.popupWindowId || this.popupContext?.gesture?.id !== message.gestureId) throw new Error('Switcher gesture changed; select a tab again.');
+            return { gesture: { ...this.popupContext.gesture } };
+        }
         if (message.type === 'MRU_RECOVERY_STATUS' || message.type === 'MRU_RECOVERY_CONFIGURE') {
             await this.ready();
             if (message.type === 'MRU_RECOVERY_CONFIGURE') {
@@ -473,7 +483,7 @@ export class MruChromeAdapter {
                 this.broadcast();
                 return { ...context, ...value };
             }
-            case 'MRU_OPEN': await this.openSwitcher(context); return { success: true };
+            case 'MRU_OPEN': await this.openSwitcher({ ...context, keyboard: message.keyboard === true }); return { success: true };
             case 'MRU_ACTIVATE': return this.activate(message);
             case 'MRU_UNMOUNT':
             case 'MRU_DELETE': return this.mutate(message);

@@ -4,8 +4,6 @@ import json
 import re
 import tempfile
 import sys
-import ctypes
-from ctypes import wintypes
 from pathlib import Path
 from urllib.parse import urlparse
 from http.server import ThreadingHTTPServer
@@ -13,48 +11,7 @@ from threading import Thread
 from playwright.sync_api import sync_playwright, expect, Error as PlaywrightError
 from verify_move_logical_tabs import MovementCheck
 from verify_active_tab_reload import FixtureHandler, ActiveTabReloadCheck
-
-
-class NativeShortcutDriver:
-    """Send bounded Windows accelerators only while the isolated QA browser owns foreground focus."""
-
-    def __init__(self, expected_title):
-        self.user32 = ctypes.WinDLL('user32', use_last_error=True)
-        self.user32.GetForegroundWindow.restype = wintypes.HWND
-        self.user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
-        self.user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
-        self.user32.keybd_event.argtypes = (wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_size_t)
-        # CDP bringToFront selects a Chrome tab but does not necessarily acquire Windows foreground focus. Target only this run's unique fixture title, never the current unrelated application.
-        targets = []
-        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-        def find_window(window, _):
-            text = ctypes.create_unicode_buffer(512)
-            self.user32.GetWindowTextW(window, text, len(text))
-            if expected_title in text.value:
-                targets.append(window)
-            return True
-        self.user32.EnumWindows.argtypes = (callback_type, wintypes.LPARAM)
-        self.user32.EnumWindows(callback_type(find_window), 0)
-        assert len(targets) == 1, f'Native input stopped: expected exactly one isolated QA window, found {len(targets)}'
-        self.user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
-        self.user32.SetForegroundWindow(targets[0])
-        window = self.user32.GetForegroundWindow()
-        title = ctypes.create_unicode_buffer(512)
-        self.user32.GetWindowTextW(window, title, len(title))
-        assert expected_title in title.value, f'Native input stopped: expected isolated QA title, found {title.value!r}'
-        pid = wintypes.DWORD()
-        self.user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
-        self.pid = pid.value
-
-    def send(self, key, release=False):
-        pid = wintypes.DWORD()
-        self.user32.GetWindowThreadProcessId(self.user32.GetForegroundWindow(), ctypes.byref(pid))
-        assert pid.value == self.pid, 'Native input stopped: focus left the isolated QA browser process'
-        self.user32.keybd_event(key, 0, 2 if release else 0, 0)
-
-    def press(self, key):
-        self.send(key)
-        self.send(key, release=True)
+from native_shortcut_driver import NativeShortcutDriver
 
 
 class MruCheck(MovementCheck):
@@ -121,40 +78,45 @@ class MruCheck(MovementCheck):
             self.wait_until(lambda: popup.is_closed() and self.active_tab()['id'] == self.live_ids['A'], 'mouse click still switches during keyboard mode')
             self.evidence['native_shortcuts'] = {'status': 'pass', 'opening': 'native Windows Ctrl+Down', 'repeat': 'native Ctrl+Down', 'reverse': 'native Ctrl+Up', 'commit': 'native Ctrl release', 'cancel': 'DOM Ctrl+Escape while native Ctrl held; OS-reserved Ctrl+Escape not sent', 'row_controls': 'unmount disarms release; clicking selects'}
         finally:
-            # Do not send cleanup input into an unrelated application if the operator changed foreground focus; fail visibly rather than continuing an unchecked batch.
-            driver.send(0x11, release=True)
+            # Only release keys this driver injected. New keydowns always retain the isolated-process focus guard.
+            driver.release_owned_keys()
 
     def open_keyboard_popup(self):
         context = self.query()['context']
-        shortcut = self.sidebar.evaluate("async () => (await chrome.commands.getAll()).find(command => command.name === 'open-mru-switcher').shortcut")
-        popup = self.open_popup()
-        self.gesture_number = getattr(self, 'gesture_number', 0) + 1
-        gesture = {'id': f'qa-runtime-{self.artifacts.name}-{self.gesture_number}', 'shortcut': shortcut, 'sequence': 0}
-        self.sidebar.evaluate("async data => chrome.runtime.sendMessage({type:'MRU_CONTEXT',sourceWindowId:data.context.sourceWindowId,context:{...data.context,gesture:data.gesture}})", {'context': context, 'gesture': gesture})
+        with self.context.expect_page() as opened:
+            result = self.send_message({**context, 'type': 'MRU_OPEN', 'keyboard': True})
+        assert result.get('success'), result
+        popup = self.configure_popup(opened.value)
+        gesture = self.send_message({'type': 'MRU_POPUP_CONTEXT', 'sourceWindowId': context['sourceWindowId']})['gesture']
         return popup, gesture
 
     def gesture_transport(self):
-        # Native accelerator ownership is unit-tested separately. Exercise the real popup/runtime transport and DOM key releases without injecting OS keys into an unrelated foreground application.
+        # Use the worker's existing opening transport in keyboard mode so the release barrier validates real authoritative gesture identity. Native command ownership/sequencing is unit-tested separately.
         for name in 'ABC':
             self.select_native(name)
-        popup, gesture = self.open_keyboard_popup()
+        popup, _ = self.open_keyboard_popup()
         selected = popup.locator('[aria-selected="true"]')
         expect(selected).to_have_attribute('data-key', 'tab:' + self.bookmark_ids['B'])
-        popup.keyboard.down('Control')
-        gesture['sequence'] = 1
-        self.sidebar.evaluate("async gesture => chrome.runtime.sendMessage({type:'MRU_ADVANCE',gesture})", gesture)
-        expect(selected).to_have_attribute('data-key', 'tab:' + self.bookmark_ids['A'])
-        popup.keyboard.press('ArrowUp')
-        expect(selected).to_have_attribute('data-key', 'tab:' + self.bookmark_ids['B'])
-        assert self.active_tab()['id'] == self.live_ids['C'], 'Held navigation activated before release'
         popup.screenshot(path=str(self.artifacts / 'held-recent-switcher.png'))
+        popup.keyboard.down('Control')
+        popup.keyboard.press('ArrowUp')
+        expect(selected).to_have_attribute('data-key', 'tab:' + self.bookmark_ids['C'])
+        assert self.active_tab()['id'] == self.live_ids['C'], 'Held navigation activated before release'
         try:
             popup.keyboard.up('Control')
         except PlaywrightError:
             if not popup.is_closed():
                 raise
-        self.wait_until(lambda: popup.is_closed() and self.active_tab()['id'] == self.live_ids['B'], 'runtime gesture and DOM Ctrl release switch to B')
-        self.evidence['flows'].append({'name': 'real-runtime-gesture-held-reverse-and-release', 'status': 'pass', 'route': 'real extension runtime messages and popup DOM input; native accelerator route is separate'})
+        self.wait_until(lambda: popup.is_closed() and self.active_tab()['id'] == self.live_ids['C'], 'reverse navigation and acknowledged Ctrl release switch to C')
+        popup, _ = self.open_keyboard_popup()
+        popup.keyboard.down('Control')
+        try:
+            popup.keyboard.up('Control')
+        except PlaywrightError:
+            if not popup.is_closed():
+                raise
+        self.wait_until(lambda: popup.is_closed() and self.active_tab()['id'] == self.live_ids['B'], 'default previous selection and acknowledged Ctrl release switch to B')
+        self.evidence['flows'].append({'name': 'real-runtime-gesture-held-reverse-and-release', 'status': 'pass', 'route': 'worker-owned keyboard opening and release barrier, popup DOM input; native accelerator route is separate'})
         self.select_native('C')
         popup, _ = self.open_keyboard_popup()
         popup.keyboard.down('Control')
@@ -406,7 +368,9 @@ class MruCheck(MovementCheck):
     def open_popup(self):
         with self.context.expect_page() as opened:
             self.sidebar.locator("#open-switcher-btn").click()
-        popup = opened.value
+        return self.configure_popup(opened.value)
+
+    def configure_popup(self, popup):
         popup.set_viewport_size({"width": 520, "height": 480})
         popup.on("pageerror", lambda error: self.evidence["page_errors"].append(str(error)))
         expect(popup.locator("h1")).to_have_text("Recent tabs")

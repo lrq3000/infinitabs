@@ -7,23 +7,28 @@ import { MemoryStorage } from './storage-fixture.mjs';
 const { MruKeyboard } = await import('../../src/mru/keyboard.js').catch(() => ({}));
 const event = (key, modifiers = {}) => ({ key, ...modifiers, getModifierState: () => false });
 
-async function fixture(shortcut = 'Ctrl+Down', manual = false) {
+async function fixture(shortcut = 'Ctrl+Down', manual = false, deferBindings = false) {
     assert.equal(typeof MruKeyboard, 'function', 'implement the hold gesture handler');
-    const registry = new HotkeyRegistry({ chrome: { storage: { local: new MemoryStorage() }, commands: { getAll: async () => [{ name: 'open-mru-switcher', shortcut }] } } });
-    await registry.ready();
+    const storage = new MemoryStorage();
+    let finishBindings;
+    if (deferBindings) storage.get = () => new Promise(resolve => { finishBindings = () => resolve({ 'hotkeys.v1.mru-cancel': 'Ctrl+Space' }); });
+    const registry = new HotkeyRegistry({ chrome: { storage: { local: storage }, commands: { getAll: async () => [{ name: 'open-mru-switcher', shortcut }] } } });
+    if (!deferBindings) await registry.ready();
     const rows = ['a', 'b', 'c', 'd', 'e'].map(key => ({ key: `tab:${key}` }));
     const activations = []; const pending = [];
     const client = { delay: false, request(message) {
-        if (message.type === 'MRU_ACTIVATE') { activations.push(message.key); return Promise.resolve({ success: true }); }
+        if (message.type === 'MRU_ACTIVATE') { activations.push(message.key); return this.failActivation ? Promise.reject(new Error('Transient activation failure')) : Promise.resolve({ success: true }); }
         const result = { items: rows.slice(message.offset, message.offset + message.limit), total: rows.length };
         return this.delay ? new Promise(resolve => pending.push(() => resolve(result))) : Promise.resolve(result);
     } };
     const controller = new MruController({ client, context: { currentBookmarkId: 'a' } });
     let dismissed = 0;
     const gesture = { id: 'test-gesture', shortcut, sequence: 0 };
-    const keyboard = new MruKeyboard({ registry, gesture: manual ? null : gesture, onDismiss: () => dismissed++ });
+    const barrier = { call: async () => null };
+    const keyboard = new MruKeyboard({ registry, gesture: manual ? null : gesture, barrier: id => barrier.call(id), onDismiss: () => dismissed++ });
+    if (deferBindings) registry.ready();
     const view = { controller, advanceSelection: direction => controller.advanceSelection(direction) };
-    return { keyboard, controller, client, pending, activations, gesture, dismissed: () => dismissed, async mount() { await controller.refresh(); keyboard.attach(view); await keyboard.settled(); } };
+    return { keyboard, controller, client, pending, activations, gesture, barrier, finishBindings: () => finishBindings(), dismissed: () => dismissed, async mount() { await controller.refresh(); keyboard.attach(view); await keyboard.settled(); } };
 }
 
 test('startup repeat snapshots are deduplicated and early release commits the final selection once', async () => {
@@ -104,4 +109,64 @@ test('native command DOM events do not advance a second time and pointer actions
     assert.equal(f.controller.selectedKey, 'tab:c');
     f.keyboard.disarm(); f.keyboard.keyUp(event('Control')); await f.keyboard.settled();
     assert.deepEqual(f.activations, []);
+});
+
+test('an unrelated keyup cannot invent a missed opening-modifier release', async () => {
+    const f = await fixture(); await f.mount();
+    f.keyboard.keyDown(event('x'));
+    f.keyboard.keyUp(event('x'));
+    await f.keyboard.settled();
+    assert.deepEqual(f.activations, []);
+    f.keyboard.keyUp(event('ArrowDown'));
+    await f.keyboard.settled();
+    assert.deepEqual(f.activations, []);
+    f.keyboard.keyDown(event('Enter')); await f.keyboard.settled();
+    assert.deepEqual(f.activations, ['tab:b']);
+});
+
+test('release waits for the worker repeat barrier and applies its acknowledged sequence', async () => {
+    const f = await fixture(); await f.mount();
+    let acknowledge; let calls = 0;
+    f.barrier.call = () => ++calls === 1 ? new Promise(resolve => { acknowledge = resolve; }) : Promise.resolve({ gesture: { ...f.gesture, sequence: 1 } });
+    f.keyboard.keyUp(event('Control'));
+    for (let i = 0; i < 20 && !acknowledge; i++) await Promise.resolve();
+    assert.deepEqual(f.activations, [], 'a received worker repeat must not be bypassed by release');
+    assert.equal(typeof acknowledge, 'function');
+    acknowledge({ gesture: { ...f.gesture, sequence: 1 } });
+    await f.keyboard.settled();
+    assert.deepEqual(f.activations, ['tab:c']);
+});
+
+test('Escape stays effective while release is awaiting the worker barrier', async () => {
+    const f = await fixture(); await f.mount();
+    let acknowledge;
+    f.barrier.call = () => new Promise(resolve => { acknowledge = resolve; });
+    f.keyboard.keyUp(event('Control'));
+    for (let i = 0; i < 20 && !acknowledge; i++) await Promise.resolve();
+    assert.equal(typeof acknowledge, 'function');
+    f.keyboard.keyDown(event('Escape', { ctrlKey: true }));
+    acknowledge({ gesture: { ...f.gesture, sequence: 1 } });
+    await f.keyboard.settled();
+    assert.deepEqual(f.activations, []);
+    assert.equal(f.dismissed(), 1);
+});
+
+test('saved custom cancellation during binding initialization wins over a later Ctrl release', async () => {
+    const f = await fixture('Ctrl+Down', false, true);
+    f.keyboard.keyDown(event(' ', { ctrlKey: true }));
+    f.keyboard.keyUp(event('Control'));
+    const mount = f.mount();
+    f.finishBindings(); await mount;
+    assert.deepEqual(f.activations, []);
+    assert.equal(f.dismissed(), 1);
+});
+
+for (const refresh of [false, true]) test(`activation failure permits keyboard retry ${refresh ? 'after refresh' : 'without requiring refresh'}`, async () => {
+    const f = await fixture(); await f.mount(); f.client.failActivation = true;
+    f.keyboard.keyUp(event('Control')); await f.keyboard.settled();
+    assert.deepEqual(f.activations, ['tab:b']);
+    f.client.failActivation = false;
+    if (refresh) await f.controller.refresh();
+    f.keyboard.keyDown(event('Enter')); await f.keyboard.settled();
+    assert.deepEqual(f.activations, ['tab:b', 'tab:b']);
 });

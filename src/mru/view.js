@@ -19,10 +19,11 @@ export class MruController {
         this.items = []; this.total = 0; this.query = ''; this.allSessions = false;
         this.offset = 0; this.pageSize = 50; this.selectedKey = null;
         this.generation = 0; this.error = ''; this.busy = false; this.loading = false;
+        this.queryFailed = false;
     }
 
     // Search/page parameters change before the worker answers, while the visible rows still belong to the previous response. Never combine those snapshots for navigation; a failed query also leaves only stale rows until a successful retry.
-    get canNavigate() { return !this.loading && !this.error && !this.busy; }
+    get canNavigate() { return !this.loading && !this.queryFailed && !this.busy; }
 
     // Current is derived from the authoritative source snapshot, not copied into a second selection model.
     get currentKey() { return this.context.currentBookmarkId ? `tab:${this.context.currentBookmarkId}` : null; }
@@ -61,7 +62,8 @@ export class MruController {
             // Preserve the switcher's quick Enter-to-previous behavior while current remains visibly highlighted above that target.
             if (!this.items.some(item => item.key === this.selectedKey)) this.selectedKey = (this.items.find(item => item.key !== this.currentKey) || this.items[0])?.key || null;
             this.error = '';
-        } catch (error) { if (generation === this.generation) this.error = error.message; }
+            this.queryFailed = false;
+        } catch (error) { if (generation === this.generation) { this.error = error.message; this.queryFailed = true; } }
         // Only the latest request can unlock navigation. An older completion must not make a newer in-flight query's stale rows navigable.
         if (generation === this.generation) { this.loading = false; this.onChange(); }
         return generation === this.generation && !this.error;
@@ -117,12 +119,14 @@ export class MruController {
     }
 
     async activate(key = this.selectedKey) {
-        if (!key || this.busy) return;
+        if (!key || this.busy || this.loading || this.queryFailed) return false;
         this.busy = true; this.onChange();
         try {
             await this.client.request({ ...this.context, type: 'MRU_ACTIVATE', key });
+            this.error = '';
             this.onActivated();
-        } catch (error) { this.error = error.message; }
+            return true;
+        } catch (error) { this.error = error.message; return false; }
         finally { this.busy = false; this.onChange(); }
     }
 

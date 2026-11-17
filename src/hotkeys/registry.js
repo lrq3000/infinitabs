@@ -50,6 +50,7 @@ export class HotkeyRegistry {
         this.index = new Map();
         this.revisions = new Map();
         this.commandGeneration = 0;
+        this.initialized = false;
         this.changed = (changes, area) => {
             if (area !== 'local') return;
             for (const action of this.actions) {
@@ -68,7 +69,7 @@ export class HotkeyRegistry {
     binding(id) { return this.bindings.get(id) || ''; }
 
     ready() {
-        if (!this.loading) this.loading = Promise.all([this.loadBindings(), this.refreshCommands()]).catch(error => { this.loading = null; throw error; });
+        if (!this.loading) this.loading = Promise.all([this.loadBindings(), this.refreshCommands()]).then(() => { this.initialized = true; }).catch(error => { this.loading = null; throw error; });
         return this.loading;
     }
 

@@ -24,6 +24,41 @@ test('keyboard opening records the actual hold chord and repeats survive popup s
     assert.equal(browser.messages.at(-1).gesture.sequence, 1);
 });
 
+test('queued commands keep their explicit source even when an earlier popup steals focus', async () => {
+    const { browser, adapter } = await fixture();
+    let releaseCreation;
+    const create = browser.chrome.windows.create;
+    browser.chrome.windows.create = async values => { await new Promise(resolve => { releaseCreation = resolve; }); return create(values); };
+    const first = adapter.command('open-mru-switcher', { windowId: 1 });
+    for (let i = 0; i < 100 && !releaseCreation; i++) await Promise.resolve();
+    assert.equal(typeof releaseCreation, 'function');
+    await browser.chrome.windows.update(2, { focused: true });
+    const second = adapter.command('open-mru-switcher', { windowId: 2 });
+    releaseCreation(); await Promise.all([first, second]);
+    assert.equal(adapter.popupContext.sourceWindowId, 2);
+    assert.equal(adapter.popupContext.gesture.sequence, 0, 'retarget is not a repeat in the old source');
+});
+
+test('gesture barriers wait for a received repeat storage write before acknowledging its sequence', async () => {
+    const { browser, adapter } = await fixture();
+    await adapter.command('open-mru-switcher', { windowId: 1 });
+    const context = structuredClone(adapter.popupContext);
+    let releaseWrite;
+    const set = browser.chrome.storage.session.set.bind(browser.chrome.storage.session);
+    browser.chrome.storage.session.set = async values => { await new Promise(resolve => { releaseWrite = resolve; }); return set(values); };
+    const repeat = adapter.command('open-mru-switcher', { windowId: adapter.popupWindowId });
+    for (let i = 0; i < 100 && !releaseWrite; i++) await Promise.resolve();
+    assert.equal(typeof releaseWrite, 'function');
+    let acknowledged = false;
+    const barrier = adapter.handleMessage({ ...context, type: 'MRU_GESTURE_BARRIER', gestureId: context.gesture.id }).then(result => { acknowledged = true; return result; });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    assert.equal(acknowledged, false);
+    releaseWrite(); await repeat;
+    const result = await barrier;
+    assert.equal(result.gesture.sequence, 1);
+    await assert.rejects(adapter.handleMessage({ ...context, type: 'MRU_GESTURE_BARRIER', gestureId: 'obsolete' }), /gesture/i);
+});
+
 test('Recent unmount/delete resolve the actual mounted destination and delegate its lifecycle', async () => {
     const calls = [];
     const { adapter } = await fixture({

@@ -53,6 +53,7 @@ In git folders (eg, there is a `.git` folder at the root of the current project)
 - Keep action definitions and local shortcut persistence in `src/hotkeys/registry.js`; new settings rows should come from that registry rather than another ad hoc editor or key listener.
 - Chrome owns browser-wide command assignments. Read the actual value with `chrome.commands.getAll()` and open Chrome's native shortcut editor to change it; do not display a locally captured replacement as applied. Returned labels can be localized (for example `Ctrl+Bas`), so preserve display text and do not derive hold modifiers from an English key-name assumption.
 - Keep popup gesture handling separate from sidebar navigation and from current-tab highlighting. Cancellation, pointer actions and blur must disarm queued modifier-release activation. Do not inject a website overlay or infer an unobserved global key release.
+- Release confirmation must identify the released primary modifier and await `MRU_GESTURE_BARRIER` before activation, so an already-received worker command cannot arrive too late to affect selection. Preserve invocation source IDs before queueing and defer configurable input interpretation until saved bindings are loaded.
 
 ---
 
@@ -168,4 +169,3 @@ Always provide:
 - Commands run.
 - Summary of changes.
 - If conflicts were resolved: the hunk checklist + adaptations + tests run.
-

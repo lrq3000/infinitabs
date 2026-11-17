@@ -19,7 +19,9 @@ if (parameters.has('bridge')) {
     const registry = new HotkeyRegistry({ chrome });
     let view;
     const gesture = parameters.has('gestureId') ? { id: parameters.get('gestureId'), shortcut: parameters.get('shortcut'), sequence: 0 } : null;
-    const keyboard = new MruKeyboard({ registry, gesture, onDismiss: close, onError: error => { if (view) { view.controller.error = error.message; view.render(); } } });
+    const keyboard = new MruKeyboard({ registry, gesture,
+        barrier: gestureId => client.request({ ...view.controller.context, type: 'MRU_GESTURE_BARRIER', gestureId }),
+        onDismiss: close, onError: error => { if (view) { view.controller.error = error.message; view.render(); } } });
     const abort = new AbortController();
     // Install before all initialization awaits: releasing Ctrl during a worker wake still confirms the eventual selection, rather than leaving a stuck popup.
     window.addEventListener('keydown', event => {
