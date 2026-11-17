@@ -27,7 +27,18 @@ export class MruController {
     // Current is derived from the authoritative source snapshot, not copied into a second selection model.
     get currentKey() { return this.context.currentBookmarkId ? `tab:${this.context.currentBookmarkId}` : null; }
 
-    async refresh() {
+    refresh() {
+        this.pendingRefresh = this.refreshNow();
+        return this.pendingRefresh;
+    }
+
+    // Gesture navigation waits for authoritative rows rather than asking advanceSelection to navigate a still-loading snapshot.
+    async whenReady() {
+        while (this.loading) await this.pendingRefresh;
+        return this.canNavigate;
+    }
+
+    async refreshNow() {
         const generation = ++this.generation;
         this.loading = true;
         try {

@@ -11,6 +11,19 @@ async function fixture(overrides = {}) {
     return { browser, adapter };
 }
 
+test('keyboard opening records the actual hold chord and repeats survive popup startup', async () => {
+    const { browser, adapter } = await fixture();
+    browser.chrome.commands.getAll = async () => [{ name: 'open-mru-switcher', shortcut: 'Ctrl+Space' }];
+    await adapter.command('open-mru-switcher', { windowId: 1 });
+    const context = await adapter.handleMessage({ type: 'MRU_POPUP_CONTEXT', sourceWindowId: 1 });
+    assert.equal(context.gesture?.shortcut, 'Ctrl+Space');
+    assert.equal(context.gesture?.sequence, 0);
+    await adapter.command('open-mru-switcher', { windowId: adapter.popupWindowId });
+    const updated = await adapter.handleMessage({ type: 'MRU_POPUP_CONTEXT', sourceWindowId: 1 });
+    assert.equal(updated.gesture.sequence, 1);
+    assert.equal(browser.messages.at(-1).gesture.sequence, 1);
+});
+
 test('Recent unmount/delete resolve the actual mounted destination and delegate its lifecycle', async () => {
     const calls = [];
     const { adapter } = await fixture({

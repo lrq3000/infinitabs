@@ -25,7 +25,7 @@
   },
   "commands": {
     "open-mru-switcher": {
-      "suggested_key": { "default": "Alt+Shift+Q" },
+      "suggested_key": { "default": "Ctrl+Down" },
       "description": "Open recent logical tabs"
     },
     "previous-mru-tab": {

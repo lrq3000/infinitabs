@@ -15,6 +15,7 @@ export class MruChromeAdapter {
         this.sessionActivations = new Map();
         this.windowUi = new Map();
         this.openQueue = Promise.resolve();
+        this.commandQueue = Promise.resolve();
         this.popupWindowId = null;
         this.popupContext = null;
         this.loading = null;
@@ -206,8 +207,14 @@ export class MruChromeAdapter {
         return operation;
     }
 
-    async openSwitcherNow({ sourceWindowId }) {
+    async openingGesture() {
+        const commands = await this.chrome.commands.getAll();
+        return { id: crypto.randomUUID(), shortcut: commands.find(command => command.name === 'open-mru-switcher')?.shortcut || '', sequence: 0 };
+    }
+
+    async openSwitcherNow({ sourceWindowId, keyboard = false }) {
         const context = await this.context(sourceWindowId);
+        context.gesture = keyboard ? await this.openingGesture() : null;
         this.popupContext = context;
         await this.chrome.storage.session?.set({ 'mru.switcher': context });
         if (this.popupWindowId) {
@@ -217,7 +224,11 @@ export class MruChromeAdapter {
                 return;
             } catch { this.internalWindows.delete(this.popupWindowId); this.popupWindowId = null; }
         }
-        const window = await this.chrome.windows.create({ url: this.chrome.runtime.getURL(`mru/popup.html?sourceWindowId=${context.sourceWindowId}`), type: 'popup', width: 540, height: 530, focused: true });
+        // Put initial gesture metadata in the URL so the popup can listen for release before its first worker/storage round trip. Sequence snapshots recover repeats delivered before its script starts.
+        const parameters = new URLSearchParams({ sourceWindowId: String(context.sourceWindowId) });
+        if (context.gesture) { parameters.set('gestureId', context.gesture.id); parameters.set('shortcut', context.gesture.shortcut); }
+        this.popupStarting = true;
+        const window = await this.chrome.windows.create({ url: this.chrome.runtime.getURL(`mru/popup.html?${parameters}`), type: 'popup', width: 540, height: 530, focused: true });
         this.popupWindowId = window.id;
         this.internalWindows.add(window.id);
     }
@@ -409,11 +420,24 @@ export class MruChromeAdapter {
     }
 
     async command(command, tab) {
+        const operation = this.commandQueue.then(() => this.commandNow(command, tab));
+        this.commandQueue = operation.catch(() => {});
+        return operation;
+    }
+
+    async commandNow(command, tab) {
         if (!['open-mru-switcher', 'previous-mru-tab'].includes(command)) return;
         await this.ready();
-        const sourceWindowId = tab?.windowId ?? (await this.chrome.windows.getLastFocused()).id;
-        if (sourceWindowId === this.popupWindowId) { this.broadcast({ type: 'MRU_ADVANCE' }); return; }
-        if (command === 'open-mru-switcher') return this.openSwitcher({ sourceWindowId });
+        const focused = await this.chrome.windows.getLastFocused();
+        const sourceWindowId = focused.id === this.popupWindowId ? focused.id : tab?.windowId ?? focused.id;
+        if (sourceWindowId === this.popupWindowId || (this.popupStarting && sourceWindowId === this.popupContext?.sourceWindowId)) {
+            if (!this.popupContext.gesture) this.popupContext.gesture = await this.openingGesture();
+            this.popupContext.gesture.sequence++;
+            await this.chrome.storage.session?.set({ 'mru.switcher': this.popupContext });
+            this.broadcast({ type: 'MRU_ADVANCE', gesture: { ...this.popupContext.gesture } });
+            return;
+        }
+        if (command === 'open-mru-switcher') return this.openSwitcher({ sourceWindowId, keyboard: true });
         const context = await this.context(sourceWindowId);
         this.syncLiveCatalog();
         // The navigation pane includes current, but the one-step shortcut must still select a DIFFERENT tab.
@@ -433,6 +457,7 @@ export class MruChromeAdapter {
         }
         if (message.type === 'MRU_POPUP_CONTEXT') {
             await this.ready();
+            this.popupStarting = false;
             return this.popupContext || await this.context(message.sourceWindowId);
         }
         const context = await this.context(message.sourceWindowId);
