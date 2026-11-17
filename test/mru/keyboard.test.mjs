@@ -48,6 +48,7 @@ test('held reverse navigation returns toward newer tabs without activating befor
     await f.keyboard.settled();
     assert.equal(f.controller.selectedKey, 'tab:b');
     assert.deepEqual(f.activations, []);
+    f.keyboard.keyUp(event('ArrowUp', { ctrlKey: true }));
     f.keyboard.keyUp(event('Control')); await f.keyboard.settled();
     assert.deepEqual(f.activations, ['tab:b']);
 });
@@ -169,4 +170,33 @@ for (const refresh of [false, true]) test(`activation failure permits keyboard r
     if (refresh) await f.controller.refresh();
     f.keyboard.keyDown(event('Enter')); await f.keyboard.settled();
     assert.deepEqual(f.activations, ['tab:b', 'tab:b']);
+});
+
+test('releasing Ctrl first waits until the observed arrow is released', async () => {
+    const f = await fixture(); await f.mount();
+    f.keyboard.keyDown(event('ArrowUp', { ctrlKey: true, code: 'ArrowUp' }));
+    await f.keyboard.settled();
+    f.keyboard.keyUp(event('Control', { code: 'ControlLeft' })); await f.keyboard.settled();
+    assert.deepEqual(f.activations, []);
+    f.keyboard.keyUp(event('ArrowUp', { code: 'ArrowUp' })); await f.keyboard.settled();
+    assert.deepEqual(f.activations, ['tab:a']);
+});
+
+test('repeated and shifted key events use physical identity without trapping a held gesture', async () => {
+    const f = await fixture(); await f.mount();
+    f.keyboard.keyDown(event('A', { ctrlKey: true, shiftKey: true, code: 'KeyQ' }));
+    f.keyboard.keyDown(event('A', { ctrlKey: true, shiftKey: true, code: 'KeyQ', repeat: true }));
+    f.keyboard.keyUp(event('Control', { code: 'ControlLeft', shiftKey: true })); await f.keyboard.settled();
+    assert.deepEqual(f.activations, []);
+    f.keyboard.keyUp(event('a', { code: 'KeyQ' })); await f.keyboard.settled();
+    assert.deepEqual(f.activations, ['tab:b']);
+});
+
+for (const disarm of [false, true]) test(`focus loss cancels ${disarm ? 'pointer-disarmed keyboard' : 'mouse-opened'} popups`, async () => {
+    const f = await fixture('Ctrl+Down', !disarm); await f.mount();
+    if (disarm) f.keyboard.disarm();
+    f.keyboard.blur();
+    f.keyboard.keyUp(event('Control')); await f.keyboard.settled();
+    assert.equal(f.dismissed(), 1);
+    assert.deepEqual(f.activations, []);
 });

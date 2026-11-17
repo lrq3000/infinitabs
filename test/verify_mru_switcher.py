@@ -15,6 +15,48 @@ from native_shortcut_driver import NativeShortcutDriver
 
 
 class MruCheck(MovementCheck):
+    def transient_popup(self):
+        for name in 'ABC':
+            self.select_native(name)
+        if self.sidebar.locator('#recent-tabs-container').is_hidden():
+            self.sidebar.locator('#recent-tabs-btn').click()
+        source = next(page for page in self.context.pages if page.url.endswith('/fixture?C'))
+        self.sidebar.evaluate("() => { globalThis.transientFocus=[]; chrome.windows.onFocusChanged.addListener(id => transientFocus.push(id)); }")
+        popup = self.open_popup()
+        expect(popup.locator('.mru-popup-header')).to_be_hidden()
+        source.bring_to_front()
+        self.select_native('C')
+        source.locator('body').click()
+        self.evidence['transient_focus'] = self.sidebar.evaluate('async () => ({events:transientFocus, windows:(await chrome.windows.getAll()).map(window => ({id:window.id,focused:window.focused,type:window.type}))})')
+        if not popup.is_closed():
+            self.evidence['transient_focus']['popup_document_focus'] = popup.evaluate('document.hasFocus()')
+        self.wait_until(lambda: popup.is_closed(), 'outside focus closes mouse-opened switcher')
+        assert self.active_tab()['id'] == self.live_ids['C']
+
+        popup, _ = self.open_keyboard_popup()
+        popup.keyboard.down('Control')
+        popup.get_by_role('combobox', name='Search recent tabs').click()  # Pointer interaction disarms release, but not outside-focus dismissal.
+        source.bring_to_front()
+        self.select_native('C')
+        source.locator('body').click()
+        self.wait_until(lambda: popup.is_closed(), 'outside focus closes pointer-disarmed switcher')
+        assert self.active_tab()['id'] == self.live_ids['C']
+
+        popup, _ = self.open_keyboard_popup()
+        popup.keyboard.down('Control')
+        popup.keyboard.down('ArrowUp')
+        expect(popup.locator('[aria-selected="true"]')).to_have_attribute('data-key', 'tab:' + self.bookmark_ids['C'])
+        popup.keyboard.up('Control')
+        assert not popup.is_closed(), 'Ctrl release committed while an observed arrow was still held'
+        popup.screenshot(path=str(self.artifacts / 'transient-popup-held-arrow.png'))
+        try:
+            popup.keyboard.up('ArrowUp')
+        except PlaywrightError:
+            if not popup.is_closed():
+                raise
+        self.wait_until(lambda: popup.is_closed(), 'last observed key release dismisses switcher')
+        self.evidence['flows'].append({'name': 'transient-header-outside-focus-manual-disarmed-and-last-key-release', 'status': 'pass'})
+
     def close_with_key(self, popup, key):
         try:
             popup.keyboard.press(key)
@@ -801,7 +843,7 @@ def main():
     parser.add_argument("--artifacts-dir", type=Path, required=True)
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--native-hotkeys", action="store_true", help="Opt in to guarded Windows accelerator input; requires the isolated QA window to be available for foreground focus")
-    parser.add_argument("--scenario", choices=("full", "tab-rows", "tab-controls", "hotkeys"), default="full")
+    parser.add_argument("--scenario", choices=("full", "tab-rows", "tab-controls", "hotkeys", "transient"), default="full")
     parser.add_argument("--executable", type=Path, help="Reuse an installed full Chromium instead of downloading the revision expected by Python Playwright")
     args = parser.parse_args()
     artifacts = Path(tempfile.mkdtemp(prefix="mru-qa-", dir=args.artifacts_dir))
@@ -824,7 +866,7 @@ def main():
                 check.evidence.update(extension_path=str(extension), isolated_profile=str(profile), chromium=context.browser.version, headless=args.headless, executable=str(args.executable) if args.executable else "Playwright bundled Chromium")
                 check.prepare(f"http://127.0.0.1:{server.server_port}/fixture", names="ABC")
                 if args.scenario != "full":
-                    {"tab-rows": check.tab_rows, "tab-controls": check.row_controls, "hotkeys": check.hotkeys}[args.scenario]()
+                    {"tab-rows": check.tab_rows, "tab-controls": check.row_controls, "hotkeys": check.hotkeys, "transient": check.transient_popup}[args.scenario]()
                     assert not check.evidence["page_errors"], check.evidence["page_errors"]
                     print(f"MRU browser scenario passed: {args.scenario}", flush=True)
                     return

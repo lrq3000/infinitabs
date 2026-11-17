@@ -59,6 +59,26 @@ test('gesture barriers wait for a received repeat storage write before acknowled
     await assert.rejects(adapter.handleMessage({ ...context, type: 'MRU_GESTURE_BARRIER', gestureId: 'obsolete' }), /gesture/i);
 });
 
+test('native window focus loss closes a manual switcher independently of document focus', async () => {
+    const { browser, adapter } = await fixture();
+    await adapter.openSwitcher({ sourceWindowId: 1 });
+    const popupId = adapter.popupWindowId;
+    await browser.chrome.windows.update(1, { focused: true });
+    for (const listener of browser.listeners.focus) listener(1);
+    for (let i = 0; i < 100 && browser.windows.has(popupId); i++) await Promise.resolve();
+    assert.equal(browser.windows.has(popupId), false);
+    assert.equal(browser.tabs.get(11).active, true);
+});
+
+test('a transient no-window-focus notification does not dismiss an actually focused switcher', async () => {
+    const { browser, adapter } = await fixture();
+    await adapter.openSwitcher({ sourceWindowId: 1 });
+    const popupId = adapter.popupWindowId;
+    for (const listener of browser.listeners.focus) listener(-1);
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    assert.equal(browser.windows.has(popupId), true);
+});
+
 test('Recent unmount/delete resolve the actual mounted destination and delegate its lifecycle', async () => {
     const calls = [];
     const { adapter } = await fixture({

@@ -5,6 +5,7 @@ export class MruKeyboard {
     constructor({ registry, gesture = null, barrier = null, onDismiss = () => {}, onError = () => {} }) {
         Object.assign(this, { registry, barrier, onDismiss, onError });
         this.pending = []; this.epoch = 0; this.closed = false; this.activationStarted = false;
+        this.pressed = new Set();
         this.inputs = []; this.bindingsReady = registry.initialized === true;
         this.begin(gesture);
         if (!this.bindingsReady) this.bindingInitialization = registry.ready().then(() => {
@@ -46,6 +47,7 @@ export class MruKeyboard {
 
     keyDown(event) {
         if (this.closed) return false;
+        if (!event.isComposing && event.keyCode !== 229) this.pressed.add(this.keyIdentity(event));
         if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229) { this.cancel(); return true; }
         if (!this.bindingsReady) {
             if (!HotkeyChord.fromEvent(event)) return false;
@@ -61,9 +63,12 @@ export class MruKeyboard {
 
     keyUp(event) {
         if (this.closed) return;
+        this.pressed.delete(this.keyIdentity(event));
         if (!this.bindingsReady) { this.inputs.push({ type: 'keyUp', event: this.snapshot(event) }); return; }
         const key = { Ctrl: 'Control', Alt: 'Alt', Shift: 'Shift', Command: 'Meta' }[this.modifier];
-        if (!this.armed || this.closed || event.key !== key || HotkeyChord.modifierHeld(event, this.modifier)) return;
+        if (event.key === key && !HotkeyChord.modifierHeld(event, this.modifier)) this.primaryReleased = true;
+        // Do not infer a missed modifier release from another keyup. Once that release is observed, wait for any other observed held keys too, regardless of release order.
+        if (!this.armed || !this.primaryReleased || this.pressed.size) return;
         this.armed = false; this.confirmRequested = true; this.pump();
     }
 
@@ -103,15 +108,18 @@ export class MruKeyboard {
     async settled() { await this.bindingInitialization; await this.draining; }
 
     snapshot(event) {
-        return { key: event.key, ctrlKey: event.ctrlKey, altKey: event.altKey, shiftKey: event.shiftKey, metaKey: event.metaKey, isComposing: event.isComposing, keyCode: event.keyCode };
+        return { key: event.key, code: event.code, ctrlKey: event.ctrlKey, altKey: event.altKey, shiftKey: event.shiftKey, metaKey: event.metaKey, isComposing: event.isComposing, keyCode: event.keyCode };
     }
+
+    keyIdentity(event) { return event.code || (event.key?.length === 1 ? event.key.toUpperCase() : event.key); }
 
     disarm() {
         this.epoch++; this.pending = []; this.inputs = []; this.armed = false; this.confirmRequested = false;
+        this.pressed.clear(); this.primaryReleased = false;
         this.activationStarted = false;
     }
 
-    blur() { if (this.armed || this.confirmRequested) this.cancel(); }
+    blur() { this.cancel(); }
     cancel() { if (this.closed) return; this.disarm(); this.closed = true; this.onDismiss(); }
     dispose() { this.disarm(); this.closed = true; }
 }

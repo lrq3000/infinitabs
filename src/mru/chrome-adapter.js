@@ -26,6 +26,7 @@ export class MruChromeAdapter {
     start() {
         // Register before waiting for initialization: MV3 can wake for any one of these events.
         this.chrome.windows.onFocusChanged?.addListener(windowId => {
+            if (this.popupWindowId && windowId !== this.popupWindowId) this.run(this.dismissOnFocusLoss());
             if (windowId >= 0) this.run(this.observeCurrent(windowId));
         });
         this.chrome.bookmarks.onRemoved?.addListener((id, info) => this.run(this.onBookmarksRemoved(id, info)));
@@ -238,6 +239,15 @@ export class MruChromeAdapter {
         this.popupWindowId = null; this.popupContext = null;
         await this.chrome.storage.session?.remove('mru.switcher');
         if (id) await this.chrome.windows.remove(id).catch(() => {});
+    }
+
+    async dismissOnFocusLoss() {
+        const id = this.popupWindowId;
+        const context = this.popupContext;
+        const focused = await this.chrome.windows.getLastFocused();
+        // Native focus is a second signal when a document's focus is emulated. Recheck current ownership/focus so transient NONE events and a newer popup/retarget cannot close the wrong UI.
+        if (this.popupWindowId !== id || this.popupContext !== context || (focused.id === id && focused.focused)) return;
+        await this.closeSwitcher();
     }
 
     windowRemoved(id) {

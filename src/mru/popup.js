@@ -12,6 +12,7 @@ applyTheme();
 window.addEventListener('storage', applyTheme);
 
 if (parameters.has('bridge')) {
+    document.querySelector('.mru-popup-header').hidden = false;
     document.getElementById('popup-title').textContent = 'Opening saved session…';
     root.textContent = 'Only the selected logical tab will be mounted.';
 } else {
@@ -25,8 +26,9 @@ if (parameters.has('bridge')) {
     const abort = new AbortController();
     // Install before all initialization awaits: releasing Ctrl during a worker wake still confirms the eventual selection, rather than leaving a stuck popup.
     window.addEventListener('keydown', event => {
+        const handled = keyboard.keyDown(event);
         const native = registry.definitions.get(registry.match(event))?.scope === 'browser';
-        if (native || keyboard.keyDown(event)) { event.preventDefault(); event.stopImmediatePropagation(); }
+        if (native || handled) { event.preventDefault(); event.stopImmediatePropagation(); }
     }, { capture: true, signal: abort.signal });
     window.addEventListener('keyup', event => keyboard.keyUp(event), { capture: true, signal: abort.signal });
     window.addEventListener('blur', () => keyboard.blur(), { signal: abort.signal });
@@ -51,7 +53,7 @@ if (parameters.has('bridge')) {
         registry.onChange = () => {
             const opener = registry.binding('open-mru-switcher');
             const modifier = HotkeyChord.primaryModifier(opener);
-            hint.textContent = `${opener || 'Opening shortcut unassigned'} older · ${registry.binding('mru-newer')} newer · release ${modifier || 'opening modifier'} to switch in keyboard mode · ${registry.binding('mru-confirm')}/click switch · Esc cancel`;
+            hint.textContent = `${opener || 'Opening shortcut unassigned'} older · ${registry.binding('mru-newer')} newer · release ${modifier || 'opening modifier'} and held keys to switch · ${registry.binding('mru-confirm')}/click switch · Esc cancel`;
         };
         registry.onChange();
         const colors = await chrome.storage.local.get({ activeTabBg: '' });
