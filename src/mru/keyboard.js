@@ -21,7 +21,7 @@ export class MruKeyboard {
     begin(gesture) {
         if (this.closed) return;
         if (this.gestureId !== gesture?.id) {
-            this.disarm();
+            this.resetGesture();
             this.gestureId = gesture?.id;
             this.sequence = 0;
             this.modifier = gesture ? HotkeyChord.primaryModifier(gesture.shortcut) : null;
@@ -47,7 +47,11 @@ export class MruKeyboard {
 
     keyDown(event) {
         if (this.closed) return false;
-        if (!event.isComposing && event.keyCode !== 229) this.pressed.add(this.keyIdentity(event));
+        // Physical state belongs to this document, not to an individual gesture or deferred binding interpretation. Replaying old input must never modify today's held-key set.
+        if (!this.replaying && !event.isComposing && event.keyCode !== 229) {
+            this.pressed.add(this.keyIdentity(event));
+            if (event.key === this.modifierKey || HotkeyChord.modifierHeld(event, this.modifier)) this.primaryReleased = false;
+        }
         if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229) { this.cancel(); return true; }
         if (!this.bindingsReady) {
             if (!HotkeyChord.fromEvent(event)) return false;
@@ -56,20 +60,23 @@ export class MruKeyboard {
         }
         const action = this.registry.match(event);
         if (action === 'mru-cancel') { this.cancel(); return true; }
-        if (action === 'mru-confirm') { this.armed = false; this.confirmRequested = true; this.pump(); return true; }
+        if (action === 'mru-confirm') { this.armed = false; this.releaseConfirmation = false; this.confirmRequested = true; this.pump(); return true; }
         if (action === 'mru-newer') { this.pending.push(-1); this.pump(); return true; }
         return false; // The opening chord is owned by commands.onCommand, not a second DOM advance.
     }
 
     keyUp(event) {
         if (this.closed) return;
-        this.pressed.delete(this.keyIdentity(event));
+        if (!this.replaying) {
+            this.pressed.delete(this.keyIdentity(event));
+            if (event.key === this.modifierKey && !HotkeyChord.modifierHeld(event, this.modifier)) this.primaryReleased = true;
+            else if (HotkeyChord.modifierHeld(event, this.modifier)) this.primaryReleased = false;
+        }
         if (!this.bindingsReady) { this.inputs.push({ type: 'keyUp', event: this.snapshot(event) }); return; }
-        const key = { Ctrl: 'Control', Alt: 'Alt', Shift: 'Shift', Command: 'Meta' }[this.modifier];
-        if (event.key === key && !HotkeyChord.modifierHeld(event, this.modifier)) this.primaryReleased = true;
+        if (this.confirmRequested && this.releaseConfirmation) { if (this.canConfirm) this.pump(); return; }
         // Do not infer a missed modifier release from another keyup. Once that release is observed, wait for any other observed held keys too, regardless of release order.
         if (!this.armed || !this.primaryReleased || this.pressed.size) return;
-        this.armed = false; this.confirmRequested = true; this.pump();
+        this.armed = false; this.releaseConfirmation = true; this.confirmRequested = true; this.pump();
     }
 
     pump() {
@@ -77,7 +84,7 @@ export class MruKeyboard {
         this.running = true;
         this.draining = this.drain().catch(error => { this.disarm(); this.onError(error); }).finally(() => {
             this.running = false;
-            if (!this.closed && (this.pending.length || this.confirmRequested) && this.view.controller.canNavigate) this.pump();
+            if (!this.closed && (this.pending.length || this.canConfirm) && this.view.controller.canNavigate) this.pump();
         });
     }
 
@@ -86,7 +93,7 @@ export class MruKeyboard {
         while (!this.closed && epoch === this.epoch) {
             if (!await this.view.controller.whenReady() || this.closed || epoch !== this.epoch) return;
             if (this.pending.length) { await this.view.advanceSelection(this.pending.shift()); continue; }
-            if (this.confirmRequested && !this.activationStarted) {
+            if (this.canConfirm && !this.activationStarted) {
                 if (this.gestureId && this.barrier) {
                     const result = await this.barrier(this.gestureId);
                     if (this.closed || epoch !== this.epoch) return;
@@ -96,8 +103,11 @@ export class MruKeyboard {
                         if (this.pending.length) continue;
                     }
                 }
+                // New input can arrive during query/page/barrier awaits. A release-driven confirmation must still have no observed held keys at the actual activation boundary.
+                if (!this.canConfirm) return;
                 this.confirmRequested = false; this.activationStarted = true;
                 const activated = await this.view.controller.activate();
+                if (this.closed || epoch !== this.epoch) return;
                 this.activationStarted = Boolean(activated);
                 if (activated) this.closed = true;
             }
@@ -113,13 +123,18 @@ export class MruKeyboard {
 
     keyIdentity(event) { return event.code || (event.key?.length === 1 ? event.key.toUpperCase() : event.key); }
 
-    disarm() {
-        this.epoch++; this.pending = []; this.inputs = []; this.armed = false; this.confirmRequested = false;
-        this.pressed.clear(); this.primaryReleased = false;
+    get modifierKey() { return { Ctrl: 'Control', Alt: 'Alt', Shift: 'Shift', Command: 'Meta' }[this.modifier]; }
+    get canConfirm() { return this.confirmRequested && (!this.releaseConfirmation || (this.primaryReleased && this.pressed.size === 0)); }
+
+    resetGesture() {
+        this.epoch++; this.pending = []; this.armed = false; this.confirmRequested = false;
+        this.primaryReleased = false;
+        this.releaseConfirmation = false;
         this.activationStarted = false;
     }
 
+    disarm() { this.resetGesture(); this.inputs = []; }
     blur() { this.cancel(); }
-    cancel() { if (this.closed) return; this.disarm(); this.closed = true; this.onDismiss(); }
-    dispose() { this.disarm(); this.closed = true; }
+    cancel() { if (this.closed) return; this.disarm(); this.pressed.clear(); this.closed = true; this.onDismiss(); }
+    dispose() { this.disarm(); this.pressed.clear(); this.closed = true; }
 }

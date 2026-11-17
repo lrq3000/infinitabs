@@ -123,6 +123,30 @@ test('native popup removal starts without waiting for storage cleanup', async ()
     finishCleanup(); await close;
 });
 
+test('a delayed activation cannot dismiss a replacement popup for the same source session', async () => {
+    const { browser, adapter } = await fixture();
+    await adapter.openSwitcher({ sourceWindowId: 1 });
+    const oldId = adapter.popupWindowId;
+    const get = browser.chrome.windows.get;
+    let releaseContext; let delayNext = true;
+    browser.chrome.windows.get = async id => {
+        if (delayNext) { delayNext = false; await new Promise(resolve => { releaseContext = resolve; }); }
+        return get(id);
+    };
+    const activation = adapter.handleMessage({ type: 'MRU_ACTIVATE', sourceWindowId: 1, sourceSessionId: 's', key: 'tab:a', dismissSwitcher: true });
+    for (let i = 0; i < 100 && !releaseContext; i++) await Promise.resolve();
+    assert.equal(typeof releaseContext, 'function');
+    await adapter.closeSwitcher();
+    browser.windows.set(50, { id: 50, type: 'normal', focused: false, incognito: false });
+    await adapter.openSwitcher({ sourceWindowId: 1 });
+    const newId = adapter.popupWindowId;
+    assert.notEqual(newId, oldId);
+    releaseContext(); await activation;
+    assert.equal(browser.windows.has(newId), true);
+    assert.equal(adapter.popupWindowId, newId);
+    assert.ok(browser.chrome.storage.session.values['mru.switcher']);
+});
+
 test('Recent unmount/delete resolve the actual mounted destination and delegate its lifecycle', async () => {
     const calls = [];
     const { adapter } = await fixture({

@@ -200,3 +200,66 @@ for (const disarm of [false, true]) test(`focus loss cancels ${disarm ? 'pointer
     assert.equal(f.dismissed(), 1);
     assert.deepEqual(f.activations, []);
 });
+
+test('a command beginning in a manual popup preserves keys already observed held', async () => {
+    const f = await fixture('Ctrl+Down', true); await f.mount();
+    f.keyboard.keyDown(event('Control', { code: 'ControlLeft', ctrlKey: true }));
+    f.keyboard.keyDown(event('ArrowDown', { code: 'ArrowDown', ctrlKey: true }));
+    f.keyboard.command({ type: 'MRU_ADVANCE', gesture: { ...f.gesture, sequence: 1 } });
+    await f.keyboard.settled();
+    f.keyboard.keyUp(event('Control', { code: 'ControlLeft' })); await f.keyboard.settled();
+    assert.deepEqual(f.activations, []);
+    f.keyboard.keyUp(event('ArrowDown', { code: 'ArrowDown' })); await f.keyboard.settled();
+    assert.deepEqual(f.activations, ['tab:c']);
+});
+
+test('binding replay cannot erase a modifier re-pressed after a historical release', async () => {
+    const f = await fixture('Ctrl+Down', false, true);
+    f.keyboard.keyUp(event('Control', { code: 'ControlLeft' }));
+    f.keyboard.keyDown(event('Control', { code: 'ControlLeft', ctrlKey: true }));
+    const mount = f.mount(); f.finishBindings(); await mount;
+    assert.deepEqual(f.activations, []);
+    f.keyboard.keyUp(event('Control', { code: 'ControlLeft' })); await f.keyboard.settled();
+    assert.deepEqual(f.activations, ['tab:b']);
+});
+
+test('release confirmation rechecks newly held keys after a delayed barrier and resumes on keyup', async () => {
+    const f = await fixture(); await f.mount();
+    let acknowledge; let calls = 0;
+    f.barrier.call = () => ++calls === 1 ? new Promise(resolve => { acknowledge = resolve; }) : Promise.resolve({ gesture: f.gesture });
+    f.keyboard.keyUp(event('Control'));
+    for (let i = 0; i < 30 && !acknowledge; i++) await Promise.resolve();
+    assert.equal(typeof acknowledge, 'function');
+    f.keyboard.keyDown(event('ArrowDown', { code: 'ArrowDown' }));
+    await f.controller.keyDown('ArrowDown'); // The input's existing plain-arrow handler still owns this navigation.
+    acknowledge({ gesture: f.gesture }); await f.keyboard.settled();
+    assert.deepEqual(f.activations, []);
+    f.keyboard.keyUp(event('ArrowDown', { code: 'ArrowDown' })); await f.keyboard.settled();
+    assert.deepEqual(f.activations, ['tab:c']);
+});
+
+test('explicit Enter confirmation remains available while another key is held', async () => {
+    const f = await fixture(); await f.mount();
+    f.keyboard.keyDown(event('x', { code: 'KeyX' }));
+    f.keyboard.keyDown(event('Enter', { code: 'Enter' })); await f.keyboard.settled();
+    assert.deepEqual(f.activations, ['tab:b']);
+});
+
+test('a late activation result cannot shut down a newer gesture in the same document', async () => {
+    const f = await fixture(); await f.mount();
+    const request = f.client.request.bind(f.client);
+    let finishActivation; let delayFirst = true;
+    f.client.request = message => {
+        const result = request(message);
+        if (message.type !== 'MRU_ACTIVATE' || !delayFirst) return result;
+        delayFirst = false;
+        return new Promise(resolve => { finishActivation = () => resolve(result); });
+    };
+    f.keyboard.keyUp(event('Control'));
+    for (let i = 0; i < 30 && !finishActivation; i++) await Promise.resolve();
+    assert.equal(typeof finishActivation, 'function');
+    f.keyboard.begin({ ...f.gesture, id: 'replacement-gesture' });
+    finishActivation(); await f.keyboard.settled();
+    f.keyboard.keyDown(event('Enter')); await f.keyboard.settled();
+    assert.deepEqual(f.activations, ['tab:b', 'tab:b']);
+});

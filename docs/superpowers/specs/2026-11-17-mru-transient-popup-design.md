@@ -11,3 +11,7 @@ After queued navigation and the worker's gesture barrier settle, the popup hands
 ## Alternatives and limits
 
 A toolbar action popup supplies frameless presentation and native outside-click dismissal but changes placement and action ownership; it is unnecessary for this priority. The current separate window is the smallest reusable solution. A native helper would be required for reliable global physical key state but is outside scope. Window focus loss covers ordinary outside clicks; browser-owned dialogs and existing delete confirmation must be checked for false dismissal. Native Windows Ctrl+Escape remains OS-reserved. The source worktree, isolated browser profiles and test artifacts remain retained.
+
+## Independent review guarantees
+
+Dismissal captures popup/context identity before asynchronous source reads, so a delayed request cannot remove a newer popup for the same session. Physical held-key state belongs to the document and survives gesture resets; binding replay interprets actions without changing physical state. Release-driven confirmation rechecks physical state after each asynchronous navigation/barrier boundary and resumes on the final keyup without spinning. Explicit Enter remains an immediate confirmation action. Late activation results from an older gesture cannot close or disable its replacement; the worker alone owns popup activation dismissal. Each review finding and the related late-result case has failing-first regression coverage.

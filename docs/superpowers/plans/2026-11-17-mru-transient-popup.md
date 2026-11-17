@@ -46,8 +46,12 @@
 
 **Interfaces:** Add a popup-only `MruClient(chrome, { dismissSwitcherOnActivate: true })` option; only MRU_ACTIVATE requests gain `dismissSwitcher: true`. The worker accepts that option, attaches its existing run/error handler to activation, and closes the UI independently of target completion. `closeSwitcher()` starts native removal and storage cleanup concurrently.
 
-- [ ] Write failing tests for client scoping, dismissal while native activation is pending, worker error broadcast, and native removal during delayed storage cleanup.
-- [ ] Run `node --test test/mru/view.test.mjs test/mru/chrome-adapter.test.mjs`; expect missing handoff behavior to fail.
-- [ ] Implement scoped activation handoff and concurrent close/cleanup. Update user documentation for observed-key release, immediate UI dismissal and background error handling.
-- [ ] Run all directly relevant Node tests, cleanup tests, and isolated transient/hotkeys/row-controls browser checks. Inspect screenshots and console evidence.
-- [ ] Obtain one fresh-context review of this refinement; fix verified important findings with failing-first regressions, record rulings/deferred minors, commit coherent results, and leave the clean branch/worktree in place.
+- [x] Write failing tests for client scoping, dismissal while native activation is pending, worker error broadcast, and native removal during delayed storage cleanup.
+- [x] Run `node --test test/mru/view.test.mjs test/mru/chrome-adapter.test.mjs`; expect missing handoff behavior to fail.
+- [x] Implement scoped activation handoff and concurrent close/cleanup. Update user documentation for observed-key release, immediate UI dismissal and background error handling.
+- [x] Run all directly relevant Node tests, cleanup tests, and isolated transient/hotkeys/row-controls browser checks. Inspect screenshots and console evidence.
+- [x] Obtain one fresh-context review of this refinement; fix verified important findings with failing-first regressions, record rulings/deferred minors, commit coherent results, and leave the clean branch/worktree in place.
+
+## Review outcome
+
+Four Important findings were reproduced and fixed in one pass: stale popup dismissal ownership, gesture reset clearing held keys, binding replay corrupting physical state, and confirmation failing to recheck keys after an asynchronous barrier. An additional regression covers late activation acknowledgments disabling a newer gesture. Final verification: 123 relevant Node tests, three cleanup tests, and isolated Chromium transient, hotkeys and row-controls scenarios pass. The reviewer did not perform browser/OS interaction; author-run browser checks verify actual row confirmation dialogs, while global physical key state and native platform timing retain their documented limits. No new Minor findings were deferred in this refinement; the earlier hotkey-shadowing warning remains in the parent feature plan.

@@ -47,7 +47,8 @@ if (parameters.has('bridge')) {
     try {
         const context = await client.request({ type: 'MRU_POPUP_CONTEXT', sourceWindowId: Number(parameters.get('sourceWindowId')) });
         keyboard.begin(context.gesture);
-        view = new MruView({ root, client, context, showLiveToggle: true, keyboardManaged: true, onActivated: close, onDismiss: close });
+        // The worker owns activation dismissal. A late acknowledgment from an old selection must not close a popup that was retargeted while the request was pending.
+        view = new MruView({ root, client, context, showLiveToggle: true, keyboardManaged: true, onDismiss: close });
         await Promise.all([registry.ready(), view.mount()]); view.focus(); keyboard.attach(view);
         const hint = document.querySelector('.mru-popup-hint');
         registry.onChange = () => {

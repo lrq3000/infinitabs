@@ -458,6 +458,8 @@ export class MruChromeAdapter {
     }
 
     async handleMessage(message) {
+        // A source session can outlive several popup instances. Capture dismissal ownership before the first await so a late request cannot close a newer UI for that same session.
+        const dismissOwner = message.type === 'MRU_ACTIVATE' && message.dismissSwitcher === true ? { id: this.popupWindowId, context: this.popupContext } : null;
         if (message.type === 'MRU_GESTURE_BARRIER') {
             // Release can overtake a repeat's storage/broadcast continuation. Acknowledge all command callbacks already queued before allowing the popup to commit its selection.
             await this.commandQueue;
@@ -498,7 +500,9 @@ export class MruChromeAdapter {
                 if (message.dismissSwitcher === true) {
                     // The worker, not the closing popup document, owns completion and error reporting. Acknowledgment means accepted, not that native focus/mount has finished.
                     this.run(this.activate(message));
-                    if (this.popupContext?.sourceWindowId === context.sourceWindowId && this.popupContext.sourceSessionId === context.sourceSessionId) await this.closeSwitcher();
+                    const ownsPopup = dismissOwner.id && this.popupWindowId === dismissOwner.id && this.popupContext === dismissOwner.context;
+                    const ownsSource = this.popupContext?.sourceWindowId === context.sourceWindowId && this.popupContext?.sourceSessionId === context.sourceSessionId;
+                    if (ownsPopup && ownsSource) await this.closeSwitcher();
                     return { success: true, pending: true };
                 }
                 return this.activate(message);
