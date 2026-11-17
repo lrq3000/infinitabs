@@ -152,6 +152,10 @@ For best usage, it is recommended to keep the native tabstrip horizontal, not ve
 
 ### Recent tabs and quick switching
 
+Use the quick switcher to jump back to recently viewed tabs. With the default shortcuts, **Ctrl+↓** opens it; keep Ctrl held and press **↓** for older tabs or **↑** for newer tabs. Release the shortcut keys to switch, or press **Esc** to cancel. Shortcuts are configurable under **Settings → Keyboard shortcuts**.
+
+![Recent-tab quick switcher showing example tabs](docs/screenshots/recent-tabs-quick-switcher.png)
+
 Click **Recent** beside **Live Only** in the Session sidebar to search recently viewed tabs with the usual search row and previous/next result buttons. In Recent mode, the **↗** button beside Next opens the compact keyboard-first switcher in a separate window. The suggested opening shortcut is **Ctrl+Down**: keep Ctrl held and tap Down to select older recent tabs, use **Ctrl+Up** to select newer ones, then release Ctrl and any other observed held keys to switch once. Escape cancels without activating; clicking a row also switches. Clicking a row's unmount/delete controls disarms release-to-switch so releasing Ctrl does not activate the target afterwards. Mouse-opened switchers retain Enter/click confirmation rather than switching on an unrelated Ctrl release. Both mouse-opened and keyboard-opened switchers cancel and close on outside focus, even after a row action. The redundant in-page title/close bar is hidden; the native window frame remains. The toolbar icon continues opening the sidebar.
 
 Once navigation and the worker's gesture acknowledgment are settled, selecting from the popup hands activation to the worker and closes the window without waiting for target focus or mounting to finish. Slow persistence cleanup does not delay native window removal. Later activation failures are logged and broadcast by the worker rather than keeping the popup open; reopen the switcher to try again. Sidebar activation keeps its existing acknowledged, retryable behavior.
