@@ -1,5 +1,11 @@
 // options.js
 import { TabDisplaySettings } from './ui/tab-display-settings.js';
+import { HotkeyRegistry } from './hotkeys/registry.js';
+import { HotkeySettingsView } from './hotkeys/settings-view.js';
+
+const hotkeys = new HotkeySettingsView({ root: document.getElementById('hotkeys-settings'), registry: new HotkeyRegistry({ chrome }) });
+hotkeys.mount();
+window.addEventListener('pagehide', () => hotkeys.dispose());
 
 const confirmDeleteCheckbox = document.getElementById('confirm-delete-checkbox');
 const selectLastActiveCheckbox = document.getElementById('select-last-active-checkbox');

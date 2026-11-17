@@ -36,11 +36,24 @@
       opacity: 0;
       transition: opacity 0.5s;
     }
+
+    .hotkeys-table-scroll { overflow-x: auto; }
+    #hotkeys-settings table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    #hotkeys-settings th, #hotkeys-settings td { padding: 8px 5px; text-align: left; vertical-align: top; border-bottom: 1px solid #ddd; }
+    #hotkeys-settings button { cursor: pointer; font: inherit; padding: 5px 8px; }
+    #hotkeys-settings button[data-recording] { outline: 2px solid #1769aa; }
+    #hotkeys-status { font-size: 13px; min-height: 1.4em; }
   </style>
 </head>
 
 <body>
   <h1>InfiniTabs Settings</h1>
+
+  <section class="option-group" aria-labelledby="hotkeys-heading">
+    <h2 id="hotkeys-heading" style="font-size: 16px;">Keyboard shortcuts</h2>
+    <p style="font-size: 12px; color: #666;">Click a hotkey to change it. Browser-wide shortcuts open Chrome’s native editor; return here to see the actual assignment. Other shortcuts are recorded here and apply only inside the Recent switcher. Escape always cancels the switcher, even with Ctrl held.</p>
+    <div id="hotkeys-settings"></div>
+  </section>
 
   <div class="option-group">
     <h2 style="font-size: 16px; margin: 0 0 10px 0;">Appearance</h2>
