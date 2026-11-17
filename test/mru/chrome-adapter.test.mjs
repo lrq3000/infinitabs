@@ -79,6 +79,50 @@ test('a transient no-window-focus notification does not dismiss an actually focu
     assert.equal(browser.windows.has(popupId), true);
 });
 
+test('popup activation handoff dismisses the window before a delayed native focus completes', async () => {
+    const { browser, adapter } = await fixture();
+    await adapter.openSwitcher({ sourceWindowId: 1 });
+    const popupId = adapter.popupWindowId;
+    let finishFocus;
+    const update = browser.chrome.tabs.update;
+    browser.chrome.tabs.update = async (id, values) => { await new Promise(resolve => { finishFocus = resolve; }); return update(id, values); };
+    let accepted = false;
+    const request = adapter.handleMessage({ type: 'MRU_ACTIVATE', sourceWindowId: 1, sourceSessionId: 's', key: 'tab:a', dismissSwitcher: true }).then(result => { accepted = result.success; return result; });
+    for (let i = 0; i < 100 && (!finishFocus || !accepted); i++) await Promise.resolve();
+    assert.equal(typeof finishFocus, 'function');
+    assert.equal(browser.windows.has(popupId), false, 'the UI must not wait for native focus/mount');
+    assert.equal(accepted, true);
+    const activation = adapter.activations.get('tab:a');
+    finishFocus(); await request; await activation;
+    assert.equal(browser.tabs.get(11).active, true);
+    assert.equal(browser.windows.has(1), true);
+});
+
+test('failed handed-off activation is reported by the worker after popup dismissal', async () => {
+    const { browser, adapter } = await fixture();
+    await adapter.openSwitcher({ sourceWindowId: 1 });
+    const popupId = adapter.popupWindowId;
+    browser.chrome.tabs.update = async () => { throw new Error('Native focus failed'); };
+    const result = await adapter.handleMessage({ type: 'MRU_ACTIVATE', sourceWindowId: 1, sourceSessionId: 's', key: 'tab:a', dismissSwitcher: true }).catch(error => ({ error: error.message }));
+    assert.equal(result.success, true, 'acceptance is not a false claim that activation completed');
+    for (let i = 0; i < 100 && !browser.messages.some(message => message.type === 'MRU_ERROR'); i++) await Promise.resolve();
+    assert.equal(browser.windows.has(popupId), false);
+    assert.equal(browser.messages.find(message => message.type === 'MRU_ERROR')?.error, 'Native focus failed');
+});
+
+test('native popup removal starts without waiting for storage cleanup', async () => {
+    const { browser, adapter } = await fixture();
+    await adapter.openSwitcher({ sourceWindowId: 1 });
+    const popupId = adapter.popupWindowId;
+    let finishCleanup;
+    browser.chrome.storage.session.remove = () => new Promise(resolve => { finishCleanup = resolve; });
+    const close = adapter.closeSwitcher();
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    assert.equal(browser.windows.has(popupId), false);
+    assert.equal(typeof finishCleanup, 'function');
+    finishCleanup(); await close;
+});
+
 test('Recent unmount/delete resolve the actual mounted destination and delegate its lifecycle', async () => {
     const calls = [];
     const { adapter } = await fixture({

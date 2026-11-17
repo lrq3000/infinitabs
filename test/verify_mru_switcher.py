@@ -302,6 +302,8 @@ class MruCheck(MovementCheck):
         source_session_id = self.session()["sessionId"]
         for name in "ABC":
             self.select_native(name)
+        self.evidence['row_controls_initial_ui'] = self.sidebar.evaluate("() => ({visibility:document.visibilityState,focus:document.hasFocus(),width:innerWidth,height:innerHeight,buttonDisplay:getComputedStyle(document.getElementById('recent-tabs-btn')).display})")
+        self.sidebar.screenshot(path=str(self.artifacts / 'row-controls-before-actions.png'))
         self.sidebar.locator("#recent-tabs-btn").click()
         rows = self.sidebar.locator("#recent-tabs-container")
         row = lambda name: rows.locator("[data-key='tab:" + self.bookmark_ids[name] + "']")

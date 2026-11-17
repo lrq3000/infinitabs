@@ -1,6 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MruController } from '../../src/mru/view.js';
+import { MruClient, MruController } from '../../src/mru/view.js';
+
+test('popup dismissal handoff is scoped to activation and leaves sidebar requests unchanged', async () => {
+    const sent = [];
+    const chrome = { runtime: { sendMessage: async message => { sent.push(message); return { success: true }; } } };
+    const popup = new MruClient(chrome, { dismissSwitcherOnActivate: true });
+    const sidebar = new MruClient(chrome);
+    const activation = { type: 'MRU_ACTIVATE', key: 'tab:a' };
+    await popup.request(activation);
+    await sidebar.request(activation);
+    await popup.request({ type: 'MRU_QUERY' });
+    assert.deepEqual(sent, [{ type: 'MRU_ACTIVATE', key: 'tab:a', dismissSwitcher: true }, activation, { type: 'MRU_QUERY' }]);
+    assert.equal(activation.dismissSwitcher, undefined, 'do not mutate caller-owned request/context');
+});
 
 function fixture(currentBookmarkId = null) {
     assert.equal(typeof MruController, 'function', 'shared MRU controller must be implemented');

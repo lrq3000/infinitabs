@@ -237,8 +237,8 @@ export class MruChromeAdapter {
     async closeSwitcher() {
         const id = this.popupWindowId;
         this.popupWindowId = null; this.popupContext = null;
-        await this.chrome.storage.session?.remove('mru.switcher');
-        if (id) await this.chrome.windows.remove(id).catch(() => {});
+        // Start native removal immediately; slow persistence must not keep the UI visible. Both operations are initiated in this turn before a newer popup can persist its context.
+        await Promise.all([id ? this.chrome.windows.remove(id).catch(() => {}) : undefined, this.chrome.storage.session?.remove('mru.switcher')]);
     }
 
     async dismissOnFocusLoss() {
@@ -494,7 +494,14 @@ export class MruChromeAdapter {
                 return { ...context, ...value };
             }
             case 'MRU_OPEN': await this.openSwitcher({ ...context, keyboard: message.keyboard === true }); return { success: true };
-            case 'MRU_ACTIVATE': return this.activate(message);
+            case 'MRU_ACTIVATE':
+                if (message.dismissSwitcher === true) {
+                    // The worker, not the closing popup document, owns completion and error reporting. Acknowledgment means accepted, not that native focus/mount has finished.
+                    this.run(this.activate(message));
+                    if (this.popupContext?.sourceWindowId === context.sourceWindowId && this.popupContext.sourceSessionId === context.sourceSessionId) await this.closeSwitcher();
+                    return { success: true, pending: true };
+                }
+                return this.activate(message);
             case 'MRU_UNMOUNT':
             case 'MRU_DELETE': return this.mutate(message);
             default: throw new Error('Unknown MRU request');

@@ -3,9 +3,10 @@ import { TabDisplaySettings } from '../ui/tab-display-settings.js';
 
 // Worker transport is shared too: popup and sidebar cannot silently develop different error/filter semantics.
 export class MruClient {
-    constructor(chrome) { this.chrome = chrome; }
+    constructor(chrome, { dismissSwitcherOnActivate = false } = {}) { Object.assign(this, { chrome, dismissSwitcherOnActivate }); }
     async request(message) {
-        const result = await this.chrome.runtime.sendMessage(message);
+        const request = this.dismissSwitcherOnActivate && message.type === 'MRU_ACTIVATE' ? { ...message, dismissSwitcher: true } : message;
+        const result = await this.chrome.runtime.sendMessage(request);
         if (!result || result.error) throw new Error(result?.error || 'MRU background is unavailable');
         return result;
     }

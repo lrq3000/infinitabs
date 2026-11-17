@@ -16,7 +16,7 @@ if (parameters.has('bridge')) {
     document.getElementById('popup-title').textContent = 'Opening saved session…';
     root.textContent = 'Only the selected logical tab will be mounted.';
 } else {
-    const client = new MruClient(chrome);
+    const client = new MruClient(chrome, { dismissSwitcherOnActivate: true });
     const registry = new HotkeyRegistry({ chrome });
     let view;
     const gesture = parameters.has('gestureId') ? { id: parameters.get('gestureId'), shortcut: parameters.get('shortcut'), sequence: 0 } : null;
