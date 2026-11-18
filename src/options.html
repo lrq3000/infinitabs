@@ -5,17 +5,39 @@
   <meta charset="UTF-8">
   <title>InfiniTabs Options</title>
   <style>
+    /* Set the native form-control palette from the extension theme, not the browser preference. */
+    :root {
+      color-scheme: light;
+      --options-bg: #fff;
+      --options-text: #333;
+      --options-muted: #666;
+      --options-border: #ddd;
+      --options-saved: green;
+      --options-focus: #1769aa;
+    }
+
+    :root.dark-mode {
+      color-scheme: dark;
+      --options-bg: #1e1e1e;
+      --options-text: #eee;
+      --options-muted: #aaa;
+      --options-border: #3e3e42;
+      --options-saved: #73c991;
+      --options-focus: #60a5fa;
+    }
+
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       padding: 20px;
       max-width: 600px;
       margin: 0 auto;
-      color: #333;
+      background-color: var(--options-bg);
+      color: var(--options-text);
     }
 
     h1 {
       font-size: 20px;
-      border-bottom: 1px solid #ddd;
+      border-bottom: 1px solid var(--options-border);
       padding-bottom: 10px;
     }
 
@@ -32,16 +54,18 @@
 
     .status {
       margin-top: 10px;
-      color: green;
+      color: var(--options-saved);
       opacity: 0;
       transition: opacity 0.5s;
     }
 
+    .help-text { font-size: 12px; color: var(--options-muted); }
+    hr { border: none; border-bottom: 1px solid var(--options-border); margin: 20px 0; }
     .hotkeys-table-scroll { overflow-x: auto; }
     #hotkeys-settings table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    #hotkeys-settings th, #hotkeys-settings td { padding: 8px 5px; text-align: left; vertical-align: top; border-bottom: 1px solid #ddd; }
+    #hotkeys-settings th, #hotkeys-settings td { padding: 8px 5px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--options-border); }
     #hotkeys-settings button { cursor: pointer; font: inherit; padding: 5px 8px; }
-    #hotkeys-settings button[data-recording] { outline: 2px solid #1769aa; }
+    #hotkeys-settings button[data-recording] { outline: 2px solid var(--options-focus); }
     #hotkeys-status { font-size: 13px; min-height: 1.4em; }
   </style>
 </head>
@@ -51,8 +75,8 @@
 
   <section class="option-group" aria-labelledby="hotkeys-heading">
     <h2 id="hotkeys-heading" style="font-size: 16px;">Keyboard shortcuts</h2>
-    <p style="font-size: 12px; color: #666;">Click a hotkey to change it. Browser-wide shortcuts open Chrome’s native editor; return here to see the actual assignment. Other shortcuts are recorded here and apply only inside the Recent switcher. Escape always cancels the switcher, even with Ctrl held.</p>
-    <p style="font-size: 12px; color: #666;">Browser and OS shortcuts take priority. Windows may open Start for Ctrl+Escape; losing focus cancels a held switcher, but the extension cannot suppress Start. Existing installations keep their Chrome shortcut assignment until you change it.</p>
+    <p class="help-text">Click a hotkey to change it. Browser-wide shortcuts open Chrome’s native editor; return here to see the actual assignment. Other shortcuts are recorded here and apply only inside the Recent switcher. Escape always cancels the switcher, even with Ctrl held.</p>
+    <p class="help-text">Browser and OS shortcuts take priority. Windows may open Start for Ctrl+Escape; losing focus cancels a held switcher, but the extension cannot suppress Start. Existing installations keep their Chrome shortcut assignment until you change it.</p>
     <div id="hotkeys-settings"></div>
   </section>
 
@@ -67,7 +91,7 @@
           <option value="url">Title + full URL</option>
         </select>
       </label>
-      <div style="font-size: 12px; color: #666;">Applies to normal tabs, Recent tabs, and the separate switcher.</div>
+      <div class="help-text">Applies to normal tabs, Recent tabs, and the separate switcher.</div>
       <label>
         Active Tab Background:
         <input type="text" id="active-tab-color-input" placeholder="e.g. `#e6f7ff`"
@@ -80,12 +104,12 @@
                pattern="^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$"
                spellcheck="false" autocomplete="off">
       </label>
-      <div style="font-size: 12px; color: `#666`;">
+      <div class="help-text">
         Leave blank to use theme defaults.
       </div>
     </div>
   </div>
-  <hr style="border: none; border-bottom: 1px solid `#ddd`; margin: 20px 0;">
+  <hr>
 
   <div class="option-group">
     <label>
@@ -134,7 +158,7 @@
   <div class="option-group">
     <h2 style="font-size: 16px;">Recent tabs</h2>
     <label><input type="checkbox" id="mru-recovery-checkbox" disabled>Enable recovery history for deleted logical tabs</label>
-    <p style="font-size: 12px; color: #666;">Off by default: deleted tabs are not retained by MRU. When enabled, retain up to 100 future deletions for 30 days. Restored tabs append at the current session’s end without their former groups or positions. Turning this off clears saved recovery entries, not existing logical tabs.</p>
+    <p class="help-text">Off by default: deleted tabs are not retained by MRU. When enabled, retain up to 100 future deletions for 30 days. Restored tabs append at the current session’s end without their former groups or positions. Turning this off clears saved recovery entries, not existing logical tabs.</p>
     <p id="mru-recovery-status" role="status" style="font-size: 12px;"></p>
     <p style="font-size: 12px;">MRU follows the sidebar’s Live Only toggle. Configure the switcher and Previous tab shortcuts at chrome://extensions/shortcuts. Private-window MRU is not supported in this release.</p>
   </div>

@@ -3,6 +3,17 @@ import { TabDisplaySettings } from './ui/tab-display-settings.js';
 import { HotkeyRegistry } from './hotkeys/registry.js';
 import { HotkeySettingsView } from './hotkeys/settings-view.js';
 
+// The sidebar writes this preference to extension-origin localStorage, which is shared with the options tab.
+const THEME_KEY = 'infiniTabsTheme';
+function applyTheme() {
+  document.documentElement.classList.toggle('dark-mode', localStorage.getItem(THEME_KEY) === 'dark');
+}
+
+applyTheme();
+window.addEventListener('storage', (event) => {
+  if (event.storageArea === localStorage && (event.key === THEME_KEY || event.key === null)) applyTheme();
+});
+
 const hotkeys = new HotkeySettingsView({ root: document.getElementById('hotkeys-settings'), registry: new HotkeyRegistry({ chrome }) });
 hotkeys.mount();
 window.addEventListener('pagehide', () => hotkeys.dispose());

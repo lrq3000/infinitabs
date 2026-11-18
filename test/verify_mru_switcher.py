@@ -491,6 +491,45 @@ class MruCheck(MovementCheck):
         self.sidebar.set_viewport_size({"width": 1100, "height": 800})
         self.evidence["flows"].append({"name": "responsive-header-controls-and-real-actions", "status": "pass", "widths": [240, 280, 320, 420], "themes": ["light", "dark"]})
 
+    def options_theme(self):
+        toggle = self.sidebar.locator("#theme-toggle-btn")
+        if not self.sidebar.locator("body").evaluate("body => body.classList.contains('dark-mode')"):
+            toggle.click()
+        expect(self.sidebar.locator("body")).to_have_class("dark-mode")
+        with self.context.expect_page() as opened:
+            self.sidebar.locator("#settings-btn").click()
+        options = opened.value
+        options.on("pageerror", lambda error: self.evidence["page_errors"].append(str(error)))
+        options.wait_for_url("**/options.html")
+        expect(options.get_by_role("heading", name="InfiniTabs Settings", exact=True)).to_be_visible()
+        expect(options.locator("#hotkeys-settings button").first).to_be_visible()
+        body = options.locator("body")
+        controls = [
+            options.locator("#hotkeys-settings button").first,
+            options.locator("#tab-display-mode"),
+            options.locator("#active-tab-color-input"),
+            options.locator("#confirm-delete-checkbox"),
+        ]
+        # An opposing browser color scheme proves the extension preference, not the OS preference, drives the page.
+        options.emulate_media(color_scheme="light")
+        options.screenshot(path=str(self.artifacts / "options-dark.png"), full_page=True)
+        expect(body).to_have_css("background-color", "rgb(30, 30, 30)")
+        expect(body).to_have_css("color", "rgb(238, 238, 238)")
+        for control in controls:
+            expect(control).to_have_css("color-scheme", "dark")
+
+        options.emulate_media(color_scheme="dark")
+        toggle.click()
+        expect(body).to_have_css("background-color", "rgb(255, 255, 255)")
+        expect(body).to_have_css("color", "rgb(51, 51, 51)")
+        options.reload()
+        expect(body).to_have_css("background-color", "rgb(255, 255, 255)")
+        for control in controls:
+            expect(control).to_have_css("color-scheme", "light")
+        options.screenshot(path=str(self.artifacts / "options-light.png"), full_page=True)
+        options.close()
+        self.evidence["flows"].append({"name": "options-follows-extension-theme-not-system", "status": "pass"})
+
     def sidebar_toolbar(self):
         # These checks fail if Recent gets a separate toolbar/input layout again, or if the shared arrows still navigate the hidden normal tree.
         recent_button = self.sidebar.locator("#recent-tabs-btn")
@@ -714,6 +753,7 @@ class MruCheck(MovementCheck):
         self.benchmark_large_history()
         # Opening/closing the real options page can activate the harness's own sidebar tab. Exercise header actions after the strict A/B/C MRU-order fixtures, not during their setup.
         self.sidebar_header()
+        self.options_theme()
 
     def saved_session_and_concurrent_window(self):
         source_session = self.session()["sessionId"]
@@ -845,7 +885,7 @@ def main():
     parser.add_argument("--artifacts-dir", type=Path, required=True)
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--native-hotkeys", action="store_true", help="Opt in to guarded Windows accelerator input; requires the isolated QA window to be available for foreground focus")
-    parser.add_argument("--scenario", choices=("full", "tab-rows", "tab-controls", "hotkeys", "transient"), default="full")
+    parser.add_argument("--scenario", choices=("full", "tab-rows", "tab-controls", "hotkeys", "transient", "options-theme"), default="full")
     parser.add_argument("--executable", type=Path, help="Reuse an installed full Chromium instead of downloading the revision expected by Python Playwright")
     args = parser.parse_args()
     artifacts = Path(tempfile.mkdtemp(prefix="mru-qa-", dir=args.artifacts_dir))
@@ -868,7 +908,7 @@ def main():
                 check.evidence.update(extension_path=str(extension), isolated_profile=str(profile), chromium=context.browser.version, headless=args.headless, executable=str(args.executable) if args.executable else "Playwright bundled Chromium")
                 check.prepare(f"http://127.0.0.1:{server.server_port}/fixture", names="ABC")
                 if args.scenario != "full":
-                    {"tab-rows": check.tab_rows, "tab-controls": check.row_controls, "hotkeys": check.hotkeys, "transient": check.transient_popup}[args.scenario]()
+                    {"tab-rows": check.tab_rows, "tab-controls": check.row_controls, "hotkeys": check.hotkeys, "transient": check.transient_popup, "options-theme": check.options_theme}[args.scenario]()
                     assert not check.evidence["page_errors"], check.evidence["page_errors"]
                     print(f"MRU browser scenario passed: {args.scenario}", flush=True)
                     return
